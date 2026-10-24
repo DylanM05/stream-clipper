@@ -16,7 +16,8 @@ from sqlmodel import Field, Session, SQLModel, col, create_engine, select
 
 from .config import Settings
 
-# Video statuses, in pipeline order. "waiting" means Claude's usage limit was hit; it retries at retry_at.
+# Video statuses, in pipeline order. "waiting" means it can't go on yet (Claude's usage limit, or not
+# enough disk space); `error` says why, and it retries at retry_at.
 VOD_ACTIVE = ("downloading", "preparing", "transcribing", "analysing", "segmenting")
 VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
 
@@ -103,8 +104,9 @@ class Vod(SQLModel, table=True):
     duration: float = 0
     status: str = Field(default="queued", index=True)
     progress: float = 0  # 0-1 within the current status
-    error: str = ""
+    error: str = ""  # why it failed, or why it's waiting
     retry_at: datetime | None = None
+    cleaned_at: datetime | None = None  # when its big files were deleted (see Worker.clean_up)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

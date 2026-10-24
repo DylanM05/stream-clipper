@@ -32,6 +32,7 @@ export interface Vod {
   progress: number;
   error: string;
   retry_at: string | null;
+  cleaned: boolean;
   created_at: string;
   counts: Partial<Record<ClipStatus, number>>;
 }
@@ -149,6 +150,12 @@ export interface ChannelVideo {
   first_seen_at: string;
 }
 
+/** Settings changed from the app. */
+export interface AppSettings {
+  download_limit_mbps: number; // 0 = no limit
+  cleanup_after_days: number; // a finished stream's big files are deleted this long after its last change
+}
+
 export class ApiError extends Error {
   constructor(
     public status: number,
@@ -197,8 +204,10 @@ export const api = {
   login: (password: string) => post<void>("/api/login", { password }),
   logout: () => post<void>("/api/logout"),
   summary: () => request<{ to_review: number; to_upload: number; videos_in_progress: number }>("/api/summary"),
-  settings: () => request<{ download_limit_mbps: number }>("/api/settings"),
-  updateSettings: (body: { download_limit_mbps: number }) => patch<{ download_limit_mbps: number }>("/api/settings", body),
+  settings: () => request<AppSettings>("/api/settings"),
+  updateSettings: (body: Partial<AppSettings>) => patch<AppSettings>("/api/settings", body),
+  storage: () =>
+    request<{ free_gb: number | null; total_gb: number | null; videos_gb: number; min_free_gb: number }>("/api/storage"),
 
   vods: () => request<Vod[]>("/api/vods"),
   vod: (id: number) => request<{ vod: Vod; clips: Clip[] }>(`/api/vods/${id}`),

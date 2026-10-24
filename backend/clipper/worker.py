@@ -28,11 +28,12 @@ from .monitor import Monitor
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
 from .studio import Studio, StudioError, Upload, write_status
 from .timecode import to_seconds
-from .workspace import Workspace
+from .workspace import Workspace, disk_free_gb, remove
 
 log = logging.getLogger(__name__)
 
 USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when Claude doesn't say when the limit resets
+LOW_SPACE_RETRY = timedelta(minutes=30)
 
 
 class Worker:
@@ -51,6 +52,7 @@ class Worker:
             threading.Thread(target=self._loop, args=(self.render_next_clip,), name="renders", daemon=True),
             threading.Thread(target=self._loop, args=(self.monitor.check_next, 15), name="channels", daemon=True),
             threading.Thread(target=self._loop, args=(self.upload_next, 10), name="uploads", daemon=True),
+            threading.Thread(target=self._loop, args=(self.clean_up_next, 600), name="cleanup", daemon=True),
         ]
         for t in threads:
             t.start()
@@ -106,6 +108,14 @@ class Worker:
     def process_vod(self, vod_id: int) -> None:
         settings = self.settings
         vod = self._get(Vod, vod_id)
+        if not vod.workspace and (free := disk_free_gb(settings.data_dir)) < settings.min_free_gb:
+            log.warning("Video %d waits: only %.0f GB free", vod_id, free)
+            self._update_vod(
+                vod_id, status="waiting", retry_at=utcnow() + LOW_SPACE_RETRY,
+                error=f"Only {free:.0f} GB free on the data disk (it needs {settings.min_free_gb:g} GB to start a "
+                      "download). It starts once cleanup or you free up space.",
+            )
+            return
         log.info("Processing video %d (%s): %s", vod_id, vod.mode, vod.url)
         try:
             self._update_vod(vod_id, status="downloading", progress=0, error="", retry_at=None)
@@ -176,16 +186,20 @@ class Worker:
         except UsageLimitError as e:
             retry_at = e.resets_at or utcnow() + USAGE_LIMIT_RETRY
             log.warning("Claude usage limit reached; video %d retries at %s", vod_id, retry_at)
-            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error=str(e)[:500])
+            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error="Claude's usage limit was reached.")
         except Exception as e:
             log.exception("Video %d failed", vod_id)
             self._update_vod(vod_id, status="failed", error=f"{type(e).__name__}: {e}"[:2000])
 
-    def download_limit(self) -> float:
-        """Mbit/s cap for downloads: set in the app, else CLIPPER_DOWNLOAD_LIMIT_MBPS. 0 means none."""
+    def app_setting(self, key: str) -> float:
+        """A number set in the app, else its CLIPPER_* default (the Settings field of the same name)."""
         with Session(self.engine) as s:
-            value = get_app_setting(s, "download_limit_mbps")
-        return float(value) if value is not None else self.settings.download_limit_mbps
+            value = get_app_setting(s, key)
+        return float(value) if value is not None else float(getattr(self.settings, key))
+
+    def download_limit(self) -> float:
+        """Mbit/s cap for downloads; 0 means none."""
+        return self.app_setting("download_limit_mbps")
 
     def _show_for(self, vod: Vod, meta: dict) -> Show | None:
         """The video's show: the one it was added under, or the first whose terms match its link or channel."""
@@ -369,6 +383,47 @@ class Worker:
             job.updated_at = utcnow()
             s.add(job)
             s.commit()
+
+    # --- Disk cleanup --------------------------------------------------------------
+
+    def clean_up_next(self) -> bool:
+        """Delete the big files of one finished stream that's due. True if one was cleaned up.
+
+        A stream is finished when every clip is uploaded or rejected and no upload is pending; it's due
+        `cleanup_after_days` after the last change to it or its clips.
+        """
+        cutoff = utcnow() - timedelta(days=self.app_setting("cleanup_after_days"))
+        with Session(self.engine) as s:
+            candidates = s.exec(select(Vod).where(
+                Vod.status == "ready", col(Vod.cleaned_at).is_(None), col(Vod.workspace).is_not(None),
+            ))
+            for vod in candidates:
+                clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
+                if any(c.status not in ("uploaded", "rejected") for c in clips):
+                    continue
+                pending = s.exec(
+                    select(UploadJob).join(ClipRecord)
+                    .where(ClipRecord.vod_id == vod.id, col(UploadJob.status).in_(("queued", "uploading")))
+                ).first()
+                if pending or max([vod.updated_at, *(c.updated_at for c in clips)]) > cutoff:
+                    continue
+                vod_id = vod.id
+                break
+            else:
+                return False
+        self.clean_up(vod_id)
+        return True
+
+    def clean_up(self, vod_id: int) -> None:
+        """Delete a stream's source, preview, audio and rendered clips; keep its transcript and Claude's picks."""
+        vod = self._get(Vod, vod_id)
+        ws = Workspace(self.settings.vods_dir / vod.workspace)
+        targets = [ws.proxy_mp4, ws.audio_wav, ws.clips_dir, *ws.root.glob("audio.tmp.*"), *ws.root.glob("proxy.tmp.*")]
+        if ws.meta_json.exists() and ws.source.resolve().parent == ws.root.resolve():
+            targets += ws.root.glob("source.*")  # never a file added from elsewhere by its path
+        freed = sum(remove(path) for path in targets)
+        self._update_vod(vod_id, cleaned_at=utcnow())
+        log.info("Cleaned up video %d (%s): freed %.1f GB", vod_id, vod.title, freed / 1e9)
 
     # --- Helpers --------------------------------------------------------------
 

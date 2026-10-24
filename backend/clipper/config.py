@@ -18,6 +18,12 @@ class Settings(BaseSettings):
     # Keeps a long VOD download from using the whole connection (0 = no limit). Also changeable in the app.
     download_limit_mbps: float = 50
 
+    # Disk space. A stream's big files (source, preview, audio, renders) are deleted this many days after
+    # all its clips are uploaded or rejected; also changeable in the app. New downloads wait while the
+    # data disk has less than min_free_gb free.
+    cleanup_after_days: float = 3
+    min_free_gb: float = 40
+
     # Transcription (faster-whisper)
     whisper_model: str = "turbo"
     whisper_device: str = "cuda"

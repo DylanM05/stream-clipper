@@ -50,7 +50,7 @@ const VOD_STATUS: Record<VodStatus, [string, string]> = {
   transcribing: ["Transcribing", "bg-sky-500/15 text-sky-300"],
   analysing: ["Analysing", "bg-sky-500/15 text-sky-300"],
   segmenting: ["Claude is picking clips", "bg-violet-500/15 text-violet-300"],
-  waiting: ["Waiting for Claude", "bg-amber-500/15 text-amber-300"],
+  waiting: ["Waiting", "bg-amber-500/15 text-amber-300"],
   ready: ["Ready", "bg-emerald-500/15 text-emerald-300"],
   failed: ["Failed", "bg-red-500/15 text-red-300"],
 };

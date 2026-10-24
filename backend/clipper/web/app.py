@@ -3,6 +3,7 @@
 import logging
 import mimetypes
 import re
+import shutil
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -57,6 +58,7 @@ class VodOut(BaseModel):
     progress: float
     error: str
     retry_at: str | None
+    cleaned: bool  # its video files were deleted to free space
     created_at: str
     counts: dict[str, int]  # clips per status
 
@@ -166,7 +168,16 @@ class Uploaded(BaseModel):
 
 
 class AppSettings(BaseModel):
-    download_limit_mbps: float = Field(ge=0, le=100_000)  # 0 = no limit
+    download_limit_mbps: float  # 0 = no limit
+    cleanup_after_days: float  # delete a finished stream's big files this long after its last change
+
+
+class AppSettingsPatch(BaseModel):
+    download_limit_mbps: float | None = Field(default=None, ge=0, le=100_000)
+    cleanup_after_days: float | None = Field(default=None, ge=0, le=3650)
+
+
+APP_SETTING_KEYS = ("download_limit_mbps", "cleanup_after_days")
 
 
 class ChannelIn(BaseModel):
@@ -291,9 +302,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             select(ClipRecord.status, func.count()).where(ClipRecord.vod_id == vod.id).group_by(ClipRecord.status)
         ).all())
         show = s.get(Show, vod.show_id) if vod.show_id else None
-        return VodOut(**vod.model_dump(exclude={"retry_at", "created_at", "updated_at", "workspace"}),
+        return VodOut(**vod.model_dump(exclude={"retry_at", "created_at", "updated_at", "workspace", "cleaned_at"}),
                       show_name=show.name if show else "",
-                      retry_at=iso(vod.retry_at), created_at=iso(vod.created_at), counts=counts)
+                      retry_at=iso(vod.retry_at), cleaned=vod.cleaned_at is not None,
+                      created_at=iso(vod.created_at), counts=counts)
 
     def channel_out(s: Session, ch: Channel) -> ChannelOut:
         waiting = s.exec(
@@ -409,17 +421,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     # --- Settings changed from the app ---
 
+    def current_settings(s: Session) -> AppSettings:
+        values = {}
+        for key in APP_SETTING_KEYS:
+            stored = get_app_setting(s, key)
+            values[key] = float(stored) if stored is not None else float(getattr(settings, key))
+        return AppSettings(**values)
+
     @app.get("/api/settings")
     def get_settings_route(s: Session = Depends(db)) -> AppSettings:
-        limit = get_app_setting(s, "download_limit_mbps")
-        return AppSettings(download_limit_mbps=float(limit) if limit is not None else settings.download_limit_mbps)
+        return current_settings(s)
 
     @app.patch("/api/settings")
-    def update_settings(body: AppSettings, s: Session = Depends(db)) -> AppSettings:
-        """Takes effect from the next download."""
-        set_app_setting(s, "download_limit_mbps", str(body.download_limit_mbps))
+    def update_settings(body: AppSettingsPatch, s: Session = Depends(db)) -> AppSettings:
+        """The worker picks changes up from its next download or cleanup."""
+        for key, value in body.model_dump(exclude_none=True).items():
+            set_app_setting(s, key, str(value))
         s.commit()
-        return body
+        return current_settings(s)
+
+    @app.get("/api/storage")
+    def storage() -> dict:
+        """Space on the data disk, and how much the streams' files take."""
+        usage = shutil.disk_usage(settings.data_dir) if settings.data_dir.exists() else None
+        used = sum(f.stat().st_size for f in settings.vods_dir.rglob("*") if f.is_file()) if settings.vods_dir.exists() else 0
+        return {
+            "free_gb": round(usage.free / 1e9, 1) if usage else None,
+            "total_gb": round(usage.total / 1e9, 1) if usage else None,
+            "videos_gb": round(used / 1e9, 1),
+            "min_free_gb": settings.min_free_gb,
+        }
 
     # --- Videos ---
 

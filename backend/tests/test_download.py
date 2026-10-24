@@ -13,7 +13,7 @@ def test_speed_limit_is_the_total_not_per_piece():
 
 def test_the_limit_can_be_changed_in_the_app(tmp_path):
     client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
-    assert client.get("/api/settings").json() == {"download_limit_mbps": 50}
-    assert client.patch("/api/settings", json={"download_limit_mbps": 25}).json() == {"download_limit_mbps": 25}
-    assert client.get("/api/settings").json() == {"download_limit_mbps": 25}
+    assert client.get("/api/settings").json()["download_limit_mbps"] == 50
+    assert client.patch("/api/settings", json={"download_limit_mbps": 25}).json()["download_limit_mbps"] == 25
+    assert client.get("/api/settings").json()["download_limit_mbps"] == 25
     assert client.patch("/api/settings", json={"download_limit_mbps": -1}).status_code == 422

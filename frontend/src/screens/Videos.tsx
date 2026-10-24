@@ -13,7 +13,7 @@ export function Videos() {
   return (
     <Screen title="Videos" subtitle="Add a link and the clips land in your inbox.">
       <AddVideo onAdded={refresh} />
-      <DownloadLimit />
+      <DownloadAndDisk />
       {error && <ErrorNote>{error}</ErrorNote>}
       <div className="mt-6 space-y-3">
         {vods?.map((v) => <VodRow key={v.id} vod={v} onChanged={refresh} />)}
@@ -134,23 +134,64 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-const EIGHT_HOUR_STREAM_GB = 20; // a typical 8-hour 1080p VOD, for the time estimate
+const EIGHT_HOUR_STREAM_GB = 25; // a typical 8-hour 1080p VOD, for the time estimate
 
-/** The download speed cap that keeps long VOD downloads from using the whole internet connection. */
-function DownloadLimit() {
+/** Download speed and disk space: the two things that keep the server from swamping the house. */
+function DownloadAndDisk() {
+  const { data: settings, setData } = usePoll(api.settings, 0);
+  const { data: storage } = usePoll(api.storage, 60000);
+  if (!settings) return null;
+
+  const limit = settings.download_limit_mbps;
+  const minutes = limit > 0 ? Math.round((EIGHT_HOUR_STREAM_GB * 8000) / limit / 60) : 0;
+  const days = settings.cleanup_after_days;
+  const lowSpace = storage?.free_gb != null && storage.free_gb < storage.min_free_gb;
+
+  return (
+    <div className="mt-3 space-y-1.5 px-1">
+      <SettingLine
+        text={
+          limit > 0
+            ? `Downloads are limited to ${limit} Mbit/s, so an 8-hour stream takes about ${minutes} minutes.`
+            : "Downloads use your full internet speed."
+        }
+        label="Download speed limit (Mbit/s)"
+        hint="Around half your internet speed keeps everything else usable. 0 means no limit."
+        value={limit}
+        onSave={async (v) => setData(await api.updateSettings({ download_limit_mbps: v }))}
+      />
+      <SettingLine
+        text={
+          (storage?.free_gb != null ? `${storage.free_gb} GB free on the data disk; streams use ${storage.videos_gb} GB. ` : "") +
+          `A stream's video files are deleted ${days === 0 ? "as soon as" : `${days} day${days === 1 ? "" : "s"} after`} all its clips are uploaded or rejected.`
+        }
+        warning={lowSpace ? `Below ${storage!.min_free_gb} GB free: new downloads wait for space.` : undefined}
+        label="Delete finished streams' files after (days)"
+        hint="The transcript and Claude's picks are kept; the clips can't be re-cut after this."
+        value={days}
+        onSave={async (v) => setData(await api.updateSettings({ cleanup_after_days: v }))}
+      />
+    </div>
+  );
+}
+
+function SettingLine(props: {
+  text: string;
+  warning?: string;
+  label: string;
+  hint: string;
+  value: number;
+  onSave: (value: number) => Promise<void>;
+}) {
   const toast = useToast();
-  const { data, setData } = usePoll(api.settings, 0);
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState("");
-  if (!data) return null;
 
-  const limit = data.download_limit_mbps;
-  const minutes = limit > 0 ? Math.round((EIGHT_HOUR_STREAM_GB * 8000) / limit / 60) : 0;
   const save = async () => {
     try {
-      setData(await api.updateSettings({ download_limit_mbps: Math.max(0, Number(value) || 0) }));
+      await props.onSave(Math.max(0, Number(value) || 0));
       setEditing(false);
-      toast({ text: "Saved. It applies from the next download." });
+      toast({ text: "Saved." });
     } catch (e) {
       toast({ text: errorText(e) });
     }
@@ -158,8 +199,8 @@ function DownloadLimit() {
 
   if (editing) {
     return (
-      <div className="mt-3 space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Download speed limit (Mbit/s)</label>
+      <div className="space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">{props.label}</label>
         <div className="flex gap-2">
           <input
             type="number"
@@ -169,27 +210,24 @@ function DownloadLimit() {
             onChange={(e) => setValue(e.target.value)}
             className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
           />
+          <Button onClick={() => setEditing(false)}>Cancel</Button>
           <Button tone="primary" onClick={save}>
             Save
           </Button>
         </div>
-        <p className="text-xs text-zinc-500">
-          Somewhere around half your internet speed keeps everything else usable. 0 means no limit.
-        </p>
+        <p className="text-xs text-zinc-500">{props.hint}</p>
       </div>
     );
   }
   return (
     <button
       onClick={() => {
-        setValue(String(limit));
+        setValue(String(props.value));
         setEditing(true);
       }}
-      className="mt-3 w-full rounded-2xl px-1 text-left text-xs text-zinc-500"
+      className="block w-full text-left text-xs text-zinc-500"
     >
-      {limit > 0
-        ? `Downloads are limited to ${limit} Mbit/s, so an 8-hour stream takes about ${minutes} minutes.`
-        : "Downloads use your full internet speed."}{" "}
+      {props.text} {props.warning && <span className="text-amber-300">{props.warning} </span>}
       <span className="font-semibold text-violet-300">Change</span>
     </button>
   );
@@ -242,7 +280,7 @@ function VodRow({ vod, onChanged }: { vod: Vod; onChanged: () => void }) {
       )}
       {vod.status === "waiting" && (
         <p className="mt-2 text-sm text-amber-300">
-          Claude's usage limit was reached. It tries again {vod.retry_at ? `at ${timeOfDay(vod.retry_at)}` : "soon"}.
+          {vod.error || "Waiting."} It tries again {vod.retry_at ? `at ${timeOfDay(vod.retry_at)}` : "soon"}.
         </p>
       )}
       {vod.status === "failed" && (
@@ -260,6 +298,7 @@ function VodRow({ vod, onChanged }: { vod: Vod; onChanged: () => void }) {
         </div>
       )}
       {vod.status === "ready" && counts.length > 0 && <p className="mt-2 text-sm text-zinc-400">{counts.join(" · ")}</p>}
+      {vod.cleaned && <p className="mt-1 text-xs text-zinc-500">Video files deleted to free space; the clips can't be re-cut.</p>}
     </div>
   );
 }

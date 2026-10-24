@@ -79,6 +79,27 @@ A pre-show from X is usually posted whole, and Claude writes its short title fro
 
 To update after pulling new code: `docker compose build && docker compose up -d`.
 
+### Disk space
+
+Keep `CLIPPER_HOST_DATA_DIR` on an SSD. Converting, previewing, transcribing and rendering all read or write the whole stream, which is several times slower on a hard drive.
+
+An 8-hour stream takes about 45–60 GB at its peak: the source, the rendered chapters and clips, the preview copy and the audio.
+
+**Cleanup:** once every clip of a stream is uploaded or rejected, its big files are deleted after 3 days. Change the number of days on the Videos screen. The transcript and Claude's picks are kept, but that stream's clips can't be re-cut afterwards.
+
+**Low space:** while the disk has less than 40 GB free (`CLIPPER_MIN_FREE_GB`), new downloads wait.
+
+To move the data to another disk:
+
+```bash
+docker compose down
+sudo rsync -a /old/data/ /new/data/ && sudo chown -R 1000:1000 /new/data
+# in .env: CLIPPER_HOST_DATA_DIR=/new/data
+docker compose up -d
+```
+
+Anything that was mid-processing carries on from the files already there.
+
 ## Automatic uploads through YouTube Studio
 
 The worker uploads by driving YouTube Studio in that signed-in browser, the same clicks you'd make:
@@ -103,7 +124,7 @@ The manual steps (share to the YouTube app, or download and drag into Studio) st
 |---|---|
 | **Inbox** | Review proposed clips. Swipe right to approve, left to reject, or use the buttons. After each decision you get an **Undo**. |
 | **Clip editor** | Tap a clip to open it. Drag the handles on the strip under the video, or fine-tune with **−1s / −0.2 / Here / +0.2 / +1s**; every change plays the few seconds around the new cut. **Last 5s** checks that nothing is cut off. Tap a transcript line to hear it, or use its **Start** and **End** buttons to cut there. Edit the title and description, and turn the vertical Short on or off. The volume slider only changes the preview, not the clip; on iPhones it's a mute button, because iOS only allows the hardware buttons. **Approve** takes you straight to the next clip. |
-| **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). |
+| **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). The line below it shows free disk space and when finished streams' files are deleted. |
 | **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through YouTube Studio, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
 | **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name` or `youtube.com/@name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**. |
 

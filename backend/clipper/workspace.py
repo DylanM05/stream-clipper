@@ -92,6 +92,24 @@ class Workspace:
                     path.unlink()
 
 
+def disk_free_gb(path: Path) -> float:
+    path.mkdir(parents=True, exist_ok=True)
+    return shutil.disk_usage(path).free / 1e9
+
+
+def remove(path: Path) -> int:
+    """Delete a file or folder; returns how many bytes that freed."""
+    if path.is_dir():
+        size = sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+        shutil.rmtree(path)
+        return size
+    if path.exists():
+        size = path.stat().st_size
+        path.unlink()
+        return size
+    return 0
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
