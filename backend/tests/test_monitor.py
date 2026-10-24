@@ -143,6 +143,33 @@ def test_videos_posted_on_x_are_queued_as_soon_as_they_are_seen(tmp_path, monkey
         assert (vod.url, vod.show_id, vod.mode) == ("https://x.com/Andywarski/status/2", show_id, "whole")
 
 
+# Pre-show posts from x.com/Andywarski (Oct 2026), as the watcher reads them: links are left out.
+PRESHOWS = [
+    "LIVE TONIGHT ON LITERALLY THE MOST INSANE EP OF ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️ AT 8:30PM EST - JER HUCK BLEND GRIFT "
+    "UNLEASHED!H3 CHEATS ON HILA & PODCAST ENDS! ANGRY JOE IS SPIRALLING!  DSP SCAMS DENTS! THE REVENGE OF RTU! AND A TON "
+    "MORE!RT TO SUPPORT:",
+    "LIVE TONIGHT ON AN INSANE ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️ At 8 :30PM EST -  JER BLINDS HUCK TO GRIFT WORLD SERIES "
+    "TICKETS! DSP SEETHES AT CASINO & KICK! RTU GETS REVENGE! BLADE ER? AND A TON MORE!!! RETWEET TO SUPPORT:",
+    "TONIGHT ON AN INSANE ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️AT 8:30PM EST - QUARTERING WORLD SERIES SCAM & HEISENSPERG! DSP "
+    "POVERTY FORCES HIM TO CAMEO!  RTU! SPOOKY SLOP! AND A TON MORE! RETWEET TO SUPPORT:",
+    "LIVE TONIGHT ON ANOTHER ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️AT 8:30PM EST - QUARTERING FELTED AS COSTCO EXPOSES DOG PILL "
+    "LIES!!! DSP WINS EVO AND FELTS CRAIG! MR MORROW, FAILED GHOST HAUNTINGS AND MORE! RETWEET TO SUPPORT:",
+    "TONIGHT ON A WILD ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️AT 8:30PM EST - QUARTERING GRIFTS OFF DYING DOG HE MADE SICK!?!? DSP "
+    "WAGE QUITS SUNSHINE! MR MORROW RETURNS! VICTOR FELTED! AND A TON MORE - RETWEET TO SUPPORT:",
+]
+
+
+@pytest.mark.parametrize("text, wanted", [
+    *((text, True) for text in PRESHOWS),
+    ("DSP's EVO win was the funniest thing on Kino Casino last night", False),  # a clip: no "tonight on"
+    ("Streaming tonight on Kick, come hang out", False),  # no "kino casino"
+])
+def test_keywords_joined_with_plus_need_every_part(text, wanted):
+    channel = Channel(show_id=1, url="https://x.com/andywarski", platform="x", keywords="tonight on + kino casino")
+    reason = monitor.skip_reason(channel, Listed(id="1", url="", title=text, duration=1250, live=False, final=True))
+    assert reason == ("" if wanted else "The post has none of the keywords")
+
+
 def test_x_problems_read_as_they_are(setup):
     settings, mon, fake, (_, channel_id) = setup
     fake.error = monitor.xposts.XError(monitor.xposts.SIGNED_OUT)

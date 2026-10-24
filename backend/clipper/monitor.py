@@ -108,14 +108,18 @@ def is_live(entry: dict) -> bool:
 
 
 def skip_reason(channel: Channel, item: Listed) -> str:
-    """Why the channel's filters leave this video out, or "" to process it."""
-    title = item.title.lower()
+    """Why the channel's filters leave this video out, or "" to process it.
+
+    Keywords are comma-separated, and any one of them will do; one made of parts joined with "+" needs
+    all its parts, e.g. "tonight on + kino casino". Case and repeated spaces don't matter.
+    """
+    title = _words(item.title)
     what = "post" if channel.platform == "x" else "title"
-    keywords = [k.strip().lower() for k in channel.keywords.split(",") if k.strip()]
-    exclude = [x.strip().lower() for x in channel.exclude.split(",") if x.strip()]
-    if keywords and not any(k in title for k in keywords):
+    keywords = [k.strip() for k in channel.keywords.split(",") if k.strip()]
+    exclude = [x.strip() for x in channel.exclude.split(",") if x.strip()]
+    if keywords and not any(_has(title, k) for k in keywords):
         return f"The {what} has none of the keywords"
-    if hit := next((x for x in exclude if x in title), None):
+    if hit := next((x for x in exclude if _has(title, x)), None):
         return f'The {what} has "{hit}"'
     if channel.min_minutes and (item.duration or 0) < channel.min_minutes * 60:
         return f"Shorter than {channel.min_minutes:g} minutes"
@@ -213,6 +217,14 @@ class Monitor:
             channel.last_checked_at = utcnow()
             s.add(channel)
             s.commit()
+
+
+def _words(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _has(text: str, keyword: str) -> bool:
+    return all(_words(part) in text for part in keyword.split("+") if part.strip())
 
 
 def _waiting_reason(item: Listed) -> str:

@@ -729,7 +729,10 @@ function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChan
   return (
     <div className="space-y-3">
       <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
-        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "pre show" : "kino, casino"} className={cn(input, "bg-zinc-800 ring-0")} />
+        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + kino casino" : "kino, casino"} className={cn(input, "bg-zinc-800 ring-0")} />
+        <p className="mt-1.5 text-xs text-zinc-500">
+          Any one keyword will do. Join words with + to need all of them, e.g. “tonight on + kino casino”.
+        </p>
       </Field>
       <Field label={`Skip ${what} with`} hint="comma-separated">
         <input value={value.exclude} onChange={(e) => onChange({ ...value, exclude: e.target.value })} placeholder="rerun, test stream" className={cn(input, "bg-zinc-800 ring-0")} />
