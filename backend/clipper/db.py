@@ -171,6 +171,26 @@ class ChannelVideo(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+class AppSetting(SQLModel, table=True):
+    """A setting changed from the app, taking the place of its CLIPPER_* default."""
+
+    __tablename__ = "app_setting"
+
+    key: str = Field(primary_key=True)
+    value: str
+
+
+def get_app_setting(s: Session, key: str) -> str | None:
+    row = s.get(AppSetting, key)
+    return row.value if row else None
+
+
+def set_app_setting(s: Session, key: str, value: str) -> None:
+    row = s.get(AppSetting, key) or AppSetting(key=key, value=value)
+    row.value = value
+    s.add(row)
+
+
 def default_mode(url: str) -> str:
     host = (urlparse(url).hostname or "").lower().removeprefix("www.").removeprefix("mobile.")
     return "whole" if host in WHOLE_VIDEO_HOSTS else "segment"
@@ -238,7 +258,7 @@ def _engine(db_path: str) -> Engine:
 def _add_missing_columns(engine: Engine) -> None:
     """Add columns that newer code expects to a database an older version created. Only ever adds."""
     with engine.begin() as conn:
-        for model in (Destination, Show, Vod, ClipRecord, Channel, ChannelVideo, UploadJob):
+        for model in (Destination, Show, Vod, ClipRecord, Channel, ChannelVideo, UploadJob, AppSetting):
             table = model.__table__
             have = {row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table.name}")')}
             for column in table.columns:

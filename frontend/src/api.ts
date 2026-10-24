@@ -197,6 +197,8 @@ export const api = {
   login: (password: string) => post<void>("/api/login", { password }),
   logout: () => post<void>("/api/logout"),
   summary: () => request<{ to_review: number; to_upload: number; videos_in_progress: number }>("/api/summary"),
+  settings: () => request<{ download_limit_mbps: number }>("/api/settings"),
+  updateSettings: (body: { download_limit_mbps: number }) => patch<{ download_limit_mbps: number }>("/api/settings", body),
 
   vods: () => request<Vod[]>("/api/vods"),
   vod: (id: number) => request<{ vod: Vod; clips: Clip[] }>(`/api/vods/${id}`),

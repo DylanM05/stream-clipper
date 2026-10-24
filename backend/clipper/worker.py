@@ -18,7 +18,9 @@ from sqlmodel import Session, col, or_, and_, select
 
 from . import titles
 from .config import Settings
-from .db import VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_engine, utcnow
+from .db import (
+    VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine, utcnow,
+)
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
 from .models import Clip, Segmentation, Transcript
@@ -107,7 +109,7 @@ class Worker:
         log.info("Processing video %d (%s): %s", vod_id, vod.mode, vod.url)
         try:
             self._update_vod(vod_id, status="downloading", progress=0, error="", retry_at=None)
-            ws = download.fetch(vod.url, settings, on_progress=self._progress(vod_id))
+            ws = download.fetch(vod.url, settings, on_progress=self._progress(vod_id), limit_mbps=self.download_limit())
             meta = ws.meta()
             duration = meta.get("duration") or probe_duration(ws.source)
             show = self._show_for(vod, meta)
@@ -178,6 +180,12 @@ class Worker:
         except Exception as e:
             log.exception("Video %d failed", vod_id)
             self._update_vod(vod_id, status="failed", error=f"{type(e).__name__}: {e}"[:2000])
+
+    def download_limit(self) -> float:
+        """Mbit/s cap for downloads: set in the app, else CLIPPER_DOWNLOAD_LIMIT_MBPS. 0 means none."""
+        with Session(self.engine) as s:
+            value = get_app_setting(s, "download_limit_mbps")
+        return float(value) if value is not None else self.settings.download_limit_mbps
 
     def _show_for(self, vod: Vod, meta: dict) -> Show | None:
         """The video's show: the one it was added under, or the first whose terms match its link or channel."""

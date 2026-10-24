@@ -13,6 +13,7 @@ export function Videos() {
   return (
     <Screen title="Videos" subtitle="Add a link and the clips land in your inbox.">
       <AddVideo onAdded={refresh} />
+      <DownloadLimit />
       {error && <ErrorNote>{error}</ErrorNote>}
       <div className="mt-6 space-y-3">
         {vods?.map((v) => <VodRow key={v.id} vod={v} onChanged={refresh} />)}
@@ -130,6 +131,67 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
         {busy ? "Adding…" : "Add video"}
       </Button>
     </form>
+  );
+}
+
+const EIGHT_HOUR_STREAM_GB = 20; // a typical 8-hour 1080p VOD, for the time estimate
+
+/** The download speed cap that keeps long VOD downloads from using the whole internet connection. */
+function DownloadLimit() {
+  const toast = useToast();
+  const { data, setData } = usePoll(api.settings, 0);
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState("");
+  if (!data) return null;
+
+  const limit = data.download_limit_mbps;
+  const minutes = limit > 0 ? Math.round((EIGHT_HOUR_STREAM_GB * 8000) / limit / 60) : 0;
+  const save = async () => {
+    try {
+      setData(await api.updateSettings({ download_limit_mbps: Math.max(0, Number(value) || 0) }));
+      setEditing(false);
+      toast({ text: "Saved. It applies from the next download." });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
+  if (editing) {
+    return (
+      <div className="mt-3 space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">Download speed limit (Mbit/s)</label>
+        <div className="flex gap-2">
+          <input
+            type="number"
+            inputMode="decimal"
+            min={0}
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+          />
+          <Button tone="primary" onClick={save}>
+            Save
+          </Button>
+        </div>
+        <p className="text-xs text-zinc-500">
+          Somewhere around half your internet speed keeps everything else usable. 0 means no limit.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        setValue(String(limit));
+        setEditing(true);
+      }}
+      className="mt-3 w-full rounded-2xl px-1 text-left text-xs text-zinc-500"
+    >
+      {limit > 0
+        ? `Downloads are limited to ${limit} Mbit/s, so an 8-hour stream takes about ${minutes} minutes.`
+        : "Downloads use your full internet speed."}{" "}
+      <span className="font-semibold text-violet-300">Change</span>
+    </button>
   );
 }
 

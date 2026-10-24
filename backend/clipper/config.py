@@ -15,6 +15,8 @@ class Settings(BaseSettings):
 
     # Download
     max_height: int = 1080
+    # Keeps a long VOD download from using the whole connection (0 = no limit). Also changeable in the app.
+    download_limit_mbps: float = 50
 
     # Transcription (faster-whisper)
     whisper_model: str = "turbo"

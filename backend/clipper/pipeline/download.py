@@ -19,11 +19,17 @@ _META_FIELDS = (
 )
 
 
-def fetch(source: str, settings: Settings, on_progress: Callable[[float], None] | None = None) -> Workspace:
+def fetch(
+    source: str,
+    settings: Settings,
+    on_progress: Callable[[float], None] | None = None,
+    limit_mbps: float | None = None,
+) -> Workspace:
+    """`limit_mbps` caps the download speed (0 = none); without it, the CLIPPER_DOWNLOAD_LIMIT_MBPS setting."""
     path = Path(source)
     if path.is_file():
         return _register_local(path, settings)
-    return _download(source, settings, on_progress)
+    return _download(source, settings, on_progress, settings.download_limit_mbps if limit_mbps is None else limit_mbps)
 
 
 def _register_local(path: Path, settings: Settings) -> Workspace:
@@ -42,7 +48,7 @@ def _register_local(path: Path, settings: Settings) -> Workspace:
     return ws
 
 
-def _download(url: str, settings: Settings, on_progress: Callable[[float], None] | None) -> Workspace:
+def _download(url: str, settings: Settings, on_progress: Callable[[float], None] | None, limit_mbps: float) -> Workspace:
     with YoutubeDL({"quiet": True, "no_warnings": True}) as ydl:
         info = ydl.extract_info(url, download=False)
     if info.get("_type") == "playlist":
@@ -65,8 +71,10 @@ def _download(url: str, settings: Settings, on_progress: Callable[[float], None]
         "no_warnings": True,
         "noprogress": True,
         "progress_hooks": [_ProgressLog(on_progress)],
+        **speed_limit(limit_mbps),
     }
-    log.info("Downloading %r (%s)", info.get("title"), info.get("webpage_url") or url)
+    log.info("Downloading %r (%s)%s", info.get("title"), info.get("webpage_url") or url,
+             f" at up to {limit_mbps:g} Mbit/s" if limit_mbps else "")
     with YoutubeDL(opts) as ydl:
         info = ydl.process_ie_result(info, download=True)
 
@@ -79,6 +87,14 @@ def _download(url: str, settings: Settings, on_progress: Callable[[float], None]
     write_json(ws.meta_json, meta)
     log.info("Downloaded to %s", source)
     return ws
+
+
+def speed_limit(mbps: float) -> dict:
+    """yt-dlp options capping the total download speed. Its limit applies to each piece of a stream
+    downloaded in parallel, so with a limit the pieces are fetched one at a time."""
+    if not mbps or mbps <= 0:
+        return {}
+    return {"ratelimit": int(mbps * 1_000_000 / 8), "concurrent_fragment_downloads": 1}
 
 
 class _ProgressLog:

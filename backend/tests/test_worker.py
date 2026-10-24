@@ -38,7 +38,8 @@ def fake_pipeline(settings, monkeypatch):
     """Replace downloading, transcription and Claude with canned results."""
     calls = {"segment": 0, "segment_kwargs": None, "preview_room": None}
 
-    def fetch(url, s, on_progress=None):
+    def fetch(url, s, on_progress=None, limit_mbps=None):
+        calls["limit_mbps"] = limit_mbps
         ws = Workspace.open(s.vods_dir, "vod-1")
         source = ws.root / "source.mp4"
         source.write_bytes(b"")
@@ -164,6 +165,20 @@ def test_segment_mode_adds_clips_once(settings, fake_pipeline):
     w.process_vod(vod_id)  # running again doesn't duplicate clips
     assert len(clips(settings)) == 4
     assert w.process_next_vod() is False
+
+
+def test_downloads_use_the_speed_limit_set_in_the_app(settings, fake_pipeline):
+    from clipper.db import set_app_setting
+
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    assert fake_pipeline["limit_mbps"] == settings.download_limit_mbps == 50  # the default
+
+    with Session(get_engine(settings)) as s:
+        set_app_setting(s, "download_limit_mbps", "20")
+        s.commit()
+    w.process_vod(add_vod(settings, url="https://www.twitch.tv/videos/2"))
+    assert fake_pipeline["limit_mbps"] == 20
 
 
 def test_whole_mode_posts_the_entire_video(settings, fake_pipeline):

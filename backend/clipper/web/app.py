@@ -17,7 +17,10 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 
 from ..config import Settings, get_settings
-from ..db import Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod, get_engine, queue_vod, utcnow
+from ..db import (
+    Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
+    get_app_setting, get_engine, queue_vod, set_app_setting, utcnow,
+)
 from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
@@ -160,6 +163,10 @@ class UploadJobOut(BaseModel):
 
 class Uploaded(BaseModel):
     youtube_url: str = Field(default="", max_length=500)
+
+
+class AppSettings(BaseModel):
+    download_limit_mbps: float = Field(ge=0, le=100_000)  # 0 = no limit
 
 
 class ChannelIn(BaseModel):
@@ -399,6 +406,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             select(func.count()).select_from(Vod).where(col(Vod.status).notin_(("ready", "failed")))
         ).one()
         return {"to_review": to_review, "to_upload": to_upload, "videos_in_progress": working}
+
+    # --- Settings changed from the app ---
+
+    @app.get("/api/settings")
+    def get_settings_route(s: Session = Depends(db)) -> AppSettings:
+        limit = get_app_setting(s, "download_limit_mbps")
+        return AppSettings(download_limit_mbps=float(limit) if limit is not None else settings.download_limit_mbps)
+
+    @app.patch("/api/settings")
+    def update_settings(body: AppSettings, s: Session = Depends(db)) -> AppSettings:
+        """Takes effect from the next download."""
+        set_app_setting(s, "download_limit_mbps", str(body.download_limit_mbps))
+        s.commit()
+        return body
 
     # --- Videos ---
 
