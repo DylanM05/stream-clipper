@@ -19,7 +19,7 @@ How it works:
    - which channel the clips and the full episodes go to
    - the Kick, Twitch or YouTube channels, or X accounts, to watch
 3. New streams are picked up from watched channels once they've ended, and videos posted on X as soon as they're seen. You can also paste any link in the app.
-4. The worker downloads the video and makes a small preview copy. Then it transcribes the video, has Claude (through Claude Code on your subscription) pick chapters and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. Titles follow the show's patterns, e.g. `KINO CASINO Oct 23, 2026 - <title Claude wrote>`. A full episode gets Claude's episode title and summary, plus YouTube chapter timestamps in its description.
+4. The worker downloads the video. Then it transcribes the video, has Claude (through Claude Code on your subscription) pick chapters and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. Meanwhile it makes a small preview copy for the phone. Titles follow the show's patterns, e.g. `KINO CASINO Oct 23, 2026 - <title Claude wrote>`. A full episode gets Claude's episode title and summary, plus YouTube chapter timestamps in its description.
 5. The show's best few chapters and Shorts per stream, by Claude's score (5 of each unless you change it), land in your **Inbox**, along with the full episode. Claude's other picks wait on the video's page as extras. Swipe right to approve and left to reject, or tap one to trim it on the preview, fix the title, pick its channel, and choose whether it also becomes a vertical Short. A show can also let a kind of video skip review: rendered and left ready to upload, or rendered and uploaded.
 6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them. Once the worker uploads a clip, its file is deleted; once every clip of a stream is done, so is the stream's video.
 
@@ -53,7 +53,7 @@ A pre-show from X is usually posted whole, and Claude writes its short title fro
    ```
 5. **Check everything:**
    ```bash
-   docker compose run --rm worker doctor      # NVENC, GPU for Whisper, Claude login, data folder
+   docker compose run --rm worker doctor      # NVENC, GPU previews, GPU for Whisper, Claude login, data folder
    docker compose run --rm worker llm-check   # one tiny Claude request with structured output
    ```
 6. **Start the app and the worker.** Both restart on their own after a reboot:

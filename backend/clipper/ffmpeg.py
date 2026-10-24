@@ -4,6 +4,7 @@ import json
 import subprocess
 import threading
 from collections.abc import Callable
+from functools import lru_cache
 from pathlib import Path
 
 
@@ -41,6 +42,17 @@ def probe(path: Path) -> dict:
 
 def probe_duration(path: Path) -> float:
     return float(probe(path)["format"]["duration"])
+
+
+@lru_cache
+def has_filter(name: str) -> bool:
+    """Whether this ffmpeg build has a filter. GPU filters such as scale_cuda depend on how it was built."""
+    try:
+        proc = subprocess.run(["ffmpeg", "-hide_banner", "-filters"], capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return any(line.split()[1:2] == [name] for line in proc.stdout.splitlines())
 
 
 def _run_with_progress(cmd: list[str], cwd: Path | None, on_progress: Callable[[float], None], duration: float) -> str:

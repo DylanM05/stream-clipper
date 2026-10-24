@@ -51,6 +51,34 @@ class Paused(Exception):
     """Raised from a progress report to stop work that was paused, or taken back, in the app."""
 
 
+class Preview(threading.Thread):
+    """Makes a video's preview copy alongside its transcription and Claude's step, which don't need it. NVDEC
+    and NVENC are separate parts of the GPU from what Whisper uses, so the two barely slow each other down."""
+
+    def __init__(self, worker: "Worker", vod_id: int, ws: Workspace):
+        super().__init__(name=f"preview-{vod_id}", daemon=True)
+        self.worker, self.vod_id, self.ws = worker, vod_id, ws
+        self.fraction = 0.0
+        self.error: BaseException | None = None
+        self.stop = threading.Event()  # set when the video is paused
+        self._checked = 0.0
+
+    def run(self) -> None:
+        try:
+            render.render_proxy(self.ws, self.worker.settings, on_progress=self.report)
+            self.fraction = 1.0
+        except BaseException as e:  # passed on to the video's own thread
+            self.error = e
+
+    def report(self, fraction: float) -> None:
+        self.fraction = fraction
+        if self.stop.is_set():
+            raise Paused
+        if time.monotonic() - self._checked >= CHECK_EVERY_S:
+            self._checked = time.monotonic()
+            self.worker._check_paused(self.vod_id, "processing")
+
+
 class Worker:
     def __init__(self, settings: Settings):
         self.settings = settings
@@ -62,6 +90,9 @@ class Worker:
         )
         self.stopping = threading.Event()
         self._studio_checked = 0.0
+        # A preview still being made for a video that stopped for another reason (e.g. Claude's usage limit)
+        # carries on, and the video's next attempt picks it up rather than starting another.
+        self._previews: dict[int, Preview] = {}
 
     def run(self) -> None:
         self.recover()
@@ -175,9 +206,7 @@ class Worker:
             day = titles.format_date(titles.stream_date(meta.get("upload_date"), vod.created_at.date()))
             context = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
 
-            self._start(vod_id, "preparing", "processing")
-            render.render_proxy(ws, settings, on_progress=self._progress(vod_id, "processing"))
-
+            preview = self._preview(vod_id, ws)
             clips: list[Clip] = []
             episode_title = episode_summary = chapters = ""
             if mode in ("segment", "both"):
@@ -215,6 +244,7 @@ class Worker:
                     description="\n\n".join(p for p in (episode_summary or text, chapters) if p),
                 ))
 
+            self._wait_for_preview(vod_id, preview)
             added = self._add_clips(vod_id, clips, show)
             self._update_vod(vod_id, status="ready", progress=1)
             log.info("Video %d ready with %d clips", vod_id, len(clips))
@@ -222,6 +252,9 @@ class Worker:
                 self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
         except Paused:
             log.info("Video %d paused", vod_id)
+            if preview := self._previews.pop(vod_id, None):
+                preview.stop.set()
+                preview.join()  # so it's stopped before the video can start again
             self._update_vod(vod_id, status="queued", progress=0)
         except UsageLimitError as e:
             retry_at = e.resets_at or utcnow() + USAGE_LIMIT_RETRY
@@ -240,6 +273,26 @@ class Worker:
         """Begin a step of a video's processing, unless the video or that part of the work is paused."""
         self._check_paused(vod_id, part)
         self._update_vod(vod_id, status=status, progress=0, error="", retry_at=None)
+
+    def _preview(self, vod_id: int, ws: Workspace) -> Preview:
+        """Start making the preview copy in the background, or pick up the one an earlier attempt left running."""
+        self._check_paused(vod_id, "processing")
+        preview = self._previews.get(vod_id)
+        if not preview or not preview.is_alive() or preview.stop.is_set():
+            preview = self._previews[vod_id] = Preview(self, vod_id, ws)
+            preview.start()
+        return preview
+
+    def _wait_for_preview(self, vod_id: int, preview: Preview) -> None:
+        """Everything else is done: show the preview's progress until it's finished too."""
+        if preview.is_alive():
+            self._start(vod_id, "preparing", "processing")
+            while preview.is_alive():
+                self._update_vod(vod_id, progress=round(preview.fraction, 3))
+                preview.join(CHECK_EVERY_S)
+        self._previews.pop(vod_id, None)
+        if preview.error:
+            raise preview.error
 
     def _check_paused(self, vod_id: int, part: str) -> None:
         with Session(self.engine) as s:

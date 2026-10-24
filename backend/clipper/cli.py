@@ -178,6 +178,11 @@ def doctor() -> None:
         report(f"ffmpeg can encode with {settings.video_encoder}", True)
     except (ffmpeg.FFmpegError, FileNotFoundError) as e:
         report(f"ffmpeg can encode with {settings.video_encoder}", False, str(e).splitlines()[-1])
+    if settings.hwaccel == "cuda":
+        # Optional: without it, previews still work, shrinking each frame on the CPU.
+        gpu = render.gpu_proxy(settings)
+        typer.echo(f"{'OK  ' if gpu else 'INFO'}  previews made entirely on the GPU: "
+                   + ("yes" if gpu else "no, this ffmpeg has no scale_cuda filter, so previews shrink on the CPU (slower)"))
 
     try:
         import ctranslate2

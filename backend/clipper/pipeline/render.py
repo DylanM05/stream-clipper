@@ -96,7 +96,12 @@ def render_short(
 
 
 def render_proxy(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] | None = None) -> Path:
-    """A small copy of the whole video for previewing and trimming on a phone."""
+    """A small copy of the whole video for previewing and trimming on a phone.
+
+    With an NVIDIA GPU and an ffmpeg that has scale_cuda, every frame is decoded, shrunk and encoded on the
+    GPU without passing through the CPU, which is several times faster for a long stream. Otherwise the GPU
+    decodes and encodes and the CPU shrinks.
+    """
     if ws.proxy_mp4.exists():
         return ws.proxy_mp4
     source = ws.source.resolve()
@@ -105,20 +110,41 @@ def render_proxy(ws: Workspace, settings: Settings, on_progress: Callable[[float
         codec = ["-c:v", settings.video_encoder, "-preset", "p4", "-rc", "vbr", "-cq", "30", "-b:v", "0"]
     else:
         codec = ["-c:v", settings.video_encoder, "-preset", "veryfast", "-crf", "30"]
-    log.info("Making the preview copy")
+    rest = [
+        "-g", "60",  # a keyframe every 2 s keeps seeking snappy
+        "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp),
+    ]
+    duration = ffmpeg.probe_duration(source)
+    # Down to 30 fps first, so a 60 fps stream has only half its frames shrunk.
+    if gpu_proxy(settings):
+        log.info("Making the preview copy on the GPU")
+        try:
+            ffmpeg.run([
+                "-hwaccel", "cuda", "-hwaccel_output_format", "cuda", "-i", str(source),
+                "-vf", f"fps=30,scale_cuda=-2:{settings.proxy_height}:format=yuv420p", *codec, *rest,
+            ], on_progress=on_progress, duration=duration)
+            tmp.replace(ws.proxy_mp4)
+            return ws.proxy_mp4
+        except ffmpeg.FFmpegError as e:
+            log.warning("Making the preview on the GPU failed; shrinking on the CPU instead: %s", str(e).splitlines()[-1])
+    else:
+        log.info("Making the preview copy")
     _encode(
         settings,
         lambda hwaccel: [
             *(["-hwaccel", hwaccel] if hwaccel else []), "-i", str(source),
-            "-vf", f"scale=-2:{settings.proxy_height},fps=30", *codec, "-pix_fmt", "yuv420p",
-            "-g", "60",  # a keyframe every 2 s keeps seeking snappy
-            "-c:a", "aac", "-b:a", "96k", "-ac", "2", "-movflags", "+faststart", str(tmp),
+            "-vf", f"fps=30,scale=-2:{settings.proxy_height}", *codec, "-pix_fmt", "yuv420p", *rest,
         ],
         on_progress=on_progress,
-        duration=ffmpeg.probe_duration(source),
+        duration=duration,
     )
     tmp.replace(ws.proxy_mp4)
     return ws.proxy_mp4
+
+
+def gpu_proxy(settings: Settings) -> bool:
+    """Whether previews can be made entirely on the GPU."""
+    return settings.hwaccel == "cuda" and "nvenc" in settings.video_encoder and ffmpeg.has_filter("scale_cuda")
 
 
 def render_thumbnail(video: Path, t: float, out: Path) -> None:

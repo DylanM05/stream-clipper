@@ -1,3 +1,4 @@
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -463,6 +464,49 @@ def test_a_paused_clip_waits_while_others_render(settings, fake_pipeline, fake_r
     assert w.render_next_clip() is True
     assert w.render_next_clip() is False
     assert (get(settings, ClipRecord, held).status, get(settings, ClipRecord, other).status) == ("approved", "rendered")
+
+
+def test_the_preview_is_made_while_transcribing(settings, fake_pipeline, monkeypatch):
+    transcribing = threading.Event()
+
+    def proxy(ws, settings_, on_progress=None):
+        assert transcribing.wait(5), "the preview should be made alongside transcription"
+
+    def transcribe_run(*args, **kwargs):
+        transcribing.set()
+        return TRANSCRIPT
+
+    monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
+    monkeypatch.setattr(worker_module.transcribe, "run", transcribe_run)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    assert get(settings, Vod, vod_id).status == "ready"
+
+
+def test_a_failed_preview_fails_the_video_once_the_rest_is_done(settings, fake_pipeline, monkeypatch):
+    def proxy(ws, settings_, on_progress=None):
+        raise worker_module.render.ffmpeg.FFmpegError("ffmpeg exited with 1")
+
+    monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    vod = get(settings, Vod, vod_id)
+    assert (vod.status, vod.error) == ("failed", "FFmpegError: ffmpeg exited with 1")
+    assert fake_pipeline["segment"] == 1  # Claude's picks are saved, so a retry only redoes the preview
+
+
+def test_pausing_stops_the_preview(settings, fake_pipeline, monkeypatch):
+    vod_id = add_vod(settings, url="https://x.com/a/status/1", mode="whole")
+
+    def proxy(ws, settings_, on_progress=None):
+        set_paused(settings, vod_id)
+        on_progress(0.4)
+        raise AssertionError("the preview should have stopped")
+
+    monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
+    worker_module.Worker(settings).process_vod(vod_id)
+    vod = get(settings, Vod, vod_id)
+    assert (vod.status, vod.paused) == ("queued", True)
 
 
 def collect_notes(monkeypatch) -> list:

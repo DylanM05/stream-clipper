@@ -1,5 +1,6 @@
 import shutil
 import time
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,32 @@ def test_ffmpeg_stops_when_progress_reporting_raises(tmp_path):
         ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30", "-t", "600", "-c:v", "mpeg4",
                     str(tmp_path / "out.mp4")], on_progress=stop, duration=600)
     assert time.monotonic() - started < 20
+
+
+def test_previews_are_made_on_the_gpu_and_fall_back_to_shrinking_on_the_cpu(monkeypatch, tmp_path):
+    from clipper.workspace import Workspace, write_json
+
+    ws = Workspace.open(tmp_path, "vod")
+    write_json(ws.meta_json, {"source_path": str(ws.root / "source.mp4")})
+    runs = []
+
+    def fake_run(args, cwd=None, on_progress=None, duration=None):
+        runs.append(args[args.index("-vf") + 1])
+        if "scale_cuda" in args[args.index("-vf") + 1]:
+            raise ffmpeg.FFmpegError("No such filter: 'scale_cuda'")
+        Path(args[-1]).write_bytes(b"preview")
+
+    monkeypatch.setattr(ffmpeg, "run", fake_run)
+    monkeypatch.setattr(ffmpeg, "probe_duration", lambda path: 3600.0)
+    monkeypatch.setattr(ffmpeg, "has_filter", lambda name: True)
+    render.render_proxy(ws, Settings(hwaccel="cuda"))
+
+    # 30 fps first, so only half of a 60 fps stream's frames are shrunk
+    assert runs == ["fps=30,scale_cuda=-2:480:format=yuv420p", "fps=30,scale=-2:480"]
+    assert ws.proxy_mp4.read_bytes() == b"preview"
+
+    monkeypatch.setattr(ffmpeg, "has_filter", lambda name: False)
+    assert not render.gpu_proxy(Settings(hwaccel="cuda"))
 
 
 def test_falls_back_to_cpu_decoding_when_the_gpu_cant_decode(monkeypatch, tmp_path):
