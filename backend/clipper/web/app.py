@@ -100,6 +100,7 @@ class ClipOut(BaseModel):
     destination_id: int | None
     destination_name: str
     destination_url: str
+    playlist_id: str
     youtube_url: str
     updated_at: str
 
@@ -131,6 +132,8 @@ class ShowIn(BaseModel):
     clip_guidance: str = Field(default="", max_length=10000)
     clip_destination_id: int | None = None
     episode_destination_id: int | None = None
+    clip_playlist_id: str = Field(default="", max_length=64)
+    episode_playlist_id: str = Field(default="", max_length=64)
     max_chapters: int = Field(default=5, ge=0, le=100)
     max_shorts: int = Field(default=5, ge=0, le=100)
     auto_episode: Auto = "review"
@@ -149,6 +152,8 @@ class ShowPatch(BaseModel):
     clip_guidance: str | None = Field(default=None, max_length=10000)
     clip_destination_id: int | None = None
     episode_destination_id: int | None = None
+    clip_playlist_id: str | None = Field(default=None, max_length=64)
+    episode_playlist_id: str | None = Field(default=None, max_length=64)
     max_chapters: int | None = Field(default=None, ge=0, le=100)
     max_shorts: int | None = Field(default=None, ge=0, le=100)
     auto_episode: Auto | None = None
@@ -175,6 +180,18 @@ class DestinationOut(BaseModel):
 
 class ConnectRequest(BaseModel):
     origin: str = Field(max_length=200)  # the app's address in your browser, e.g. https://server.tailnet.ts.net
+
+
+class PlaylistOut(BaseModel):
+    id: str
+    title: str
+    privacy: str
+    count: int
+
+
+class NewPlaylist(BaseModel):
+    title: str = Field(min_length=1, max_length=150)
+    privacy: Visibility = "public"
 
 
 class UploadRequest(BaseModel):
@@ -268,6 +285,8 @@ class ShowOut(BaseModel):
     clip_guidance: str
     clip_destination_id: int | None
     episode_destination_id: int | None
+    clip_playlist_id: str
+    episode_playlist_id: str
     max_chapters: int
     max_shorts: int
     auto_episode: str
@@ -297,6 +316,7 @@ class ClipPatch(BaseModel):
     end: float | None = None
     make_short: bool | None = None
     destination_id: int | None = None
+    playlist_id: str | None = Field(default=None, max_length=64)  # cleared when the channel changes, unless given
 
 
 class Login(BaseModel):
@@ -700,6 +720,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if "episode_template" in changes:
             changes["episode_template"] = valid_template(changes["episode_template"] or "", optional=True)
         check_destinations(s, changes.get("clip_destination_id"), changes.get("episode_destination_id"))
+        for kind in ("clip", "episode"):  # a playlist belongs to its channel
+            field = f"{kind}_destination_id"
+            if field in changes and changes[field] != getattr(show, field):
+                changes.setdefault(f"{kind}_playlist_id", "")
         for k, v in changes.items():
             setattr(show, k, v.strip() if k == "name" else v)
         s.add(show)
@@ -757,12 +781,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for show in s.exec(select(Show)):
             if dest_id in (show.clip_destination_id, show.episode_destination_id):
                 if show.clip_destination_id == dest_id:
-                    show.clip_destination_id = None
+                    show.clip_destination_id, show.clip_playlist_id = None, ""
                 if show.episode_destination_id == dest_id:
-                    show.episode_destination_id = None
+                    show.episode_destination_id, show.episode_playlist_id = None, ""
                 s.add(show)
         for clip in s.exec(select(ClipRecord).where(ClipRecord.destination_id == dest_id)):
-            clip.destination_id = None
+            clip.destination_id, clip.playlist_id = None, ""
             s.add(clip)
         forget_sign_in(s, dest)
         s.flush()
@@ -830,6 +854,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         s.refresh(dest)
         return destination_out(dest)
+
+    def connected(s: Session, dest_id: int) -> Destination:
+        dest = found(s, Destination, dest_id, "YouTube channel")
+        if not dest.youtube_token:
+            raise HTTPException(409, "Playlists need this channel connected to the YouTube API (Shows → YouTube channels)")
+        return dest
+
+    @app.get("/api/destinations/{dest_id}/playlists")
+    def list_playlists(dest_id: int, s: Session = Depends(db)) -> list[PlaylistOut]:
+        dest = connected(s, dest_id)
+        try:
+            return [PlaylistOut(**vars(p)) for p in google().playlists(dest.youtube_token)]
+        except YouTubeError as e:
+            raise HTTPException(502, str(e)) from None
+
+    @app.post("/api/destinations/{dest_id}/playlists", status_code=201)
+    def create_playlist(dest_id: int, body: NewPlaylist, s: Session = Depends(db)) -> PlaylistOut:
+        dest = connected(s, dest_id)
+        try:
+            return PlaylistOut(**vars(google().create_playlist(dest.youtube_token, body.title.strip(), body.privacy)))
+        except YouTubeError as e:
+            raise HTTPException(502, str(e)) from None
 
     @app.post("/api/shows/{show_id}/channels", status_code=201)
     def add_channel(show_id: int, body: ChannelIn, s: Session = Depends(db)) -> ChannelOut:
@@ -930,6 +976,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if changes.get("make_short", clip.make_short) and end - start > MAX_SHORT_S:
             raise HTTPException(422, "Shorts can be at most 3 minutes long")
         check_destinations(s, changes.get("destination_id"))
+        if changes.get("destination_id", clip.destination_id) != clip.destination_id:
+            changes.setdefault("playlist_id", "")  # a playlist belongs to its channel
         changed = {k: v for k, v in changes.items() if getattr(clip, k) != v}
         if not changed:
             return clip_out(clip, vod)

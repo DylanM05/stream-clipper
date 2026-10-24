@@ -14,19 +14,24 @@ from clipper.config import Settings
 from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine
 from clipper.web import app as web_app
 from clipper.youtube import (
-    TOKEN_URL, UPLOAD_URL, Google, Uploaded, Video, YouTubeError, clean_description, sign_in_url,
+    PLAYLIST_ITEMS_URL, PLAYLISTS_URL, TOKEN_URL, UPLOAD_URL, Google, Playlist, Uploaded, Video, YouTubeError,
+    clean_description, sign_in_url,
 )
 
 
 class FakeYouTube:
     """Google's token endpoint and YouTube's resumable uploads, kept in memory."""
 
-    def __init__(self, take_at_most: int | None = None, fail_puts: int = 0, privacy: str | None = None):
+    def __init__(self, take_at_most: int | None = None, fail_puts: int = 0, privacy: str | None = None,
+                 can_manage: bool = True):
         self.take_at_most = take_at_most  # bytes kept per PUT, like a connection that drops partway
         self.fail_puts = fail_puts  # PUTs answered with 503 first
         self.privacy = privacy  # what YouTube sets, if not what was asked for
+        self.can_manage = can_manage  # signed in with the scope that manages playlists
         self.sessions: dict[str, dict] = {}
         self.ranges: list[str] = []
+        self.playlists = [_playlist("PL1", "Pre-shows", 3), _playlist("PL2", "Full episodes", 12)]
+        self.playlist_items: list[dict] = []
 
     def client(self) -> httpx.Client:
         return httpx.Client(transport=httpx.MockTransport(self.handle))
@@ -44,6 +49,8 @@ class FakeYouTube:
                 return httpx.Response(400, json={"error": "invalid_grant"})
             return httpx.Response(200, json={"access_token": "access", "expires_in": 3599})
         assert request.headers["authorization"] == "Bearer access"
+        if url.startswith((PLAYLIST_ITEMS_URL, PLAYLISTS_URL)):
+            return self.handle_playlists(request, url)
         if url.startswith(UPLOAD_URL):
             metadata = json.loads(request.content)
             if metadata["snippet"]["title"] == "Over quota":
@@ -69,6 +76,28 @@ class FakeYouTube:
         headers = {"Range": f"bytes=0-{len(session['data']) - 1}"} if session["data"] else {}
         return httpx.Response(308, headers=headers)
 
+    def handle_playlists(self, request: httpx.Request, url: str) -> httpx.Response:
+        if request.method == "GET":  # one playlist per page, to exercise paging
+            i = int(request.url.params.get("pageToken") or 0)
+            body = {"items": self.playlists[i:i + 1]}
+            if i + 1 < len(self.playlists):
+                body["nextPageToken"] = str(i + 1)
+            return httpx.Response(200, json=body)
+        if not self.can_manage:
+            return httpx.Response(403, json={"error": {"code": 403, "message": "Request had insufficient authentication scopes.",
+                                                       "errors": [{"reason": "insufficientPermissions"}]}})
+        body = json.loads(request.content)
+        if url.startswith(PLAYLIST_ITEMS_URL):
+            self.playlist_items.append(body["snippet"])
+            return httpx.Response(200, json={"id": "item1", "snippet": body["snippet"]})
+        playlist = _playlist(f"PL{len(self.playlists) + 1}", body["snippet"]["title"], 0, body["status"]["privacyStatus"])
+        self.playlists.append(playlist)
+        return httpx.Response(200, json=playlist)
+
+
+def _playlist(id_: str, title: str, count: int, privacy: str = "public") -> dict:
+    return {"id": id_, "snippet": {"title": title}, "status": {"privacyStatus": privacy}, "contentDetails": {"itemCount": count}}
+
 
 def google(fake: FakeYouTube, waits: list | None = None) -> Google:
     return Google("client", "secret", http=fake.client(), chunk_bytes=4, sleep=(waits if waits is not None else []).append)
@@ -85,7 +114,25 @@ def test_sign_in_asks_for_a_lasting_sign_in_and_which_account():
     query = parse_qs(urlparse(sign_in_url("client", "https://app.example/api/youtube/callback", "state1")).query)
     assert query["access_type"] == ["offline"] and query["state"] == ["state1"]
     assert "select_account" in query["prompt"][0] and "consent" in query["prompt"][0]
-    assert "youtube.upload" in query["scope"][0]
+    scopes = query["scope"][0].split()
+    assert "https://www.googleapis.com/auth/youtube.upload" in scopes
+    assert "https://www.googleapis.com/auth/youtube" in scopes  # playlists
+
+
+def test_playlists_are_listed_created_and_added_to():
+    fake = FakeYouTube()
+    g = google(fake)
+    assert g.playlists("refresh") == [Playlist("PL1", "Pre-shows", "public", 3), Playlist("PL2", "Full episodes", "public", 12)]
+    assert g.create_playlist("refresh", "Kino <Casino> clips", "unlisted") == Playlist("PL3", "Kino ‹Casino› clips", "unlisted", 0)
+    g.add_to_playlist("refresh", "PL3", "vid123")
+    assert fake.playlist_items == [{"playlistId": "PL3", "resourceId": {"kind": "youtube#video", "videoId": "vid123"}}]
+
+
+def test_a_channel_connected_before_playlists_is_asked_to_reconnect():
+    g = google(FakeYouTube(can_manage=False))
+    assert len(g.playlists("refresh")) == 2  # reading them worked with the old sign-in
+    with pytest.raises(YouTubeError, match="Tap Reconnect"):
+        g.add_to_playlist("refresh", "PL1", "vid123")
 
 
 def test_uploads_in_chunks_with_progress_and_returns_the_link(video):
@@ -181,9 +228,10 @@ def clip_id(settings):
 
 
 class FakeGoogle:
-    def __init__(self, privacy: str | None = None, error: YouTubeError | None = None):
-        self.privacy, self.error = privacy, error
+    def __init__(self, privacy: str | None = None, error: YouTubeError | None = None, playlist_error: YouTubeError | None = None):
+        self.privacy, self.error, self.playlist_error = privacy, error, playlist_error
         self.calls = []
+        self.added = []
 
     def upload(self, refresh_token, video, on_progress=lambda _: None, session_url="", on_session=lambda _: None):
         self.calls.append((refresh_token, video, session_url))
@@ -192,6 +240,11 @@ class FakeGoogle:
         on_session("https://upload.example/session/1")
         on_progress(0.5)
         return Uploaded("vid123", "https://youtu.be/vid123", self.privacy or video.visibility)
+
+    def add_to_playlist(self, refresh_token, playlist_id, video_id):
+        if self.playlist_error:
+            raise self.playlist_error
+        self.added.append((refresh_token, playlist_id, video_id))
 
 
 def get(settings, model, id_):
@@ -216,6 +269,32 @@ def test_worker_uploads_connected_channels_through_the_api(settings, clip_id):
     assert job.session_url  # kept, so a retry could carry on
     assert get(settings, ClipRecord, clip_id).status == "uploaded"
     assert get(settings, Destination, 1).youtube_error == ""  # the sign-in evidently works
+
+
+def set_playlist(settings, clip_id, playlist_id="PL1"):
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.playlist_id = playlist_id
+        s.add_all([clip, UploadJob(clip_id=clip_id)])
+        s.commit()
+
+
+def test_uploads_go_into_the_clips_playlist(settings, clip_id):
+    set_playlist(settings, clip_id)
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    assert w.youtube.added == [("refresh", "PL1", "vid123")]
+    assert get(settings, UploadJob, 1).error == ""
+
+
+def test_a_playlist_that_cant_take_it_leaves_the_upload_done_with_a_note(settings, clip_id):
+    set_playlist(settings, clip_id)
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle(playlist_error=YouTubeError("Tap Reconnect on it under Shows → YouTube channels."))
+    w.upload_next()
+    job = get(settings, UploadJob, 1)
+    assert job.status == "done" and job.error == "It isn't in the playlist: Tap Reconnect on it under Shows → YouTube channels."
 
 
 def test_a_video_youtube_kept_private_says_so(settings, clip_id):
@@ -313,6 +392,12 @@ class FakeGoogleSignIn:
     def revoke(self, token):
         self.revoked.append(token)
 
+    def playlists(self, refresh_token):
+        return [Playlist("PL1", "Pre-shows", "public", 3)]
+
+    def create_playlist(self, refresh_token, title, privacy):
+        return Playlist("PL2", title, privacy, 0)
+
 
 @pytest.fixture
 def app_client(settings, monkeypatch):
@@ -367,6 +452,37 @@ def test_picking_the_wrong_channel_or_a_forged_state_connects_nothing(settings, 
 
     cancelled = app_client.get("/api/youtube/callback", params={"state": _connect(app_client), "error": "access_denied"})
     assert "cancelled" in cancelled.text
+
+
+def test_picking_playlists_and_keeping_them_with_their_channel(settings, app_client):
+    assert app_client.get("/api/destinations/1/playlists").status_code == 409  # not connected yet
+    with Session(get_engine(settings)) as s:
+        dest = s.get(Destination, 1)
+        dest.youtube_token = "refresh"
+        s.add_all([dest, Destination(name="Full episodes")])
+        s.commit()
+    assert app_client.get("/api/destinations/1/playlists").json() == [
+        {"id": "PL1", "title": "Pre-shows", "privacy": "public", "count": 3},
+    ]
+    created = app_client.post("/api/destinations/1/playlists", json={"title": " Kino clips ", "privacy": "unlisted"}).json()
+    assert created == {"id": "PL2", "title": "Kino clips", "privacy": "unlisted", "count": 0}
+
+    show = app_client.post("/api/shows", json={"name": "Kino", "clip_destination_id": 1, "clip_playlist_id": "PL2",
+                                               "episode_destination_id": 1, "episode_playlist_id": "PL1"}).json()
+    show = app_client.patch(f"/api/shows/{show['id']}", json={"episode_destination_id": 2}).json()
+    assert (show["clip_playlist_id"], show["episode_playlist_id"]) == ("PL2", "")  # the episode playlist was on channel 1
+
+    with Session(get_engine(settings)) as s:
+        vod = Vod(url="https://kick.com/kino/videos/1", status="ready", duration=600)
+        s.add(vod)
+        s.commit()
+        clip = ClipRecord(vod_id=vod.id, key="hl01", kind="highlight", start=1, end=40, title="t", destination_id=1,
+                          playlist_id="PL2")
+        s.add(clip)
+        s.commit()
+        clip_id = clip.id
+    assert app_client.patch(f"/api/clips/{clip_id}", json={"title": "New"}).json()["playlist_id"] == "PL2"
+    assert app_client.patch(f"/api/clips/{clip_id}", json={"destination_id": 2}).json()["playlist_id"] == ""
 
 
 def test_the_privacy_policy_google_links_to_needs_no_login(settings):

@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type Destination, type UploadJob, type Visibility } from "../api";
 import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, UploadIcon } from "../icons";
 import { ago, cn, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, usePoll } from "../lib";
+import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, ProgressBar, Screen, useToast } from "../ui";
 
 const MAX_SHARE_BYTES = 1e9; // bigger than this is a job for a computer
@@ -45,6 +46,13 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
           value={clip.destination_id}
           destinations={destinations}
           onChange={(destination_id) => act(() => api.updateClip(clip.id, { destination_id }), "Channel changed")}
+        />
+        <PlaylistSelect
+          destination={destination}
+          value={clip.playlist_id}
+          onChange={(playlist_id) =>
+            act(() => api.updateClip(clip.id, { playlist_id }), playlist_id ? "It goes into that playlist" : "No playlist")
+          }
         />
         {destination ? (
           <a

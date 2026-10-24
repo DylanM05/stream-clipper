@@ -293,6 +293,7 @@ class Worker:
                 if c.id in existing:
                     continue
                 destination = (show.episode_destination_id if c.kind == "whole" else show.clip_destination_id) if show else None
+                playlist = (show.episode_playlist_id if c.kind == "whole" else show.clip_playlist_id) if show else ""
                 if c.id not in offered:
                     status = "extra"
                 elif show and show.auto_for(c.kind) != "review":
@@ -302,7 +303,7 @@ class Worker:
                 s.add(ClipRecord(
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
                     description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
-                    make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination,
+                    make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
                     status=status, reviewed_at=utcnow() if status == "approved" else None,
                 ))
                 added[status] = added.get(status, 0) + 1
@@ -488,6 +489,9 @@ class Worker:
                 upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                                 channel_id=dest.channel_id if dest else "")
                 url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
+                if clip.playlist_id:
+                    note = ("Playlists only work for channels connected to the YouTube API, so add it to the playlist "
+                            "in YouTube Studio.")
         except StudioError as e:
             log.warning("Upload %d failed: %s", job_id, e)
             self._upload_failed(job, clip, str(e), screenshot=e.screenshot, youtube_url=e.link)
@@ -528,8 +532,9 @@ class Worker:
             log.info("Deleted %s now that it's uploaded", Path(path).name)
 
     def _upload_through_api(self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path) -> tuple[str, str]:
-        """Upload with the channel's Google sign-in. Returns the link, and a note if YouTube didn't use the
-        visibility asked for (what Google does to uploads from projects it hasn't audited)."""
+        """Upload with the channel's Google sign-in, then add it to the clip's playlist. Returns the link, and a
+        note if YouTube didn't use the visibility asked for (what Google does to uploads from projects it hasn't
+        audited) or the playlist couldn't take it."""
         video = Video(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                       category_id=self.settings.youtube_category_id, short=job.which == "short")
         # An earlier attempt's session only carries on if the same file is going to the same place, the same way.
@@ -542,12 +547,18 @@ class Worker:
             session_url=job.session_url if job.session_key == key else "",
             on_session=lambda url: self._update_job(job.id, session_url=url, session_key=key),
         )
-        note = ""
+        notes = []
         if result.privacy != job.visibility:
-            note = (f"YouTube made this video {result.privacy}, not {job.visibility}. If that happens to every API "
-                    "upload, the Google Cloud project needs YouTube's API audit (see the README). Change it in "
-                    "YouTube Studio for now.")
-        return result.url, note
+            notes.append(f"YouTube made this video {result.privacy}, not {job.visibility}. If that happens to every API "
+                         "upload, the Google Cloud project needs YouTube's API audit (see the README). Change it in "
+                         "YouTube Studio for now.")
+        if clip.playlist_id:
+            try:
+                self.youtube.add_to_playlist(dest.youtube_token, clip.playlist_id, result.video_id)
+            except YouTubeError as e:
+                log.warning("Couldn't add upload %d to its playlist: %s", job.id, e)
+                notes.append(f"It isn't in the playlist: {e}")
+        return result.url, " ".join(notes)
 
     def _update_destination(self, dest_id: int, **fields) -> None:
         with Session(self.engine) as s:

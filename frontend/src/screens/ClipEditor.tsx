@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "
 import { api, errorText, media, type Clip, type ClipPatch, type Line } from "../api";
 import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, TrashIcon, UploadIcon, VolumeIcon } from "../icons";
 import { clamp, clock, cn, go, goBack, length, loadSetting, saveSetting, usePoll } from "../lib";
+import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, useToast } from "../ui";
 
 const MAX_SHORT_S = 180;
@@ -15,6 +16,7 @@ const toDraft = (c: Clip): Draft => ({
   end: c.end,
   make_short: c.make_short,
   destination_id: c.destination_id,
+  playlist_id: c.playlist_id,
 });
 // Changes to these need a new render; the title, description and channel don't.
 const RENDER_FIELDS = ["start", "end", "make_short"];
@@ -97,6 +99,13 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
     seek(from);
     stopAt.current = to;
     void v.play();
+  };
+  // Jump back or ahead while watching. It keeps playing, even past the end of a preview.
+  const skip = (seconds: number) => {
+    const v = video.current;
+    if (!v) return;
+    stopAt.current = null;
+    seek(v.currentTime + seconds);
   };
   const togglePlay = () => {
     const v = video.current;
@@ -244,6 +253,13 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
           <Button onClick={() => playRange(draft.start, Math.min(draft.end, draft.start + 5))}>First 5s</Button>
           <Button onClick={() => playRange(Math.max(draft.start, draft.end - 5), draft.end)}>Last 5s</Button>
         </div>
+        <div className="-mt-3 grid grid-cols-4 gap-2">
+          {[-10, -5, 5, 10].map((seconds) => (
+            <Button key={seconds} onClick={() => skip(seconds)}>
+              {seconds < 0 ? `« ${-seconds}s` : `${seconds}s »`}
+            </Button>
+          ))}
+        </div>
 
         <div className="flex items-center gap-2 rounded-2xl bg-zinc-900 py-1.5 pl-1.5 pr-4 ring-1 ring-white/5">
           <button
@@ -329,7 +345,12 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
           <DestinationSelect
             value={draft.destination_id}
             destinations={destinations}
-            onChange={(destination_id) => setDraft((d) => ({ ...d, destination_id }))}
+            onChange={(destination_id) => setDraft((d) => ({ ...d, destination_id, playlist_id: "" }))}
+          />
+          <PlaylistSelect
+            destination={destinations?.find((d) => d.id === draft.destination_id)}
+            value={draft.playlist_id}
+            onChange={(playlist_id) => setDraft((d) => ({ ...d, playlist_id }))}
           />
         </Field>
 

@@ -98,6 +98,9 @@ class Show(SQLModel, table=True):
     clip_guidance: str = ""  # for Claude: what the chapters and highlights should be
     clip_destination_id: int | None = Field(default=None, foreign_key="destination.id")
     episode_destination_id: int | None = Field(default=None, foreign_key="destination.id")
+    # YouTube playlists (PL… ids) on those channels that uploads are added to; empty means none.
+    clip_playlist_id: str = ""
+    episode_playlist_id: str = ""
     # How many of each stream's chapters and highlights are offered, best-scored first; the rest are extras.
     max_chapters: int = 5
     max_shorts: int = 5
@@ -163,6 +166,7 @@ class ClipRecord(SQLModel, table=True):
     video_path: str = ""
     short_path: str = ""
     destination_id: int | None = Field(default=None, foreign_key="destination.id")  # where it gets uploaded
+    playlist_id: str = ""  # a playlist on that channel to add it to, through the YouTube API
     youtube_url: str = ""  # once uploaded
     uploaded_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)

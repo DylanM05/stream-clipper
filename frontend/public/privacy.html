@@ -26,7 +26,8 @@
 
     <h2>YouTube API Services</h2>
     <p>
-      Stream Clipper uses YouTube API Services to upload videos. By connecting a YouTube channel to it, you agree to the
+      Stream Clipper uses YouTube API Services to upload videos and add them to playlists. By connecting a YouTube channel
+      to it, you agree to the
       <a href="https://www.youtube.com/t/terms">YouTube Terms of Service</a>. Google's handling of your data is covered by
       the <a href="https://policies.google.com/privacy">Google Privacy Policy</a>.
     </p>
@@ -35,19 +36,23 @@
     <p>When a channel is connected through Google's sign-in, Stream Clipper gets permission to:</p>
     <ul>
       <li><b>Upload videos</b> to that channel, with the title, description and visibility set in the app.</li>
+      <li>
+        <b>See and create the channel's playlists, and add videos to them</b>, so uploads can go into the playlist picked
+        in the app. Google grants this as permission to manage the YouTube account; Stream Clipper uses it for nothing else.
+      </li>
       <li><b>See the channel's ID and name</b>, to check that the right channel was connected.</li>
     </ul>
-    <p>It doesn't read anything else from your Google or YouTube account.</p>
+    <p>It doesn't read anything else from your Google or YouTube account, and never changes or deletes existing videos.</p>
 
     <h2>What it stores</h2>
     <ul>
       <li>
         A Google sign-in token for each connected channel, plus the channel's ID and name, kept in a database on the
-        operator's server. The token is used only to upload videos the operator starts.
+        operator's server. The token is used only to upload videos the operator starts and manage their playlists.
       </li>
       <li>
-        The videos it uploads, with their titles and descriptions. Video files are deleted from the server a few days after
-        they're uploaded; titles, descriptions and links to the uploaded videos are kept as a record.
+        The videos it uploads, with their titles and descriptions. Video files are deleted from the server soon after they're
+        uploaded; titles, descriptions and links to the uploaded videos are kept as a record.
       </li>
       <li>One cookie that keeps the operator signed in to the app.</li>
     </ul>

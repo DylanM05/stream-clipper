@@ -14,6 +14,7 @@ import {
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, cn, copyText, go, length, titleDate, usePoll } from "../lib";
+import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
 
@@ -377,6 +378,8 @@ const BLANK: ShowFields = {
   clip_guidance: "",
   clip_destination_id: null,
   episode_destination_id: null,
+  clip_playlist_id: "",
+  episode_playlist_id: "",
   max_chapters: 5,
   max_shorts: 5,
   auto_episode: "review",
@@ -483,12 +486,30 @@ function ShowForm({ show, destinations }: { show: Show | null; destinations: Des
       <div className="grid gap-4 sm:grid-cols-2">
         {hasEpisode(fields.mode) && (
           <Field label="Full episodes go to">
-            <DestinationSelect value={fields.episode_destination_id} destinations={destinations} onChange={(v) => set({ episode_destination_id: v })} />
+            <DestinationSelect
+              value={fields.episode_destination_id}
+              destinations={destinations}
+              onChange={(v) => set({ episode_destination_id: v, episode_playlist_id: "" })}
+            />
+            <PlaylistSelect
+              destination={destinations?.find((d) => d.id === fields.episode_destination_id)}
+              value={fields.episode_playlist_id}
+              onChange={(episode_playlist_id) => set({ episode_playlist_id })}
+            />
           </Field>
         )}
         {hasClips(fields.mode) && (
           <Field label="Clips go to">
-            <DestinationSelect value={fields.clip_destination_id} destinations={destinations} onChange={(v) => set({ clip_destination_id: v })} />
+            <DestinationSelect
+              value={fields.clip_destination_id}
+              destinations={destinations}
+              onChange={(v) => set({ clip_destination_id: v, clip_playlist_id: "" })}
+            />
+            <PlaylistSelect
+              destination={destinations?.find((d) => d.id === fields.clip_destination_id)}
+              value={fields.clip_playlist_id}
+              onChange={(clip_playlist_id) => set({ clip_playlist_id })}
+            />
           </Field>
         )}
       </div>

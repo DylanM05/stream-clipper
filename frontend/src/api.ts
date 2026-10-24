@@ -71,6 +71,7 @@ export interface Clip {
   destination_id: number | null;
   destination_name: string;
   destination_url: string;
+  playlist_id: string; // a playlist on that channel, or ""
   youtube_url: string;
   updated_at: string;
 }
@@ -81,7 +82,17 @@ export interface Line {
   text: string;
 }
 
-export type ClipPatch = Partial<Pick<Clip, "title" | "description" | "start" | "end" | "make_short" | "destination_id">>;
+export type ClipPatch = Partial<
+  Pick<Clip, "title" | "description" | "start" | "end" | "make_short" | "destination_id" | "playlist_id">
+>;
+
+/** A playlist on a YouTube channel connected to the API. */
+export interface Playlist {
+  id: string;
+  title: string;
+  privacy: string;
+  count: number;
+}
 
 /** A YouTube channel that videos get uploaded to. */
 export interface Destination {
@@ -146,6 +157,8 @@ export interface Show {
   clip_guidance: string;
   clip_destination_id: number | null;
   episode_destination_id: number | null;
+  clip_playlist_id: string; // on the clips' channel; "" for none
+  episode_playlist_id: string;
   max_chapters: number; // offered per stream, best first; the rest are extras
   max_shorts: number;
   auto_episode: Auto;
@@ -273,6 +286,9 @@ export const api = {
   connectDestination: (id: number) =>
     post<{ url: string }>(`/api/destinations/${id}/connect`, { origin: location.origin }),
   disconnectDestination: (id: number) => post<Destination>(`/api/destinations/${id}/disconnect`),
+  playlists: (destId: number) => request<Playlist[]>(`/api/destinations/${destId}/playlists`),
+  createPlaylist: (destId: number, title: string, privacy: Visibility) =>
+    post<Playlist>(`/api/destinations/${destId}/playlists`, { title, privacy }),
 
   shows: () => request<Show[]>("/api/shows"),
   show: (id: number) => request<Show>(`/api/shows/${id}`),

@@ -8,6 +8,7 @@ How it fits together:
   app keeps the refresh token that comes back (Destination.youtube_token) and the worker uploads with it.
 - Uploads use YouTube's resumable protocol in chunks, so progress shows in the app and a dropped
   connection or a worker restart carries on from the bytes YouTube already has.
+- An upload can then be added to one of the channel's playlists, picked (or created) in the app.
 
 Google used to lock every upload from a project it hadn't audited to private. Its docs now say that no
 longer happens. If it does anyway, `Uploaded.privacy` shows what YouTube actually set.
@@ -29,10 +30,13 @@ AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
+PLAYLISTS_URL = "https://www.googleapis.com/youtube/v3/playlists"
+PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 CALLBACK_PATH = "/api/youtube/callback"
-# Upload videos, and see which channel a sign-in is for.
-SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly"
+# Upload videos; see which channel a sign-in is for and manage its playlists, which only the broad
+# "youtube" scope allows. Channels connected before playlists existed only have youtube.readonly.
+SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube"
 
 CHUNK_BYTES = 32 * 1024 * 1024  # chunks must be a multiple of 256 KiB; progress is reported after each
 RETRYABLE = {500, 502, 503, 504}
@@ -49,6 +53,9 @@ REASONS = {
                            "lifts within 24 hours of the earlier uploads; retry then.",
     "accessNotConfigured": "The YouTube Data API isn't turned on in the Google Cloud project. Enable it there, then retry.",
     "youtubeSignupRequired": "The Google account this channel was connected with has no YouTube channel. Connect it again.",
+    "insufficientPermissions": "This channel was connected before the app could manage playlists. Tap Reconnect on it "
+                               "under Shows → YouTube channels.",
+    "playlistNotFound": "That playlist isn't on this channel (any more). Pick another one.",
 }
 SIGNED_OUT = ("This channel's YouTube sign-in has expired or was removed. Connect it again under "
               "Shows → YouTube channels, then retry.")
@@ -83,6 +90,14 @@ class Uploaded:
     video_id: str
     url: str
     privacy: str  # what YouTube set, which isn't always what was asked for
+
+
+@dataclass
+class Playlist:
+    id: str  # PL…
+    title: str
+    privacy: str
+    count: int  # videos in it
 
 
 def sign_in_url(client_id: str, redirect_uri: str, state: str) -> str:
@@ -157,6 +172,38 @@ class Google:
             self.http.post(REVOKE_URL, data={"token": refresh_token})
         except httpx.HTTPError as e:
             log.warning("Couldn't revoke a YouTube sign-in: %s", e)
+
+    # --- Playlists ---
+
+    def playlists(self, refresh_token: str) -> list[Playlist]:
+        """The channel's playlists, in YouTube's order."""
+        auth = _Auth(self, refresh_token)
+        found: list[Playlist] = []
+        page = ""
+        while len(found) < 500:
+            params = {"part": "snippet,status,contentDetails", "mine": "true", "maxResults": 50}
+            body = self._call("GET", PLAYLISTS_URL, auth, params={**params, "pageToken": page} if page else params)
+            found += [_playlist(item) for item in body.get("items") or []]
+            if not (page := body.get("nextPageToken")):
+                break
+        return found
+
+    def create_playlist(self, refresh_token: str, title: str, privacy: str) -> Playlist:
+        body = self._call("POST", PLAYLISTS_URL, _Auth(self, refresh_token), params={"part": "snippet,status"},
+                          json={"snippet": {"title": clean_title(title)}, "status": {"privacyStatus": privacy}})
+        return _playlist(body)
+
+    def add_to_playlist(self, refresh_token: str, playlist_id: str, video_id: str) -> None:
+        resource = {"kind": "youtube#video", "videoId": video_id}
+        self._call("POST", PLAYLIST_ITEMS_URL, _Auth(self, refresh_token), params={"part": "snippet"},
+                   json={"snippet": {"playlistId": playlist_id, "resourceId": resource}})
+
+    def _call(self, method: str, url: str, auth: "_Auth", **kwargs) -> dict:
+        """A one-off request as the channel; a temporary failure is just an error to try again later."""
+        try:
+            return _json(self._request(method, url, auth, headers={}, **kwargs))
+        except _Retry as e:
+            raise YouTubeError(f"Couldn't reach YouTube ({e}). Try again.") from e
 
     # --- Uploading ---
 
@@ -294,6 +341,15 @@ class _Auth:
     def refresh(self) -> None:
         self.token = self.google._token({"grant_type": "refresh_token", "refresh_token": self.refresh_token})["access_token"]
         self.fetched = time.monotonic()
+
+
+def _playlist(resource: dict) -> Playlist:
+    return Playlist(
+        id=resource["id"],
+        title=(resource.get("snippet") or {}).get("title") or "",
+        privacy=(resource.get("status") or {}).get("privacyStatus") or "",
+        count=(resource.get("contentDetails") or {}).get("itemCount") or 0,
+    )
 
 
 def _next_byte(res: httpx.Response) -> int:
