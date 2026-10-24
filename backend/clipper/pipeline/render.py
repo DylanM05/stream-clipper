@@ -73,7 +73,8 @@ def render_short(
         video = (
             "[0:v]split=2[bg][fg];"
             "[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
-            "boxblur=8:2,scale=1080:1920,eq=brightness=-0.06[bgb];"
+            # Muted and darkened, so a bright patch of the stream (a green screen, say) doesn't glare.
+            "boxblur=8:2,scale=1080:1920,eq=brightness=-0.15:saturation=0.4[bgb];"
             "[fg]scale=1080:-2[fgs];"
             "[bgb][fgs]overlay=(W-w)/2:(H-h)/2"
         )
