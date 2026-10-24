@@ -20,11 +20,13 @@ from playwright.sync_api import Page, sync_playwright
 
 from .studio import NOT_RUNNING, X_SIGNED_IN_COOKIES, signed_in
 
-TIMELINE = re.compile(r"/i/api/graphql/[^/]+/UserTweets\b")  # the profile's posts, as X's page loads them
+# X's page loads its data from these, each named after what it fetches (the posts came from "UserTweets").
+GRAPHQL = re.compile(r"/graphql/[^/?]+/(\w+)")
 SIGNED_OUT = (
     "The upload browser isn't signed in to X. Open it, sign in at x.com with a spare X account (not your main "
     "one), then tap Check."
 )
+TOO_OFTEN = "X says the account in the upload browser is looking at profiles too often. It tries again on the next check."
 
 
 class XError(RuntimeError):
@@ -61,27 +63,54 @@ def video_posts(cdp_url: str, handle: str) -> list[Post]:
         raise XError(f"Lost the upload browser ({e})".splitlines()[0][:500]) from e
 
 
-def read_profile(page: Page, handle: str, wait_s: float = 30) -> dict:
-    """Open the profile and return the posts X's page loads for it."""
+def read_profile(page: Page, handle: str, wait_s: float = 45) -> list[dict]:
+    """Open the profile and return the data X's page loaded with posts in it.
+
+    Whichever request brings the posts counts, not one by name, since X renames them now and then. When none
+    does, the error says what X did load, which shows what changed.
+    """
     loaded = []
-    page.on("response", lambda r: loaded.append(r) if TIMELINE.search(r.url) else None)
+    page.on("response", lambda r: loaded.append(r) if GRAPHQL.search(r.url) else None)
+    page.bring_to_front()  # in case X holds back a timeline in a tab that isn't showing
     page.goto(f"https://x.com/{handle}", wait_until="domcontentloaded", timeout=60_000)
     deadline = time.monotonic() + wait_s
-    while not loaded:
+    found, checked = [], 0
+    while True:
+        for response in loaded[checked:]:
+            checked += 1
+            if response.ok and (data := _json(response)) is not None and any(_tweets(data)):
+                found.append(data)
+        if found:
+            return found
         path = urlparse(page.url).path
         if path.startswith(("/login", "/i/flow/login")):
             raise XError(SIGNED_OUT)
         if path.startswith("/account/access"):
             raise XError("X wants the account in the upload browser to verify itself. Open the browser and do that, then tap Check.")
         if time.monotonic() > deadline:
-            raise XError(f"X didn't show @{handle}'s posts. Open the upload browser to see why (is the account still there?).")
+            raise XError(_no_posts(handle, page.url, loaded))
         page.wait_for_timeout(500)
-    response = loaded[0]
-    if response.status == 429:
-        raise XError("X says the account in the upload browser is looking at profiles too often. It tries again on the next check.")
-    if not response.ok:
-        raise XError(f"X answered {response.status} when loading @{handle}'s posts")
-    return response.json()
+
+
+def _json(response) -> dict | list | None:
+    try:
+        return response.json()
+    except Exception:  # not JSON, or its body is gone
+        return None
+
+
+def _no_posts(handle: str, url: str, loaded: list) -> str:
+    """Why no posts came, from what X's page did load."""
+    if any(r.status == 429 for r in loaded):
+        return TOO_OFTEN
+    if not loaded:
+        return (f"X didn't load anything for @{handle} in the upload browser (it ended up at {url}). Open the browser "
+                f"and look at x.com/{handle}.")
+    names = ", ".join(dict.fromkeys(
+        GRAPHQL.search(r.url)[1] + ("" if r.ok else f" ({r.status})") for r in loaded
+    ))
+    return (f"X loaded @{handle}'s profile but no posts came with it (it loaded {names}). Open the upload browser and "
+            f"look at x.com/{handle}: does it show the posts there?")
 
 
 def parse_posts(data: dict, handle: str) -> list[Post]:

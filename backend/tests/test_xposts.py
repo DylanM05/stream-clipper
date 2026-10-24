@@ -92,24 +92,36 @@ def browser():
         browser.close()
 
 
-def stand_in_x(browser, profile_html: str, timeline_status: int = 200):
-    """A tab where x.com is served without the network: the profile page, and its posts' data."""
+def stand_in_x(browser, profile_html: str, timeline_status: int = 200, data=None):
+    """A tab where x.com is served without the network: the profile page, and the data it fetches."""
     tab = browser.new_page()
     tab.route("https://x.com/**", lambda r: r.fulfill(content_type="text/html", body=profile_html))
     tab.route("https://x.com/i/api/graphql/**", lambda r: r.fulfill(
-        status=timeline_status, content_type="application/json",
-        body=json.dumps(timeline(entry(tweet("1", "pre-show", video_ms=1_250_416)))),
+        status=timeline_status if "Tweets" in r.request.url else 200, content_type="application/json",
+        body=json.dumps(timeline(entry(tweet("1", "pre-show", video_ms=1_250_416))) if data is None else data),
     ))
     return tab
 
 
-LOADS_POSTS = "<script>setTimeout(() => fetch('/i/api/graphql/AbC123/UserTweets?variables=%7B%7D'), 300)</script>"
+def loads(*operations: str) -> str:
+    """A profile page that fetches these GraphQL operations."""
+    calls = "".join(f"fetch('/i/api/graphql/AbC123/{op}?variables=%7B%7D');" for op in operations)
+    return f"<script>setTimeout(() => {{ {calls} }}, 300)</script>"
 
 
-def test_reads_the_posts_the_profile_page_loads(browser):
-    tab = stand_in_x(browser, LOADS_POSTS)
+@pytest.mark.parametrize("operation", ["UserTweets", "UserPosts"])  # whatever X calls it
+def test_reads_the_posts_the_profile_page_loads(browser, operation):
+    tab = stand_in_x(browser, loads(operation))
     posts = parse_posts(read_profile(tab, "Andywarski", wait_s=5), "Andywarski")
     assert [(p.id, p.duration) for p in posts] == [("1", 1250.416)]
+    tab.close()
+
+
+def test_data_without_posts_is_named_in_the_error(browser):
+    tab = stand_in_x(browser, loads("UserByScreenName", "ProfileSpotlightsQuery"), data={"data": {"user": {}}})
+    with pytest.raises(XError) as e:
+        read_profile(tab, "Andywarski", wait_s=2)
+    assert "no posts came with it (it loaded UserByScreenName, ProfileSpotlightsQuery)" in str(e.value)
     tab.close()
 
 
@@ -122,14 +134,14 @@ def test_being_sent_to_the_login_page_means_signed_out(browser):
 
 
 def test_too_many_requests(browser):
-    tab = stand_in_x(browser, LOADS_POSTS, timeline_status=429)
+    tab = stand_in_x(browser, loads("UserTweets"), timeline_status=429)
     with pytest.raises(XError, match="too often"):
-        read_profile(tab, "Andywarski", wait_s=5)
+        read_profile(tab, "Andywarski", wait_s=2)
     tab.close()
 
 
-def test_a_profile_that_never_loads_posts(browser):
+def test_a_profile_that_never_loads_anything(browser):
     tab = stand_in_x(browser, "<p>This account doesn't exist</p>")
-    with pytest.raises(XError, match="didn't show @Andywarski's posts"):
+    with pytest.raises(XError, match="didn't load anything for @Andywarski"):
         read_profile(tab, "Andywarski", wait_s=1)
     tab.close()
