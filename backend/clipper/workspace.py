@@ -11,7 +11,7 @@ from typing import Any
 # Pipeline steps after download, in order, with the files each one produces.
 STEP_OUTPUTS = {
     "audio": ["audio.wav"],
-    "transcribe": ["transcript.json"],
+    "transcribe": ["transcript.json", "transcript.partial.json"],
     "signals": ["signals.json"],
     "segment": ["llm/segmentation.json"],
     "refine": ["segments.json"],
@@ -45,6 +45,11 @@ class Workspace:
     @property
     def transcript_json(self) -> Path:
         return self.root / "transcript.json"
+
+    @property
+    def transcript_partial_json(self) -> Path:
+        """The windows transcribed so far, while transcription is under way (see transcribe.py)."""
+        return self.root / "transcript.partial.json"
 
     @property
     def signals_json(self) -> Path:

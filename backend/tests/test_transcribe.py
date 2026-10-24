@@ -5,6 +5,7 @@ import wave
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 
 from clipper.config import Settings
 from clipper.pipeline import audio, transcribe
@@ -18,6 +19,7 @@ class FakeWhisper:
     so it can tell where in the stream that audio starts."""
 
     calls: list[float] = []
+    stop_at_call: int | None = None  # like the worker being restarted then
 
     def __init__(self, *args, **kwargs):
         pass
@@ -26,6 +28,8 @@ class FakeWhisper:
         start = round(samples[0] * 32768)
         length = len(samples) / audio.SAMPLE_RATE
         FakeWhisper.calls.append(length)
+        if len(FakeWhisper.calls) == FakeWhisper.stop_at_call:
+            raise KeyboardInterrupt
         pieces = [
             SimpleNamespace(start=line - start, end=line - start + 3, text=f" line {line}",
                             words=[SimpleNamespace(start=line - start, end=line - start + 1, word=" line")])
@@ -34,29 +38,53 @@ class FakeWhisper:
         return iter(pieces), SimpleNamespace(language="en", duration=length)
 
 
-def test_long_audio_is_transcribed_in_windows_without_losing_or_repeating_lines(tmp_path, monkeypatch):
+SECONDS = 28
+
+
+@pytest.fixture
+def ws(tmp_path, monkeypatch):
+    """28 seconds of audio, and 10-second windows with 3 seconds of overlap."""
     ws = Workspace.open(tmp_path, "vod")
-    seconds = 28
     with wave.open(str(ws.audio_wav), "wb") as w:
         w.setnchannels(1)
         w.setsampwidth(2)
         w.setframerate(audio.SAMPLE_RATE)
-        w.writeframes(np.repeat(np.arange(seconds, dtype="<i2"), audio.SAMPLE_RATE).tobytes())
+        w.writeframes(np.repeat(np.arange(SECONDS, dtype="<i2"), audio.SAMPLE_RATE).tobytes())
     monkeypatch.setitem(sys.modules, "faster_whisper", SimpleNamespace(WhisperModel=FakeWhisper))
     monkeypatch.setattr(transcribe, "WINDOW_S", 10)
     monkeypatch.setattr(transcribe, "OVERLAP_S", 3)
-    FakeWhisper.calls = []
-    progress = []
+    FakeWhisper.calls, FakeWhisper.stop_at_call = [], None
+    return ws
 
+
+def every_line_once(result) -> bool:
+    return (
+        [s.text for s in result.segments] == [f"line {n}" for n in LINES]
+        and [(s.start, s.end) for s in result.segments] == [(n, n + 3) for n in LINES]
+        and [w.start for s in result.segments for w in s.words] == list(LINES)
+    )
+
+
+def test_long_audio_is_transcribed_in_windows_without_losing_or_repeating_lines(ws):
+    progress = []
     result = transcribe.run(ws, Settings(language="en"), on_progress=progress.append)
 
-    assert [s.text for s in result.segments] == [f"line {n}" for n in LINES]
-    assert [(s.start, s.end) for s in result.segments] == [(n, n + 3) for n in LINES]
-    assert [w.start for s in result.segments for w in s.words] == list(LINES)
-    assert result.duration == seconds
+    assert every_line_once(result) and result.duration == SECONDS
     assert max(FakeWhisper.calls) <= 13  # never more than a window and its overlap at once
     assert progress == sorted(progress) and progress[-1] == 1.0
-    assert ws.transcript_json.exists()
+    assert ws.transcript_json.exists() and not ws.transcript_partial_json.exists()
+
+
+def test_a_restart_carries_on_from_the_last_window_done(ws):
+    FakeWhisper.stop_at_call = 3
+    with pytest.raises(KeyboardInterrupt):
+        transcribe.run(ws, Settings(language="en"))
+    assert ws.transcript_partial_json.exists() and not ws.transcript_json.exists()
+
+    FakeWhisper.calls, FakeWhisper.stop_at_call = [], None
+    result = transcribe.run(ws, Settings(language="en"))
+    assert len(FakeWhisper.calls) == 1  # only the last window was left
+    assert every_line_once(result)
 
 
 def test_part_of_the_audio_can_be_loaded(tmp_path):

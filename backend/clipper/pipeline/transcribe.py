@@ -3,6 +3,7 @@
 The model runs on the GPU, but faster-whisper prepares its input (the samples, speech detection and the
 spectrogram) on the CPU for all the audio it's given at once: several GB for an 8-hour stream. So the
 audio goes in 20-minute windows, which keeps that to a few hundred MB however long the stream is.
+What's done is saved after each window, so a restart or pause carries on from there.
 """
 
 import logging
@@ -11,7 +12,7 @@ from collections.abc import Callable
 from ..config import Settings
 from ..models import Transcript, TranscriptSegment, Word
 from ..timecode import to_timecode
-from ..workspace import Workspace, write_text
+from ..workspace import Workspace, read_json, write_json, write_text
 from . import audio
 
 log = logging.getLogger(__name__)
@@ -36,8 +37,13 @@ def run(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] 
     total = audio.duration(ws)
     language = settings.language
     segments: list[TranscriptSegment] = []
-    next_report = 0.05
     pos = 0.0
+    if ws.transcript_partial_json.exists():
+        saved = read_json(ws.transcript_partial_json)
+        pos, language = saved["pos"], saved["language"] or language
+        segments = [TranscriptSegment.model_validate(s) for s in saved["segments"]]
+        log.info("Carrying on transcribing from %s", to_timecode(pos))
+    next_report = (int(pos / total * 20) + 1) / 20 if total else 1
     while pos < total:
         last = pos + WINDOW_S >= total
         pieces, info = model.transcribe(
@@ -70,10 +76,13 @@ def run(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] 
         if last:
             break
         pos = kept_until if kept_until > pos else pos + WINDOW_S  # a window with no speech is skipped whole
+        write_json(ws.transcript_partial_json,
+                   {"pos": pos, "language": language, "segments": [s.model_dump() for s in segments]})
     if on_progress:
         on_progress(1.0)
 
     transcript = Transcript(language=language, duration=total, segments=segments)
     write_text(ws.transcript_json, transcript.model_dump_json())
+    ws.transcript_partial_json.unlink(missing_ok=True)
     log.info("Transcript has %d lines and %d words", len(segments), sum(len(s.words) for s in segments))
     return transcript
