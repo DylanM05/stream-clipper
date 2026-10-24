@@ -26,6 +26,10 @@ services:
   worker:
     <<: *clipper
     command: ["worker"]
+    # A ceiling, so a job that runs away with memory gets stopped (and retried) instead of pushing the whole
+    # server into swap. Transcribing works through the audio in 20-minute parts, which keeps it well under.
+    mem_limit: ${CLIPPER_WORKER_MEMORY:-6g}
+    memswap_limit: ${CLIPPER_WORKER_MEMORY:-6g}
     # Shares the upload browser's network, so it reaches Chromium's debugging port at 127.0.0.1:9222.
     network_mode: "service:browser"
     depends_on: [browser]

@@ -1,4 +1,9 @@
-"""Transcribe the audio with faster-whisper on the GPU, keeping a timestamp for every word."""
+"""Transcribe the audio with faster-whisper on the GPU, keeping a timestamp for every word.
+
+The model runs on the GPU, but faster-whisper prepares its input (the samples, speech detection and the
+spectrogram) on the CPU for all the audio it's given at once: several GB for an 8-hour stream. So the
+audio goes in 20-minute windows, which keeps that to a few hundred MB however long the stream is.
+"""
 
 import logging
 from collections.abc import Callable
@@ -10,6 +15,11 @@ from ..workspace import Workspace, write_text
 from . import audio
 
 log = logging.getLogger(__name__)
+
+WINDOW_S = 20 * 60
+# Each window gets this much more audio, so the line running across its end is heard whole. The next
+# window starts where the last line kept ended.
+OVERLAP_S = 30
 
 
 def run(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] | None = None) -> Transcript:
@@ -23,32 +33,47 @@ def run(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] 
     model = WhisperModel(
         settings.whisper_model, device=settings.whisper_device, compute_type=settings.whisper_compute_type
     )
-    pieces, info = model.transcribe(
-        # Samples rather than a path: faster-whisper's own decoder breaks with some PyAV versions.
-        audio.load(ws),
-        language=settings.language,
-        word_timestamps=True,
-        vad_filter=True,
-        # Stops one misheard phrase from repeating through hours of audio.
-        condition_on_previous_text=False,
-    )
-
+    total = audio.duration(ws)
+    language = settings.language
     segments: list[TranscriptSegment] = []
     next_report = 0.05
-    for piece in pieces:
-        segments.append(TranscriptSegment(
-            start=round(piece.start, 2),
-            end=round(piece.end, 2),
-            text=piece.text.strip(),
-            words=[Word(start=round(w.start, 2), end=round(w.end, 2), text=w.word.strip()) for w in piece.words or []],
-        ))
-        if on_progress and info.duration:
-            on_progress(min(1.0, piece.end / info.duration))
-        if info.duration and piece.end / info.duration >= next_report:
-            log.info("Transcribed %s / %s (%d%%)", to_timecode(piece.end), to_timecode(info.duration), piece.end / info.duration * 100)
-            next_report += 0.05
+    pos = 0.0
+    while pos < total:
+        last = pos + WINDOW_S >= total
+        pieces, info = model.transcribe(
+            # Samples rather than a path: faster-whisper's own decoder breaks with some PyAV versions.
+            audio.load(ws, start_s=pos, duration_s=WINDOW_S + OVERLAP_S),
+            language=language,
+            word_timestamps=True,
+            vad_filter=True,
+            # Stops one misheard phrase from repeating through hours of audio.
+            condition_on_previous_text=False,
+        )
+        language = language or info.language  # detected once, from the first window
+        kept_until = pos
+        for piece in pieces:
+            if not last and piece.start >= WINDOW_S:
+                break  # the next window starts with this line
+            segments.append(TranscriptSegment(
+                start=round(pos + piece.start, 2),
+                end=round(pos + piece.end, 2),
+                text=piece.text.strip(),
+                words=[Word(start=round(pos + w.start, 2), end=round(pos + w.end, 2), text=w.word.strip())
+                       for w in piece.words or []],
+            ))
+            kept_until = pos + piece.end
+            if on_progress:
+                on_progress(min(1.0, kept_until / total))
+            if kept_until / total >= next_report:
+                log.info("Transcribed %s / %s (%d%%)", to_timecode(kept_until), to_timecode(total), kept_until / total * 100)
+                next_report += 0.05
+        if last:
+            break
+        pos = kept_until if kept_until > pos else pos + WINDOW_S  # a window with no speech is skipped whole
+    if on_progress:
+        on_progress(1.0)
 
-    transcript = Transcript(language=info.language, duration=info.duration, segments=segments)
+    transcript = Transcript(language=language, duration=total, segments=segments)
     write_text(ws.transcript_json, transcript.model_dump_json())
     log.info("Transcript has %d lines and %d words", len(segments), sum(len(s.words) for s in segments))
     return transcript
