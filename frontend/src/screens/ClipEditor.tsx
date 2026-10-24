@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type ClipPatch, type Line } from "../api";
-import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, UploadIcon, VolumeIcon } from "../icons";
+import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, TrashIcon, UploadIcon, VolumeIcon } from "../icons";
 import { clamp, clock, cn, go, goBack, length, loadSetting, saveSetting, usePoll } from "../lib";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, useToast } from "../ui";
 
@@ -147,17 +147,27 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
 
   const decide = (approve: boolean) =>
     run(async () => {
-      const next = await nextClipAfter();
+      // Extras are opened from their video, so that's where to go back to.
+      const next = clip.status === "proposed" ? await nextClipAfter() : null;
       if (dirty) await api.updateClip(clip.id, changes);
       await (approve ? api.approve(clip.id) : api.reject(clip.id));
       toast({
         text: approve ? "Approved: it will render shortly" : "Rejected",
         action: { label: "Undo", run: () => void api.restore(clip.id).then(() => go(`clip/${clip.id}`)) },
       });
-      go(next);
+      if (next) go(next);
+      else goBack("videos");
     });
 
   const restore = () => run(async () => onSaved(await api.restore(clip.id)));
+
+  // Approved clips can still be thrown away, render and all.
+  const discard = () =>
+    run(async () => {
+      await api.reject(clip.id);
+      toast({ text: "Deleted", action: { label: "Undo", run: () => void api.approve(clip.id) } });
+      goBack("approved");
+    });
 
   return (
     <div className="mx-auto min-h-dvh max-w-2xl">
@@ -173,7 +183,7 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
               {KIND_LABEL[clip.kind]} · {length(duration)}
             </p>
           </div>
-          <ClipStatusChip status={clip.status} />
+          <ClipStatusChip status={clip.status} paused={clip.paused} />
         </div>
         <div className="relative aspect-video bg-black" onClick={togglePlay}>
           <video
@@ -332,6 +342,12 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
             </span>
           </p>
         )}
+        {clip.status === "extra" && (
+          <p className="rounded-2xl bg-zinc-900 p-4 text-sm text-zinc-400 ring-1 ring-white/5">
+            An extra: Claude scored it below this show's best few for the stream, so it isn't in your inbox. Approve it
+            to use it anyway.
+          </p>
+        )}
         {clip.status === "failed" && <ErrorNote>{clip.error}</ErrorNote>}
 
         {lines.length > 0 && (
@@ -350,7 +366,7 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
       {/* Actions */}
       <div className="fixed inset-x-0 bottom-0 z-30 border-t border-white/5 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur">
         <div className="mx-auto flex max-w-2xl gap-2 p-3">
-          {clip.status === "proposed" && (
+          {(clip.status === "proposed" || clip.status === "extra") && (
             <>
               <Button tone="danger" disabled={busy} onClick={() => decide(false)}>
                 Reject
@@ -368,6 +384,12 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
           {clip.status === "rejected" && (
             <Button disabled={busy} onClick={restore} className="flex-1">
               Back to inbox
+            </Button>
+          )}
+          {["approved", "rendering", "failed", "rendered"].includes(clip.status) && (
+            <Button tone="danger" disabled={busy} onClick={discard} className="px-3.5">
+              <TrashIcon className="size-4" />
+              <span className="sr-only">Delete</span>
             </Button>
           )}
           {["approved", "rendering", "failed"].includes(clip.status) && (

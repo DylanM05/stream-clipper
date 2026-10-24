@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import {
   api,
   errorText,
+  type Auto,
   type Channel,
   type ChannelFields,
   type ChannelVideo,
@@ -9,6 +10,7 @@ import {
   type Mode,
   type Show,
   type ShowFields,
+  type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, cn, copyText, go, length, titleDate, usePoll } from "../lib";
@@ -375,6 +377,12 @@ const BLANK: ShowFields = {
   clip_guidance: "",
   clip_destination_id: null,
   episode_destination_id: null,
+  max_chapters: 5,
+  max_shorts: 5,
+  auto_episode: "review",
+  auto_chapters: "review",
+  auto_shorts: "review",
+  auto_visibility: "public",
 };
 
 function ShowForm({ show, destinations }: { show: Show | null; destinations: Destination[] | undefined }) {
@@ -488,6 +496,48 @@ function ShowForm({ show, destinations }: { show: Show | null; destinations: Des
         + Add or edit YouTube channels
       </button>
 
+      {hasClips(fields.mode) && (
+        <Group label="Clips offered per stream" hint="best first, by Claude's score">
+          <div className="grid grid-cols-2 gap-2">
+            <CountBox label="Chapters" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
+            <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            {fields.max_chapters + fields.max_shorts} videos from each stream
+            {hasEpisode(fields.mode) ? ", plus the full episode" : ""}. Claude's other picks wait on the video's page as
+            extras. Raise these as your YouTube upload limit grows.
+          </p>
+        </Group>
+      )}
+
+      <Group label="Without review">
+        <div className="space-y-2">
+          {hasEpisode(fields.mode) && (
+            <AutoChoice label="Full episode" value={fields.auto_episode} onChange={(auto_episode) => set({ auto_episode })} />
+          )}
+          {hasClips(fields.mode) && (
+            <>
+              <AutoChoice label="Chapters" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
+              <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
+            </>
+          )}
+        </div>
+        <p className="mt-1.5 text-xs text-zinc-500">
+          Review: waits in your inbox. Render: skips the inbox and waits in Ready to upload. Upload: goes straight to its
+          YouTube channel (a highlight as its Short, if it has one).
+        </p>
+        {autoUploads(fields) && (
+          <div className="mt-3 flex items-center gap-3">
+            <span className="w-24 shrink-0 text-sm text-zinc-300">Uploaded as</span>
+            <Segmented
+              options={VISIBILITY_LABEL}
+              value={fields.auto_visibility}
+              onChange={(auto_visibility) => set({ auto_visibility })}
+            />
+          </div>
+        )}
+      </Group>
+
       <Field label="About the show" hint="context for Claude">
         <textarea
           value={fields.notes}
@@ -538,6 +588,58 @@ function ShowForm({ show, destinations }: { show: Show | null; destinations: Des
         </Button>
       </div>
     </div>
+  );
+}
+
+const AUTO_LABEL: Record<Auto, string> = { review: "Review", render: "Render", upload: "Upload" };
+const VISIBILITY_LABEL: Record<Visibility, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
+
+/** Whether any kind of video the show makes is uploaded without review. */
+const autoUploads = (f: ShowFields) =>
+  (hasEpisode(f.mode) && f.auto_episode === "upload") ||
+  (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload"));
+
+function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
+  const keys = Object.keys(props.options) as T[];
+  return (
+    <div className="grid flex-1 gap-1 rounded-xl bg-zinc-800 p-1" style={{ gridTemplateColumns: `repeat(${keys.length}, 1fr)` }}>
+      {keys.map((key) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => props.onChange(key)}
+          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
+        >
+          {props.options[key]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function AutoChoice({ label, value, onChange }: { label: string; value: Auto; onChange: (v: Auto) => void }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-24 shrink-0 text-sm text-zinc-300">{label}</span>
+      <Segmented options={AUTO_LABEL} value={value} onChange={onChange} />
+    </div>
+  );
+}
+
+function CountBox({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+  return (
+    <label className="flex items-center gap-2 rounded-xl bg-zinc-900 px-3.5 py-2 ring-1 ring-white/5 focus-within:ring-2 focus-within:ring-violet-500">
+      <span className="flex-1 text-sm text-zinc-300">{label}</span>
+      <input
+        type="number"
+        inputMode="numeric"
+        min={0}
+        max={100}
+        value={value}
+        onChange={(e) => onChange(Math.min(100, Math.max(0, Math.round(Number(e.target.value) || 0))))}
+        className="w-16 bg-transparent py-1 text-right text-base font-semibold tabular-nums outline-none"
+      />
+    </label>
   );
 }
 
@@ -601,7 +703,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           className={cn(input, "bg-zinc-800 ring-0")}
         />
         {showFilters ? (
-          <FilterFields value={filters} onChange={setFilters} />
+          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} />
         ) : (
           <button type="button" onClick={() => setShowFilters(true)} className="text-sm font-medium text-violet-300">
             + Filters (keywords, minimum length)
@@ -621,13 +723,15 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   );
 }
 
-function FilterFields({ value, onChange }: { value: ChannelFields; onChange: (v: ChannelFields) => void }) {
+/** `posts`: an X account, whose filters match the text of each post. */
+function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean }) {
+  const what = posts ? "posts" : "titles";
   return (
     <div className="space-y-3">
-      <Field label="Only titles with" hint="comma-separated; empty means every video">
-        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder="kino, casino" className={cn(input, "bg-zinc-800 ring-0")} />
+      <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
+        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "pre show" : "kino, casino"} className={cn(input, "bg-zinc-800 ring-0")} />
       </Field>
-      <Field label="Skip titles with" hint="comma-separated">
+      <Field label={`Skip ${what} with`} hint="comma-separated">
         <input value={value.exclude} onChange={(e) => onChange({ ...value, exclude: e.target.value })} placeholder="rerun, test stream" className={cn(input, "bg-zinc-800 ring-0")} />
       </Field>
       <Field label="Minimum length" hint="minutes">
@@ -714,7 +818,7 @@ function ChannelCard({ channel, onChanged }: { channel: Channel; onChanged: () =
 
       {editing && (
         <div className="space-y-3 border-t border-white/5 p-4">
-          <FilterFields value={filters} onChange={setFilters} />
+          <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
           <Button
             tone="primary"
             className="w-full"
@@ -824,5 +928,18 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
       </span>
       {children}
     </label>
+  );
+}
+
+/** Like Field, for a group of controls: a label element would pass taps on its caption to the first button. */
+function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <div>
+      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+        {label}
+        {hint && <span className="text-right font-normal normal-case">{hint}</span>}
+      </p>
+      {children}
+    </div>
   );
 }

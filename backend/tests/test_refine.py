@@ -105,6 +105,14 @@ def test_chapters_skip_non_content_and_short_ones_and_never_overlap():
     assert guest.end < 1100.0
 
 
+def test_chapters_are_scored_by_how_well_they_would_do_or_their_confidence_in_older_answers():
+    scored = chapter("00:02:00", "00:10:00", confidence=0.9)
+    scored.score = 0.35
+    older = chapter("00:10:30", "00:18:40", confidence=0.7)  # saved before chapters were scored
+    clips = refine(Segmentation(chapters=[scored, older], highlights=[]), _chapters_transcript())
+    assert [c.score for c in clips] == [0.35, 0.7]
+
+
 def test_overlapping_highlights_keep_the_higher_score():
     t = transcript(*[line(i * 10.0, f"Sentence number {i}.") for i in range(30)])
     seg = Segmentation(

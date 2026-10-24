@@ -20,6 +20,7 @@ Split the whole stream into chapters, in order, covering it from start to end wi
 - Title: a specific YouTube title for the chapter as a standalone video, in the creator's voice, within the title length the task gives. No clickbait the video doesn't deliver, no all-caps titles, and no emojis unless the creator notes ask for them.
 - Summary: 1–3 factual sentences describing what happens, written so they can serve as the video description.
 - Confidence: 0–1, how sure you are of the boundaries and grouping.
+- Score: 0–1, how likely the chapter is to do well as its own video: a strong topic, guest, story or game scores high; logistics, filler and slow stretches score low. Only the best-scored chapters get uploaded, so be calibrated: most good chapters score 0.5–0.8; reserve 0.9 and above for standout ones.
 
 ## Highlights
 
@@ -30,7 +31,7 @@ Pick the best standalone moments for short clips and Shorts.
 - Good highlights: big laughs, surprising or emotional moments, hype plays, great stories, sharp hot takes, a guest's best line. Loud moments in the hints are worth checking, but confirm them in the transcript.
 - No two highlights may overlap. Skip pre-stream, break and outro chapters unless something exceptional happens there.
 - Title: a hook that makes people want to watch, true to what happens, within the title length the task gives (shorter is usually better).
-- Score: 0–1, how likely the clip is to do well. Be calibrated: most good clips score 0.5–0.8; reserve 0.9 and above for standout moments.
+- Score: 0–1, how likely the clip is to do well. Only the best-scored highlights get uploaded, so be calibrated: most good clips score 0.5–0.8; reserve 0.9 and above for standout moments.
 - vertical_ok: true if the clip still works in vertical format on a phone, where the original video is shown small; false if it depends on reading small on-screen detail.
 
 ## The whole episode

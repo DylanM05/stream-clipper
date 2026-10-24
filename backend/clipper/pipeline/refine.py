@@ -135,7 +135,8 @@ def _chapters(seg: Segmentation, snap: Snapper, duration: float) -> list[Clip]:
             continue
         clips.append(Clip(
             id=f"ch{len(clips) + 1:02d}", kind="chapter", start=round(s, 2), end=round(e, 2),
-            title=clean_title(ch.title), description=ch.summary.strip(), score=_unit(ch.confidence),
+            # Answers from before chapters were scored only have the confidence in the boundaries.
+            title=clean_title(ch.title), description=ch.summary.strip(), score=_unit(ch.score or ch.confidence),
             llm_start=ch.start, llm_end=ch.end,
         ))
     return clips

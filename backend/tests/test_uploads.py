@@ -91,6 +91,43 @@ def test_worker_uploads_to_the_clips_channel_and_records_the_link(settings, clip
     assert w.upload_next() is False
 
 
+def test_a_rendered_file_is_deleted_once_its_uploaded_and_the_upload_is_notified(settings, clip_id, monkeypatch):
+    clips_dir = settings.vods_dir / "kickvod-1" / "clips"
+    clips_dir.mkdir(parents=True)
+    video, short = clips_dir / "hl01-huck.mp4", clips_dir / "hl01-huck-short.mp4"
+    video.write_bytes(b"video")
+    short.write_bytes(b"short")
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.video_path, clip.short_path = str(video), str(short)
+        s.get(Vod, clip.vod_id).workspace = "kickvod-1"
+        s.add(UploadJob(clip_id=clip_id, which="short"))
+        s.commit()
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio()
+    w.upload_next()
+
+    assert not short.exists() and video.exists()  # only what went up
+    clip = get(settings, ClipRecord, clip_id)
+    assert (clip.status, clip.short_path, clip.video_path) == ("uploaded", "", str(video))
+    [note] = sent
+    assert (note.title, note.message, note.link) == ("Uploaded: Huck Blend Is Back", "Short, public on Kino Clips.", "https://youtu.be/abc123")
+
+
+def test_uploads_wait_while_paused(settings, clip_id):
+    from clipper.db import set_app_setting
+
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id))
+        set_app_setting(s, "paused_uploads", "1")
+        s.commit()
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio()
+    assert w.upload_next() is False and w.studio.uploads == []
+
+
 def test_failed_uploads_keep_the_error_and_screenshot_and_can_be_retried(settings, clip_id):
     w = worker_module.Worker(settings)
     w.studio = FakeStudio(StudioError("The browser isn't signed in to YouTube.", screenshot="shot.png"))

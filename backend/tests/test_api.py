@@ -1,9 +1,12 @@
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from clipper.config import Settings
-from clipper.db import ClipRecord, Vod, get_engine
+from clipper.db import ClipRecord, UploadJob, Vod, get_engine
 from clipper.web import app as web_app
 
 
@@ -97,6 +100,76 @@ def test_login_is_required_when_a_password_is_set(tmp_path, monkeypatch):
     client.cookies.clear()
     client.cookies.set("clipper_session", "9999999999.forged")
     assert client.get("/api/vods").status_code == 401
+
+
+def rendered_clip(settings, **fields) -> tuple[int, Path]:
+    clips_dir = settings.vods_dir / "twitchvod-1" / "clips"
+    clips_dir.mkdir(parents=True)
+    video = clips_dir / "hl01-moment.mp4"
+    video.write_bytes(b"video")
+    return add_clip(settings, status="rendered", video_path=str(video), **fields), video
+
+
+def add_job(settings, clip_id: int, status: str = "queued") -> None:
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, status=status))
+        s.commit()
+
+
+def test_a_clip_ready_to_upload_can_go_back_to_the_inbox_and_its_render_is_deleted(client, settings):
+    clip_id, video = rendered_clip(settings)
+    add_job(settings, clip_id)
+    back = client.post(f"/api/clips/{clip_id}/restore").json()
+    assert back["status"] == "proposed" and not back["has_video"] and not video.exists()
+    assert client.get(f"/api/clips/{clip_id}/uploads").json() == []  # its queued upload is cancelled
+
+
+def test_a_clip_ready_to_upload_can_be_deleted_unless_its_uploading_or_uploaded(client, settings):
+    clip_id, video = rendered_clip(settings)
+    add_job(settings, clip_id, "uploading")
+    assert client.post(f"/api/clips/{clip_id}/reject").status_code == 409
+    assert video.exists()
+
+    with Session(get_engine(settings)) as s:
+        for job in s.exec(select(UploadJob)):
+            job.status = "done"
+            s.add(job)
+        s.commit()
+    assert client.post(f"/api/clips/{clip_id}/reject").json()["status"] == "rejected"
+    assert not video.exists()
+    set_status(settings, clip_id, "uploaded")
+    assert client.post(f"/api/clips/{clip_id}/reject").status_code == 409
+
+
+def test_pausing_parts_of_the_work_and_single_videos_and_clips(client, settings):
+    assert client.get("/api/pauses").json() == {"downloads": False, "processing": False, "renders": False, "uploads": False}
+    assert client.patch("/api/pauses", json={"renders": True, "uploads": True}).json()["renders"] is True
+    assert client.get("/api/pauses").json() == {"downloads": False, "processing": False, "renders": True, "uploads": True}
+
+    vod = client.post("/api/vods", json={"url": "https://www.twitch.tv/videos/9"}).json()
+    assert (vod["paused"], vod["downloaded"]) == (False, False)
+    assert client.post(f"/api/vods/{vod['id']}/pause").json()["paused"] is True
+    assert client.post(f"/api/vods/{vod['id']}/resume").json()["paused"] is False
+
+    clip_id = add_clip(settings)
+    assert client.post(f"/api/clips/{clip_id}/pause").status_code == 409  # not approved yet
+    client.post(f"/api/clips/{clip_id}/approve")
+    assert client.post(f"/api/clips/{clip_id}/pause").json()["paused"] is True
+    assert client.post(f"/api/clips/{clip_id}/resume").json()["paused"] is False
+
+
+def test_deleting_a_streams_files_rejects_the_clips_that_arent_uploaded(client, settings):
+    clip_id, video = rendered_clip(settings)
+    root = settings.vods_dir / "twitchvod-1"
+    (root / "source.mp4").write_bytes(b"stream")
+    (root / "proxy.mp4").write_bytes(b"preview")
+    (root / "meta.json").write_text(json.dumps({"source_path": str(root / "source.mp4")}))
+
+    vod = client.post("/api/vods/1/delete-files").json()
+    assert vod["cleaned"] is True
+    assert not any(p.exists() for p in (root / "source.mp4", root / "proxy.mp4", video))
+    assert client.get(f"/api/clips/{clip_id}").json()["status"] == "rejected"
+    assert client.post(f"/api/clips/{clip_id}/approve").status_code == 409  # nothing left to cut it from
 
 
 def test_serves_the_phone_app_with_fallback_to_index(tmp_path):

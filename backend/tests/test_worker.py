@@ -7,7 +7,7 @@ from sqlmodel import Session, select
 
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Destination, Show, Vod, get_engine, utcnow
+from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_engine, set_app_setting, utcnow
 from clipper.llm import UsageLimitError
 from clipper.models import LLMChapter, LLMHighlight, Segmentation, Signals
 from clipper.workspace import Workspace, write_json, write_text
@@ -232,11 +232,11 @@ def test_failures_are_recorded(settings, fake_pipeline, monkeypatch):
 def fake_render(monkeypatch):
     rendered = []
 
-    def landscape(source, clip, out: Path, settings):
+    def landscape(source, clip, out: Path, settings, on_progress=None):
         out.write_bytes(b"video")
         rendered.append(out.name)
 
-    def short(source, clip, words, out: Path, settings):
+    def short(source, clip, words, out: Path, settings, on_progress=None):
         assert words, "Shorts need the transcript words for captions"
         out.write_bytes(b"short")
         rendered.append(out.name)
@@ -284,7 +284,7 @@ def test_a_clip_edited_during_its_render_is_rendered_again(settings, fake_pipeli
     w.process_vod(add_vod(settings))
     clip_id = approve(settings, "hl02")
 
-    def landscape_while_user_edits(source, clip, out, settings_):
+    def landscape_while_user_edits(source, clip, out, settings_, on_progress=None):
         out.write_bytes(b"video")
         with Session(get_engine(settings)) as s:  # the app re-approves after an edit
             row = s.get(ClipRecord, clip_id)
@@ -295,6 +295,192 @@ def test_a_clip_edited_during_its_render_is_rendered_again(settings, fake_pipeli
     monkeypatch.setattr(worker_module.render, "render_landscape", landscape_while_user_edits)
     w.render_next_clip()
     assert get(settings, ClipRecord, clip_id).status == "approved"
+
+
+def test_an_edit_during_a_render_stops_it_at_the_next_progress_report(settings, fake_pipeline, monkeypatch):
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    clip_id = approve(settings, "hl02")
+
+    def landscape(source, clip, out, settings_, on_progress=None):
+        approve(settings, "hl02")  # the app re-approves after an edit
+        on_progress(0.5)
+        raise AssertionError("the render should have stopped")
+
+    monkeypatch.setattr(worker_module.render, "render_landscape", landscape)
+    w.render_next_clip()
+    assert get(settings, ClipRecord, clip_id).status == "approved"
+
+
+# --- Best picks, and kinds a show takes without review ---------------------------------------
+
+
+def scored(chapter_scores=(0.6, 0.8)) -> Segmentation:
+    seg = SEGMENTATION.model_copy(deep=True)
+    for ch, score in zip(seg.chapters[1:], chapter_scores):
+        ch.score = score
+    return seg
+
+
+def test_a_show_offers_its_best_chapters_and_highlights_and_keeps_the_rest_as_extras(settings, fake_pipeline, monkeypatch):
+    monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: scored())
+    add_show(settings, name="Kino", match="twitch.tv/videos", max_chapters=1, max_shorts=1)
+    sent = collect_notes(monkeypatch)
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+
+    assert {c.title: c.status for c in clips(settings)} == {
+        "Whole show": "extra",  # scored 0.6
+        "Second half": "proposed",  # scored 0.8
+        "Vertical": "proposed",  # 0.8
+        "Landscape only": "extra",  # 0.6
+    }
+    assert [(n.title, n.message) for n in sent] == [("Ready: Big stream", "2 to review · 2 extras")]
+
+
+def test_without_a_show_every_clip_is_offered(settings, fake_pipeline):
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+    assert {c.status for c in clips(settings)} == {"proposed"}
+
+
+def test_kinds_a_show_takes_without_review_are_rendered_and_uploaded_by_themselves(settings, fake_pipeline, fake_render):
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips")
+        s.add(dest)
+        s.commit()
+        dest_id = dest.id
+    add_show(settings, name="Kino", match="twitch.tv/videos", mode="both", auto_episode="upload", auto_chapters="render",
+             auto_visibility="unlisted", episode_destination_id=dest_id, clip_destination_id=dest_id)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+
+    statuses = {c.kind: c.status for c in clips(settings)}
+    assert statuses == {"whole": "approved", "chapter": "approved", "highlight": "proposed"}
+    while w.render_next_clip():
+        pass
+    with Session(get_engine(settings)) as s:
+        jobs = s.exec(select(UploadJob)).all()
+        assert [(s.get(ClipRecord, j.clip_id).kind, j.which, j.visibility) for j in jobs] == [("whole", "video", "unlisted")]
+
+
+def test_a_highlight_uploaded_without_review_goes_up_as_its_short(settings, fake_pipeline, fake_render):
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips")
+        s.add(dest)
+        s.commit()
+        dest_id = dest.id
+    add_show(settings, name="Kino", match="twitch.tv/videos", auto_shorts="upload", clip_destination_id=dest_id)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    while w.render_next_clip():
+        pass
+    with Session(get_engine(settings)) as s:
+        jobs = s.exec(select(UploadJob)).all()
+        assert sorted((s.get(ClipRecord, j.clip_id).title, j.which) for j in jobs) == [
+            ("Landscape only", "video"), ("Vertical", "short"),
+        ]
+
+
+# --- Pausing ----------------------------------------------------------------------------------
+
+
+def set_paused(settings, vod_id=None, value=True, part=None):
+    with Session(get_engine(settings)) as s:
+        if part:
+            set_app_setting(s, f"paused_{part}", "1" if value else "0")
+        else:
+            row = s.get(Vod, vod_id)
+            row.paused = value
+            s.add(row)
+        s.commit()
+
+
+def test_pausing_a_video_stops_its_download_and_resuming_carries_on(settings, fake_pipeline, monkeypatch):
+    vod_id = add_vod(settings)
+    finish = worker_module.download.fetch  # the fake from fake_pipeline
+
+    def paused_midway(url, s, on_progress=None, limit_mbps=None):
+        set_paused(settings, vod_id)  # tapped Pause in the app
+        on_progress(0.3)
+        raise AssertionError("the download should have stopped")
+
+    monkeypatch.setattr(worker_module.download, "fetch", paused_midway)
+    w = worker_module.Worker(settings)
+    assert w.process_next_vod() is True
+    vod = get(settings, Vod, vod_id)
+    assert (vod.status, vod.paused, vod.workspace) == ("queued", True, None)
+    assert w.process_next_vod() is False  # held
+
+    set_paused(settings, vod_id, False)
+    monkeypatch.setattr(worker_module.download, "fetch", finish)
+    assert w.process_next_vod() is True
+    assert get(settings, Vod, vod_id).status == "ready"
+
+
+def test_pausing_processing_lets_downloads_carry_on_and_pausing_downloads_lets_processing_carry_on(settings, fake_pipeline):
+    w = worker_module.Worker(settings)
+    set_paused(settings, part="processing")
+    vod_id = add_vod(settings)
+    assert w.process_next_vod() is True  # downloads it, then stops
+    vod = get(settings, Vod, vod_id)
+    assert (vod.status, vod.workspace) == ("queued", "vod-1")
+    assert w.process_next_vod() is False
+
+    set_paused(settings, part="processing", value=False)
+    set_paused(settings, part="downloads")
+    add_vod(settings, url="https://www.twitch.tv/videos/2")  # not downloaded: waits
+    assert w.process_next_vod() is True
+    assert get(settings, Vod, vod_id).status == "ready"
+    assert w.process_next_vod() is False
+
+
+def test_pausing_renders_stops_the_running_one_and_holds_the_rest(settings, fake_pipeline, monkeypatch):
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    clip_id = approve(settings, "hl02")
+
+    def landscape(source, clip, out, settings_, on_progress=None):
+        out.with_name(out.stem + ".tmp.mp4").write_bytes(b"half")
+        set_paused(settings, part="renders")
+        on_progress(0.5)
+        raise AssertionError("the render should have stopped")
+
+    monkeypatch.setattr(worker_module.render, "render_landscape", landscape)
+    assert w.render_next_clip() is True
+    assert get(settings, ClipRecord, clip_id).status == "approved"
+    assert not list((settings.vods_dir / "vod-1" / "clips").glob("*.tmp.*"))
+    assert w.render_next_clip() is False
+
+
+def test_a_paused_clip_waits_while_others_render(settings, fake_pipeline, fake_render):
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    held, other = approve(settings, "hl01"), approve(settings, "hl02")
+    with Session(get_engine(settings)) as s:
+        row = s.get(ClipRecord, held)
+        row.paused = True
+        s.add(row)
+        s.commit()
+    assert w.render_next_clip() is True
+    assert w.render_next_clip() is False
+    assert (get(settings, ClipRecord, held).status, get(settings, ClipRecord, other).status) == ("approved", "rendered")
+
+
+def collect_notes(monkeypatch) -> list:
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings, note: sent.append(note))
+    return sent
+
+
+def test_failures_are_notified(settings, fake_pipeline, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("disk full")
+
+    sent = collect_notes(monkeypatch)
+    monkeypatch.setattr(worker_module.transcribe, "run", broken)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    [note] = sent
+    assert (note.title, note.message, note.link, note.tone) == ("Failed: Big stream", "RuntimeError: disk full", f"videos/{vod_id}", "bad")
 
 
 def test_recover_requeues_interrupted_work(settings, fake_pipeline):

@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import { api, errorText, type Clip } from "../api";
 import { ClipCard } from "../ClipCard";
-import { LinkIcon, UploadIcon } from "../icons";
-import { go, usePoll } from "../lib";
+import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
+import { cn, go, usePoll } from "../lib";
+import { PauseBar } from "../PauseBar";
 import { ErrorNote, Screen, useToast } from "../ui";
 
 /** Approved clips: being rendered, ready to upload, and uploaded. */
@@ -11,16 +12,18 @@ export function Approved() {
     () => api.clips(["approved", "rendering", "failed", "rendered", "uploaded"]),
     5000,
   );
+  const { data: pauses, setData: setPauses } = usePoll(api.pauses, 10000);
   const ready = clips?.filter((c) => c.status === "rendered") ?? [];
   const working = clips?.filter((c) => ["approved", "rendering", "failed"].includes(c.status)) ?? [];
   const uploaded = clips?.filter((c) => c.status === "uploaded") ?? [];
 
   return (
     <Screen title="Upload" subtitle="Approved clips, ready to post to YouTube.">
+      <PauseBar parts={["renders", "uploads"]} pauses={pauses} onChange={setPauses} />
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && <p className="mt-10 text-center text-sm text-zinc-500">Nothing approved yet.</p>}
-      <Section title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} />} />
-      <Section title="Rendering" clips={working} footer={(c) => <RenderFooter clip={c} onRetry={refresh} />} />
+      <Section title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
+      <Section title="Rendering" clips={working} footer={(c) => <RenderFooter clip={c} onChanged={refresh} />} />
       <Section title="Uploaded" clips={uploaded} footer={(c) => <UploadedFooter clip={c} />} />
     </Screen>
   );
@@ -42,41 +45,83 @@ function Section(props: { title: string; clips: Clip[]; footer: (c: Clip) => Rea
   );
 }
 
-function UploadFooter({ clip }: { clip: Clip }) {
+/** Runs a clip action with a toast, and an undo where there is one. */
+function useClipAction(onChanged: () => void) {
+  const toast = useToast();
+  return async (work: () => Promise<unknown>, done?: string, undo?: () => Promise<unknown>) => {
+    try {
+      await work();
+      if (done) toast({ text: done, action: undo && { label: "Undo", run: () => void undo().then(onChanged) } });
+      onChanged();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+}
+
+function FooterButton(props: { onClick: () => void; tone?: "danger" | "accent"; children: ReactNode }) {
   return (
     <button
-      onClick={() => go(`upload/${clip.id}`)}
-      className="flex w-full items-center gap-2 border-t border-white/5 px-3 py-2.5 text-left text-sm active:bg-white/5"
+      onClick={props.onClick}
+      className={cn(
+        "flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium active:bg-white/5",
+        props.tone === "danger" ? "text-red-300" : props.tone === "accent" ? "font-semibold text-violet-300" : "text-zinc-400",
+      )}
     >
-      <span className="min-w-0 flex-1 truncate text-zinc-400">
-        {clip.destination_name ? `To ${clip.destination_name}` : "No channel chosen yet"}
-      </span>
-      <span className="flex items-center gap-1.5 font-semibold text-violet-300">
-        <UploadIcon className="size-4" /> Upload
-      </span>
+      {props.children}
     </button>
   );
 }
 
-function RenderFooter({ clip, onRetry }: { clip: Clip; onRetry: () => void }) {
-  const toast = useToast();
-  if (clip.status !== "failed") return null;
+function UploadFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }) {
+  const act = useClipAction(onChanged);
   return (
-    <div className="space-y-2 border-t border-white/5 p-3">
-      <p className="line-clamp-3 break-words text-xs text-red-300">{clip.error}</p>
-      <button
-        onClick={async () => {
-          try {
-            await api.approve(clip.id);
-            onRetry();
-          } catch (e) {
-            toast({ text: errorText(e) });
-          }
-        }}
-        className="rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-semibold active:bg-zinc-700"
-      >
-        Render again
-      </button>
+    <div className="border-t border-white/5">
+      <p className="truncate px-3 pt-2 text-xs text-zinc-500">
+        {clip.destination_name ? `To ${clip.destination_name}` : "No channel chosen yet"}
+      </p>
+      <div className="flex divide-x divide-white/5">
+        <FooterButton onClick={() => act(() => api.restore(clip.id), "Back in the inbox. Its render was deleted.")}>
+          <InboxIcon className="size-4" /> To inbox
+        </FooterButton>
+        <FooterButton
+          tone="danger"
+          onClick={() => act(() => api.reject(clip.id), "Deleted", () => api.approve(clip.id))}
+        >
+          <TrashIcon className="size-4" /> Delete
+        </FooterButton>
+        <FooterButton tone="accent" onClick={() => go(`upload/${clip.id}`)}>
+          <UploadIcon className="size-4" /> Upload
+        </FooterButton>
+      </div>
+    </div>
+  );
+}
+
+function RenderFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }) {
+  const act = useClipAction(onChanged);
+  const failed = clip.status === "failed";
+  return (
+    <div className="border-t border-white/5">
+      {failed && <p className="line-clamp-3 break-words px-3 pt-2 text-xs text-red-300">{clip.error}</p>}
+      <div className="flex divide-x divide-white/5">
+        <FooterButton onClick={() => act(() => api.restore(clip.id), "Back in the inbox")}>
+          <InboxIcon className="size-4" /> To inbox
+        </FooterButton>
+        {failed ? (
+          <FooterButton tone="accent" onClick={() => act(() => api.approve(clip.id))}>
+            Render again
+          </FooterButton>
+        ) : (
+          <FooterButton
+            tone="accent"
+            onClick={() => act(() => (clip.paused ? api.resumeClip(clip.id) : api.pauseClip(clip.id)))}
+          >
+            {clip.paused ? <PlayIcon className="size-4" /> : <PauseIcon className="size-4" />}
+            {clip.paused ? "Resume" : "Pause"}
+          </FooterButton>
+        )}
+      </div>
     </div>
   );
 }

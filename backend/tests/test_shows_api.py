@@ -27,6 +27,17 @@ def client(settings):
     return TestClient(web_app.create_app(settings))
 
 
+def test_shows_keep_how_many_clips_to_offer_and_what_goes_ahead_without_review(client):
+    show = client.post("/api/shows", json={**PRESHOW, "max_chapters": 3, "max_shorts": 8, "auto_episode": "upload",
+                                           "auto_visibility": "unlisted"}).json()
+    assert (show["max_chapters"], show["max_shorts"], show["auto_episode"], show["auto_chapters"], show["auto_visibility"]) == (
+        3, 8, "upload", "review", "unlisted",
+    )
+    assert client.patch(f"/api/shows/{show['id']}", json={"auto_shorts": "sometimes"}).status_code == 422
+    assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": -1}).status_code == 422
+    assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": 12}).json()["max_shorts"] == 12
+
+
 def test_shows_set_the_mode_of_matching_links(client):
     assert client.post("/api/shows", json={**PRESHOW, "title_template": "no title here"}).status_code == 422
     show = client.post("/api/shows", json={**PRESHOW, "mode": "segment"}).json()

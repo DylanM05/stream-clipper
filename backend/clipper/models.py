@@ -74,6 +74,10 @@ class LLMChapter(BaseModel):
     title: str = Field(description="YouTube title for this chapter as its own video, within the task's title length")
     summary: str = Field(description="1-3 factual sentences, usable as the video description")
     confidence: float = Field(description="0-1: how sure you are about this chapter's boundaries")
+    # The default keeps answers saved before it existed readable; Claude is always asked for it.
+    score: float = Field(
+        default=0, description="0-1: how likely this chapter is to do well as its own video. Reserve 0.9+ for standout ones"
+    )
 
 
 class LLMHighlight(BaseModel):
@@ -106,7 +110,7 @@ class Clip(BaseModel):
     end: float
     title: str
     description: str
-    score: float  # chapter confidence or highlight score
+    score: float  # how likely it is to do well, per Claude
     why: str = ""  # highlights: why Claude picked the moment
     vertical_ok: bool = False
     llm_start: str

@@ -33,6 +33,7 @@ export function Screen(props: {
 
 const CLIP_STATUS: Record<ClipStatus, [string, string]> = {
   proposed: ["To review", "bg-violet-500/15 text-violet-300"],
+  extra: ["Extra", "bg-zinc-500/15 text-zinc-300"],
   approved: ["Queued to render", "bg-amber-500/15 text-amber-300"],
   rendering: ["Rendering", "bg-amber-500/15 text-amber-300"],
   rendered: ["Ready to upload", "bg-sky-500/15 text-sky-300"],
@@ -55,13 +56,19 @@ const VOD_STATUS: Record<VodStatus, [string, string]> = {
   failed: ["Failed", "bg-red-500/15 text-red-300"],
 };
 
-export function ClipStatusChip({ status }: { status: ClipStatus }) {
+const PAUSED = "bg-amber-500/15 text-amber-300";
+
+export function ClipStatusChip({ status, paused }: { status: ClipStatus; paused?: boolean }) {
   const [label, tone] = CLIP_STATUS[status];
+  if (paused && status === "approved") return <Chip tone={PAUSED}>Render paused</Chip>;
+  if (paused && status === "rendering") return <Chip tone={PAUSED}>Pausing…</Chip>;
   return <Chip tone={tone}>{label}</Chip>;
 }
 
-export function VodStatusChip({ status }: { status: VodStatus }) {
+export function VodStatusChip({ status, paused }: { status: VodStatus; paused?: boolean }) {
   const [label, tone] = VOD_STATUS[status];
+  if (paused && (status === "queued" || status === "waiting")) return <Chip tone={PAUSED}>Paused</Chip>;
+  if (paused && status !== "ready" && status !== "failed") return <Chip tone={PAUSED}>Pausing…</Chip>;
   return <Chip tone={tone}>{label}</Chip>;
 }
 

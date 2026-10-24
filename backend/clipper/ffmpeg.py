@@ -19,7 +19,8 @@ def run(
 ) -> str:
     """Run ffmpeg and return its log output (stderr). Raises FFmpegError on failure.
 
-    With `on_progress` and the output's expected `duration`, reports progress from 0 to 1 as it runs.
+    With `on_progress` and the output's expected `duration`, reports progress from 0 to 1 as it runs. If
+    `on_progress` raises (e.g. the work was paused), ffmpeg is stopped and the exception passes on.
     """
     cmd = ["ffmpeg", "-hide_banner", "-nostdin", "-nostats", "-y"]
     if on_progress and duration:
@@ -50,10 +51,14 @@ def _run_with_progress(cmd: list[str], cwd: Path | None, on_progress: Callable[[
         # Read the log on another thread so a full stderr pipe can't stall ffmpeg.
         reader = threading.Thread(target=lambda: stderr.append(proc.stderr.read()), daemon=True)
         reader.start()
-        for line in proc.stdout:
-            key, _, value = line.strip().partition("=")
-            if key == "out_time_us" and value.isdigit():
-                on_progress(min(1.0, int(value) / 1e6 / duration))
+        try:
+            for line in proc.stdout:
+                key, _, value = line.strip().partition("=")
+                if key == "out_time_us" and value.isdigit():
+                    on_progress(min(1.0, int(value) / 1e6 / duration))
+        except BaseException:
+            proc.kill()
+            raise
         proc.wait()
         reader.join()
     log = "".join(stderr)

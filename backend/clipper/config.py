@@ -19,9 +19,10 @@ class Settings(BaseSettings):
     download_limit_mbps: float = 50
 
     # Disk space. A stream's big files (source, preview, audio, renders) are deleted this many days after
-    # all its clips are uploaded or rejected; also changeable in the app. New downloads wait while the
-    # data disk has less than min_free_gb free.
-    cleanup_after_days: float = 3
+    # all its clips are uploaded or rejected (0 = right away); also changeable in the app. Each rendered clip
+    # is deleted once the worker has uploaded it. New downloads wait while the data disk has less than
+    # min_free_gb free.
+    cleanup_after_days: float = 0
     min_free_gb: float = 40
 
     # Transcription (faster-whisper)
@@ -60,6 +61,14 @@ class Settings(BaseSettings):
     # Uploading through YouTube Studio in a signed-in browser (studio.py)
     studio_cdp_url: str = "http://127.0.0.1:9222"  # the browser's remote debugging address
     browser_view_url: str = ""  # where you see that browser to sign in, e.g. its noVNC page
+
+    # Notifications (notify.py): an ntfy topic link like https://ntfy.sh/<topic> (with an access token if the
+    # topic is protected) and/or a Discord channel's webhook link. app_url, the app's address, lets a
+    # notification open the right page.
+    ntfy_url: str = ""
+    ntfy_token: str = ""
+    discord_webhook_url: str = ""
+    app_url: str = ""
 
     @property
     def studio_dir(self) -> Path:

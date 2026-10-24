@@ -6,8 +6,8 @@ Turns long stream VODs (Twitch, YouTube, Kick, X) into chapter videos and highli
 - **Phase 1:** the processing pipeline.
 - **Phase 2:** the review app.
 - **Phase 3:** uploads through the YouTube API, with YouTube Studio automation as a fallback, plus the upload kit for posting by hand.
-- **Phase 4, part:** shows, plus watching Kick, Twitch and YouTube channels and X accounts.
-- **Next:** notifications.
+- **Phase 4:** shows, watching Kick, Twitch and YouTube channels and X accounts, notifications (ntfy and Discord), and pausing.
+- **Phase 5, part:** each show offers only its best few clips per stream, and can let kinds of video skip review.
 
 How it works:
 
@@ -20,8 +20,8 @@ How it works:
    - the Kick, Twitch or YouTube channels, or X accounts, to watch
 3. New streams are picked up from watched channels once they've ended, and videos posted on X as soon as they're seen. You can also paste any link in the app.
 4. The worker downloads the video and makes a small preview copy. Then it transcribes the video, has Claude (through Claude Code on your subscription) pick chapters and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. Titles follow the show's patterns, e.g. `KINO CASINO Oct 23, 2026 - <title Claude wrote>`. A full episode gets Claude's episode title and summary, plus YouTube chapter timestamps in its description.
-5. Everything lands in your **Inbox**. Swipe right to approve and left to reject, or tap one to trim it on the preview, fix the title, pick its channel, and choose whether it also becomes a vertical Short.
-6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them.
+5. The show's best few chapters and Shorts per stream, by Claude's score (5 of each unless you change it), land in your **Inbox**, along with the full episode. Claude's other picks wait on the video's page as extras. Swipe right to approve and left to reject, or tap one to trim it on the preview, fix the title, pick its channel, and choose whether it also becomes a vertical Short. A show can also let a kind of video skip review: rendered and left ready to upload, or rendered and uploaded.
+6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them. Once the worker uploads a clip, its file is deleted; once every clip of a stream is done, so is the stream's video.
 
 A pre-show from X is usually posted whole, and Claude writes its short title from the post's text. Links that don't match any show are posted whole if they're from X and clipped otherwise.
 
@@ -106,7 +106,11 @@ Keep `CLIPPER_HOST_DATA_DIR` on an SSD. Converting, previewing, transcribing and
 
 An 8-hour stream takes about 45–60 GB at its peak: the source, the rendered chapters and clips, the preview copy and the audio.
 
-**Cleanup:** once every clip of a stream is uploaded or rejected, its big files are deleted after 3 days. Change the number of days on the Videos screen. The transcript and Claude's picks are kept, but that stream's clips can't be re-cut afterwards.
+**Cleanup:**
+- Each rendered clip is deleted as soon as the worker has uploaded it. A full episode's file is the stream itself, which the other clips still need, so it goes with the stream.
+- Once every clip of a stream is uploaded, rejected or an extra, the stream's big files (the video, preview copy, audio and renders) are deleted within a few minutes. To keep them a while in case you want to re-cut something, set a number of days on the Videos screen (`CLIPPER_CLEANUP_AFTER_DAYS`).
+- To free a stream's space before then, open it on the Videos screen and tap **Delete this stream's video files**. Its clips that aren't uploaded yet are rejected, since there's nothing left to cut them from.
+- The transcript and Claude's picks are always kept, but a stream's clips can't be re-cut once its files are gone.
 
 **Low space:** while the disk has less than 40 GB free (`CLIPPER_MIN_FREE_GB`), new downloads wait.
 
@@ -121,9 +125,29 @@ docker compose up -d
 
 Anything that was mid-processing carries on from the files already there.
 
+### Pausing
+
+The switches on the Videos screen pause **Downloads**, **Processing** (preview copy, transcription and Claude's picks), **Rendering** and **Uploads** as a whole; the Upload screen has the last two as well. Each video also has a **Pause** button, and so does each clip waiting to render.
+- What's running stops within a few seconds. A download keeps what it has and carries on from there; a transcription or render starts that step again. Claude's step and the audio analysis can't be stopped partway, so a pause takes effect once they finish.
+- Pausing processing still lets downloads go ahead, and the other way round, so you can download overnight and process later.
+- An upload that has started finishes first.
+
+## Notifications
+
+The worker can tell you when a video is ready to review, when something fails or needs you (a sign-in to redo, a full disk, Claude's usage limit), when a watched channel posts something new, and when a video is uploaded, with its link. They go to an [ntfy](https://ntfy.sh) topic, a Discord channel, or both. ntfy can't post to Discord itself, so Discord gets its own copy straight from the worker.
+
+Set any of these in `.env`, then run `docker compose up -d`:
+- **ntfy:** `CLIPPER_NTFY_URL=https://ntfy.sh/<topic>`. Pick a long random topic name: anyone who knows a topic on ntfy.sh can read it. For your own ntfy server, use its address and, if the topic is protected, an access token in `CLIPPER_NTFY_TOKEN`. Subscribe to the topic in the ntfy phone app.
+- **Discord:** in the channel's settings, go to **Integrations → Webhooks → New Webhook**, copy its URL and set `CLIPPER_DISCORD_WEBHOOK_URL` to it. An upload notification includes the YouTube link, which Discord shows as the video.
+- **Links back to the app:** `CLIPPER_APP_URL=https://<server-name>.<your-tailnet>.ts.net` makes tapping a notification open the right page.
+
+The Videos screen says where notifications go and has a **Send a test** link.
+
 ## Automatic uploads
 
 Start one from a clip's **Upload** page and pick Public, Unlisted or Private. Uploads run one at a time and show their progress there. A channel connected to the YouTube API uploads through the API; any other channel uploads through YouTube Studio in the upload browser.
+
+A show can also upload a kind of video by itself: under the show, set **Without review** to **Upload** for its full episode, chapters or Shorts, and pick the visibility. They're rendered and queued for upload as soon as they're processed, to the channel the show sends them to. A highlight goes up as its Short if it has one, else as a regular video.
 
 ### Through the YouTube API
 
@@ -152,7 +176,7 @@ The manual steps (share to the YouTube app, or download and drag into Studio) st
 ## Watching X accounts
 
 Add `x.com/name` under a show's **Channels to watch**. X only shows an account's posts to signed-in visitors, and its API costs money, so the worker reads them through the upload browser, signed in to X (setup step 9). Every 10 minutes it opens the account's profile there and reads the posts from the data X's page loads.
-- **What's picked up:** the account's own posts with a video, as soon as they're seen. Reposts and text-only posts are left out. The filters apply to the post's text and the video's length; a minimum length keeps short clips out.
+- **What's picked up:** the account's own posts with a video, as soon as they're seen. Reposts and text-only posts are left out. The filters apply to the post's text and the video's length: **Only posts with** takes words every wanted post has (such as the words a pre-show's post always uses), and a minimum length keeps short clips out. Posts a filter leaves out are listed as skipped, with a **Process** button.
 - **Signed out:** the account's card under **Shows** says whether the browser is signed in to X. If X signs it out or asks it to verify itself, the card shows that; sign in again in the browser.
 - **X's terms:** they don't allow automated access, even through your own sign-in. One profile looked at every 10 minutes is unlikely to stand out, but X could ask the account to verify itself or lock it. Use a spare X account, never your main one.
 - **X changes its site:** if the card says it found no posts at all, X has changed how its page sends them, and `backend/clipper/xposts.py` needs updating. Pasting the post's link on **Videos** still works meanwhile.
@@ -161,11 +185,11 @@ Add `x.com/name` under a show's **Channels to watch**. X only shows an account's
 
 | Screen | What you do there |
 |---|---|
-| **Inbox** | Review proposed clips. Swipe right to approve, left to reject, or use the buttons. After each decision you get an **Undo**. |
+| **Inbox** | Review proposed clips: each show's best few per stream, and the full episode. Swipe right to approve, left to reject, or use the buttons. After each decision you get an **Undo**. |
 | **Clip editor** | Tap a clip to open it. Drag the handles on the strip under the video, or fine-tune with **−1s / −0.2 / Here / +0.2 / +1s**; every change plays the few seconds around the new cut. **Last 5s** checks that nothing is cut off. Tap a transcript line to hear it, or use its **Start** and **End** buttons to cut there. Edit the title and description, and turn the vertical Short on or off. The volume slider only changes the preview, not the clip; on iPhones it's a mute button, because iOS only allows the hardware buttons. **Approve** takes you straight to the next clip. |
-| **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). The line below it shows free disk space and when finished streams' files are deleted. |
-| **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through the YouTube API, or YouTube Studio for channels not connected to it, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
-| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name`, `youtube.com/@name` or `x.com/name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended, or a video posted on X as soon as it's seen. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**, where you connect each one to the YouTube API. |
+| **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). The lines below it show free disk space, when finished streams' files are deleted, and where notifications go. The switches above them pause parts of the work, and each video in progress has its own **Pause** (see [Pausing](#pausing)). Open a video to see all its clips, including the **Extras** that didn't make the show's best few (open one and approve it to use it), and to delete its video files early. |
+| **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. A clip waiting to render can be paused or sent back **To inbox**; a ready one can go back **To inbox** or be **Deleted**, which deletes its render too. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through the YouTube API, or YouTube Studio for channels not connected to it, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
+| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **Clips offered per stream** sets how many chapters and Shorts (highlights) of each stream reach the inbox, best-scored first; raise them as your YouTube upload limit grows. **Without review** sets, for the full episode, chapters and Shorts, whether they wait for **Review**, are rendered straight away (**Render**), or are rendered and uploaded (**Upload**, with the visibility you pick). **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name`, `youtube.com/@name` or `x.com/name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended, or a video posted on X as soon as it's seen. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**, where you connect each one to the YouTube API. |
 
 ## Command line
 

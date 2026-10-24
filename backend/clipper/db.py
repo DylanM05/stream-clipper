@@ -22,11 +22,21 @@ VOD_ACTIVE = ("downloading", "preparing", "transcribing", "analysing", "segmenti
 VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
 
 # Clip statuses: proposed -> approved -> rendering -> rendered -> uploaded, or rejected; failed renders can be retried.
-CLIP_STATUSES = ("proposed", "approved", "rejected", "rendering", "rendered", "uploaded", "failed")
+# "extra" is a pick beyond the show's best few per stream: kept out of the inbox unless you add it.
+CLIP_STATUSES = ("proposed", "extra", "approved", "rejected", "rendering", "rendered", "uploaded", "failed")
+# A stream whose clips all have one of these needs its video files no more (see Worker.clean_up_next).
+CLIP_DONE = ("uploaded", "rejected", "extra")
 
 # What a video becomes: "segment" is chapters and highlights, "whole" is the full episode as one
 # video, "both" is the full episode plus the chapters and highlights.
 MODES = ("segment", "whole", "both")
+
+# What happens to a show's new full episodes, chapters or highlights: wait in the inbox for review,
+# render without review, or render and upload without review.
+AUTO_MODES = ("review", "render", "upload")
+
+# Parts of the work that can be paused from the app. What's running stops and carries on when resumed.
+PAUSABLE = ("downloads", "processing", "renders", "uploads")
 
 # Posts on these sites are short and get uploaded as they are, not split into clips.
 WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
@@ -88,11 +98,22 @@ class Show(SQLModel, table=True):
     clip_guidance: str = ""  # for Claude: what the chapters and highlights should be
     clip_destination_id: int | None = Field(default=None, foreign_key="destination.id")
     episode_destination_id: int | None = Field(default=None, foreign_key="destination.id")
+    # How many of each stream's chapters and highlights are offered, best-scored first; the rest are extras.
+    max_chapters: int = 5
+    max_shorts: int = 5
+    # See AUTO_MODES; automatic uploads get auto_visibility.
+    auto_episode: str = "review"
+    auto_chapters: str = "review"
+    auto_shorts: str = "review"
+    auto_visibility: str = "public"
     created_at: datetime = Field(default_factory=utcnow)
 
     @property
     def full_episode_template(self) -> str:
         return self.episode_template or self.title_template
+
+    def auto_for(self, kind: str) -> str:
+        return {"whole": self.auto_episode, "chapter": self.auto_chapters, "highlight": self.auto_shorts}[kind]
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]
@@ -115,6 +136,7 @@ class Vod(SQLModel, table=True):
     progress: float = 0  # 0-1 within the current status
     error: str = ""  # why it failed, or why it's waiting
     retry_at: datetime | None = None
+    paused: bool = False  # held in the app; carries on from its last finished step when resumed
     cleaned_at: datetime | None = None  # when its big files were deleted (see Worker.clean_up)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -136,6 +158,7 @@ class ClipRecord(SQLModel, table=True):
     vertical_ok: bool = False
     make_short: bool = False  # also render a vertical Short
     status: str = Field(default="proposed", index=True)
+    paused: bool = False  # its render is held in the app
     error: str = ""
     video_path: str = ""
     short_path: str = ""
@@ -200,6 +223,11 @@ def set_app_setting(s: Session, key: str, value: str) -> None:
     row = s.get(AppSetting, key) or AppSetting(key=key, value=value)
     row.value = value
     s.add(row)
+
+
+def is_paused(s: Session, part: str) -> bool:
+    """Whether one of PAUSABLE is paused in the app."""
+    return get_app_setting(s, f"paused_{part}") == "1"
 
 
 def default_mode(url: str) -> str:

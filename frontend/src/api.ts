@@ -11,10 +11,17 @@ export type VodStatus =
   | "ready"
   | "failed";
 
-export type ClipStatus = "proposed" | "approved" | "rejected" | "rendering" | "rendered" | "uploaded" | "failed";
+/** "extra": picked by Claude but beyond the show's best few per stream, so not in the inbox. */
+export type ClipStatus = "proposed" | "extra" | "approved" | "rejected" | "rendering" | "rendered" | "uploaded" | "failed";
 
 /** "segment": chapters and highlights; "whole": the full episode; "both": full episode plus clips. */
 export type Mode = "segment" | "whole" | "both";
+
+/** What happens to a show's new videos of one kind: wait for review, render without review, or render and upload. */
+export type Auto = "review" | "render" | "upload";
+
+/** Parts of the work that can be paused as a whole. */
+export type Pauses = { downloads: boolean; processing: boolean; renders: boolean; uploads: boolean };
 
 export interface Vod {
   id: number;
@@ -32,6 +39,8 @@ export interface Vod {
   progress: number;
   error: string;
   retry_at: string | null;
+  paused: boolean;
+  downloaded: boolean; // so it only waits for processing
   cleaned: boolean;
   created_at: string;
   counts: Partial<Record<ClipStatus, number>>;
@@ -53,6 +62,7 @@ export interface Clip {
   vertical_ok: boolean;
   make_short: boolean;
   status: ClipStatus;
+  paused: boolean; // its render is held
   error: string;
   has_video: boolean;
   has_short: boolean;
@@ -136,6 +146,12 @@ export interface Show {
   clip_guidance: string;
   clip_destination_id: number | null;
   episode_destination_id: number | null;
+  max_chapters: number; // offered per stream, best first; the rest are extras
+  max_shorts: number;
+  auto_episode: Auto;
+  auto_chapters: Auto;
+  auto_shorts: Auto;
+  auto_visibility: Visibility; // for automatic uploads
   channels: Channel[];
   video_count: number;
 }
@@ -213,11 +229,18 @@ export const api = {
   updateSettings: (body: Partial<AppSettings>) => patch<AppSettings>("/api/settings", body),
   storage: () =>
     request<{ free_gb: number | null; total_gb: number | null; videos_gb: number; min_free_gb: number }>("/api/storage"),
+  pauses: () => request<Pauses>("/api/pauses"),
+  setPauses: (body: Partial<Pauses>) => patch<Pauses>("/api/pauses", body),
+  notifications: () => request<{ ntfy: boolean; discord: boolean; links: boolean }>("/api/notifications"),
+  testNotification: () => post<{ sent: boolean }>("/api/notifications/test"),
 
   vods: () => request<Vod[]>("/api/vods"),
   vod: (id: number) => request<{ vod: Vod; clips: Clip[] }>(`/api/vods/${id}`),
   addVod: (body: { url: string; mode?: Mode; notes?: string }) => post<Vod>("/api/vods", body),
   retryVod: (id: number) => post<Vod>(`/api/vods/${id}/retry`),
+  pauseVod: (id: number) => post<Vod>(`/api/vods/${id}/pause`),
+  resumeVod: (id: number) => post<Vod>(`/api/vods/${id}/resume`),
+  deleteVodFiles: (id: number) => changed(post<Vod>(`/api/vods/${id}/delete-files`)),
 
   clips: (statuses: ClipStatus[]) =>
     request<Clip[]>(`/api/clips?${statuses.map((s) => `status=${s}`).join("&")}`),
@@ -226,6 +249,8 @@ export const api = {
   approve: (id: number) => changed(post<Clip>(`/api/clips/${id}/approve`)),
   reject: (id: number) => changed(post<Clip>(`/api/clips/${id}/reject`)),
   restore: (id: number) => changed(post<Clip>(`/api/clips/${id}/restore`)),
+  pauseClip: (id: number) => post<Clip>(`/api/clips/${id}/pause`),
+  resumeClip: (id: number) => post<Clip>(`/api/clips/${id}/resume`),
   markUploaded: (id: number, youtube_url: string) => changed(post<Clip>(`/api/clips/${id}/uploaded`, { youtube_url })),
   unmarkUploaded: (id: number) => changed(post<Clip>(`/api/clips/${id}/not-uploaded`)),
   transcript: (id: number) => request<Line[]>(`/api/clips/${id}/transcript`),

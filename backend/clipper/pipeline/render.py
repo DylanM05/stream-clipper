@@ -39,18 +39,32 @@ def run(
     return outputs
 
 
-def render_landscape(source: Path, clip: Clip, out: Path, settings: Settings) -> None:
+def render_landscape(
+    source: Path, clip: Clip, out: Path, settings: Settings, on_progress: Callable[[float], None] | None = None
+) -> None:
     tmp = out.with_name(out.stem + ".tmp.mp4")
-    _encode(settings, lambda hwaccel: [
-        *_input_args(source, clip, hwaccel),
-        "-map", "0:v:0", "-map", "0:a:0?",
-        *_video_args(settings), *_audio_args(clip),
-        "-movflags", "+faststart", str(tmp),
-    ])
+    _encode(
+        settings,
+        lambda hwaccel: [
+            *_input_args(source, clip, hwaccel),
+            "-map", "0:v:0", "-map", "0:a:0?",
+            *_video_args(settings), *_audio_args(clip),
+            "-movflags", "+faststart", str(tmp),
+        ],
+        on_progress=on_progress,
+        duration=clip.duration,
+    )
     tmp.replace(out)
 
 
-def render_short(source: Path, clip: Clip, words: list[Word], out: Path, settings: Settings) -> None:
+def render_short(
+    source: Path,
+    clip: Clip,
+    words: list[Word],
+    out: Path,
+    settings: Settings,
+    on_progress: Callable[[float], None] | None = None,
+) -> None:
     captions = out.with_name(out.stem + ".ass")
     write_text(captions, build_ass(words, clip.start, clip.end, font=settings.caption_font))
     if settings.short_layout == "crop":
@@ -75,6 +89,8 @@ def render_short(source: Path, clip: Clip, words: list[Word], out: Path, setting
             "-movflags", "+faststart", tmp.name,
         ],
         cwd=out.parent,
+        on_progress=on_progress,
+        duration=clip.duration,
     )
     tmp.replace(out)
 

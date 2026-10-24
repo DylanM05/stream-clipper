@@ -18,9 +18,10 @@ from sqlmodel import Session, col, or_, select
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, unsmuggle_url
 
-from . import xposts
+from . import notify, xposts
 from .config import Settings
 from .db import Channel, ChannelVideo, Show, get_engine, queue_vod, utcnow
+from .notify import Note
 
 log = logging.getLogger(__name__)
 
@@ -109,12 +110,13 @@ def is_live(entry: dict) -> bool:
 def skip_reason(channel: Channel, item: Listed) -> str:
     """Why the channel's filters leave this video out, or "" to process it."""
     title = item.title.lower()
+    what = "post" if channel.platform == "x" else "title"
     keywords = [k.strip().lower() for k in channel.keywords.split(",") if k.strip()]
     exclude = [x.strip().lower() for x in channel.exclude.split(",") if x.strip()]
     if keywords and not any(k in title for k in keywords):
-        return "The title has none of the keywords"
+        return f"The {what} has none of the keywords"
     if hit := next((x for x in exclude if x in title), None):
-        return f'The title has "{hit}"'
+        return f'The {what} has "{hit}"'
     if channel.min_minutes and (item.duration or 0) < channel.min_minutes * 60:
         return f"Shorter than {channel.min_minutes:g} minutes"
     return ""
@@ -150,19 +152,22 @@ class Monitor:
     def check(self, channel_id: int) -> None:
         with Session(self.engine) as s:
             channel = s.get(Channel, channel_id)
-            platform, url = channel.platform, channel.url
+            platform, url, was_failing = channel.platform, channel.url, bool(channel.last_error)
         try:
             listed = self.lister(platform, url)
         except Exception as e:
             log.warning("Checking %s failed: %s", url, e)
             error = str(e) if isinstance(e, xposts.XError) else f"{type(e).__name__}: {e}"
             self._finish(channel_id, last_error=error[:500])
+            if not was_failing:  # once, not on every check until it's fixed
+                notify.send(self.settings, Note(f"Can't check {url}", error[:500], link="shows", tone="bad"))
             return
 
         with Session(self.engine) as s:
             channel = s.get(Channel, channel_id)
             show = s.get(Show, channel.show_id)
             queued = 0
+            new_titles = []
             for item in listed:
                 row = s.exec(
                     select(ChannelVideo).where(ChannelVideo.channel_id == channel_id, ChannelVideo.video_id == item.id)
@@ -188,10 +193,14 @@ class Monitor:
                     row.vod_id = queue_vod(s, row.url, show=show).id
                     row.status, row.reason = "queued", ""
                     queued += 1
+                    new_titles.append((row.vod_id, row.title or row.url))
                 s.add(row)
             s.commit()
+            show_name = show.name
         if queued:
             log.info("Queued %d new video(s) from %s", queued, url)
+        for vod_id, title in new_titles:
+            notify.send(self.settings, Note(f"New for {show_name}", title[:300], link=f"videos/{vod_id}", tone="quiet"))
         self._finish(channel_id, last_error="", baseline_done=True)
 
     def _finish(self, channel_id: int, **fields) -> None:

@@ -19,10 +19,11 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import Session, col, select
 
+from .. import notify
 from ..config import Settings, get_settings
 from ..db import (
-    Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
-    get_app_setting, get_engine, queue_vod, set_app_setting, utcnow,
+    PAUSABLE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
+    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, utcnow,
 )
 from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
@@ -43,6 +44,9 @@ REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 PUBLIC_PATHS = {"/api/session", "/api/login", CALLBACK_PATH}
 SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
+Auto = Literal["review", "render", "upload"]
+Visibility = Literal["public", "unlisted", "private"]
+ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")  # statuses with a render queued, running or done
 
 
 # --- API shapes ----------------------------------------------------------------
@@ -64,6 +68,8 @@ class VodOut(BaseModel):
     progress: float
     error: str
     retry_at: str | None
+    paused: bool
+    downloaded: bool  # so it only waits for processing
     cleaned: bool  # its video files were deleted to free space
     created_at: str
     counts: dict[str, int]  # clips per status
@@ -85,6 +91,7 @@ class ClipOut(BaseModel):
     vertical_ok: bool
     make_short: bool
     status: str
+    paused: bool  # its render is held
     error: str
     has_video: bool
     has_short: bool
@@ -124,6 +131,12 @@ class ShowIn(BaseModel):
     clip_guidance: str = Field(default="", max_length=10000)
     clip_destination_id: int | None = None
     episode_destination_id: int | None = None
+    max_chapters: int = Field(default=5, ge=0, le=100)
+    max_shorts: int = Field(default=5, ge=0, le=100)
+    auto_episode: Auto = "review"
+    auto_chapters: Auto = "review"
+    auto_shorts: Auto = "review"
+    auto_visibility: Visibility = "public"
 
 
 class ShowPatch(BaseModel):
@@ -136,6 +149,12 @@ class ShowPatch(BaseModel):
     clip_guidance: str | None = Field(default=None, max_length=10000)
     clip_destination_id: int | None = None
     episode_destination_id: int | None = None
+    max_chapters: int | None = Field(default=None, ge=0, le=100)
+    max_shorts: int | None = Field(default=None, ge=0, le=100)
+    auto_episode: Auto | None = None
+    auto_chapters: Auto | None = None
+    auto_shorts: Auto | None = None
+    auto_visibility: Visibility | None = None
 
 
 class DestinationIn(BaseModel):
@@ -194,6 +213,22 @@ class AppSettingsPatch(BaseModel):
 APP_SETTING_KEYS = ("download_limit_mbps", "cleanup_after_days")
 
 
+class Pauses(BaseModel):
+    """Which parts of the work are paused (db.PAUSABLE)."""
+
+    downloads: bool
+    processing: bool  # preview copy, transcription and Claude's picks
+    renders: bool
+    uploads: bool
+
+
+class PausesPatch(BaseModel):
+    downloads: bool | None = None
+    processing: bool | None = None
+    renders: bool | None = None
+    uploads: bool | None = None
+
+
 class ChannelIn(BaseModel):
     url: str = Field(min_length=4, max_length=500)
     keywords: str = Field(default="", max_length=1000)
@@ -233,6 +268,12 @@ class ShowOut(BaseModel):
     clip_guidance: str
     clip_destination_id: int | None
     episode_destination_id: int | None
+    max_chapters: int
+    max_shorts: int
+    auto_episode: str
+    auto_chapters: str
+    auto_shorts: str
+    auto_visibility: str
     channels: list[ChannelOut]
     video_count: int
 
@@ -343,8 +384,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         show = s.get(Show, vod.show_id) if vod.show_id else None
         return VodOut(**vod.model_dump(exclude={"retry_at", "created_at", "updated_at", "workspace", "cleaned_at"}),
                       show_name=show.name if show else "",
-                      retry_at=iso(vod.retry_at), cleaned=vod.cleaned_at is not None,
-                      created_at=iso(vod.created_at), counts=counts)
+                      retry_at=iso(vod.retry_at), downloaded=vod.workspace is not None,
+                      cleaned=vod.cleaned_at is not None, created_at=iso(vod.created_at), counts=counts)
 
     def channel_out(s: Session, ch: Channel) -> ChannelOut:
         waiting = s.exec(
@@ -445,6 +486,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.refresh(clip)
         return clip_out(clip, vod)
 
+    def discard_render(s: Session, clip: ClipRecord, vod: Vod) -> None:
+        """Take a clip out of the render and upload queues and delete its rendered files. A full episode's
+        file is the stream itself and stays. A render that's running stops on its own (it sees the change)."""
+        if s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id, UploadJob.status == "uploading")).first():
+            raise HTTPException(409, "It's uploading right now. Wait for that to finish.")
+        for job in s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id, UploadJob.status == "queued")):
+            s.delete(job)
+        clips_dir = (settings.vods_dir / vod.workspace / "clips").resolve() if vod.workspace else None
+        for path in (clip.video_path, clip.short_path):
+            if path and clips_dir and Path(path).parent.resolve() == clips_dir:
+                Path(path).unlink(missing_ok=True)
+        clip.video_path = clip.short_path = ""
+        clip.paused = False
+
     # --- Session ---
 
     @app.get("/api/session")
@@ -495,6 +550,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return current_settings(s)
 
+    def current_pauses(s: Session) -> Pauses:
+        return Pauses(**{part: is_paused(s, part) for part in PAUSABLE})
+
+    @app.get("/api/pauses")
+    def get_pauses(s: Session = Depends(db)) -> Pauses:
+        return current_pauses(s)
+
+    @app.patch("/api/pauses")
+    def set_pauses(body: PausesPatch, s: Session = Depends(db)) -> Pauses:
+        """Work that's running stops within a few seconds (Claude's step finishes first) and carries on when resumed."""
+        for part, value in body.model_dump(exclude_none=True).items():
+            set_app_setting(s, f"paused_{part}", "1" if value else "0")
+        s.commit()
+        return current_pauses(s)
+
+    @app.get("/api/notifications")
+    def notification_setup() -> dict:
+        return {"ntfy": bool(settings.ntfy_url), "discord": bool(settings.discord_webhook_url), "links": bool(settings.app_url)}
+
+    @app.post("/api/notifications/test")
+    def test_notification() -> dict:
+        if not notify.configured(settings):
+            raise HTTPException(409, "Notifications aren't set up: see CLIPPER_NTFY_URL and CLIPPER_DISCORD_WEBHOOK_URL in the README")
+        errors = notify.deliver(settings, notify.Note("Test from Stream Clipper", "Notifications work.", link="videos"))
+        if errors:
+            raise HTTPException(502, "Couldn't send: " + "; ".join(errors))
+        return {"sent": True}
+
     @app.get("/api/storage")
     def storage() -> dict:
         """Space on the data disk, and how much the streams' files take."""
@@ -542,6 +625,49 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(vod)
         s.commit()
         s.refresh(vod)
+        return vod_out(s, vod)
+
+    @app.post("/api/vods/{vod_id}/pause")
+    def pause_vod(vod_id: int, s: Session = Depends(db)) -> VodOut:
+        """Hold a video: what it's doing stops within a few seconds, and it waits until resumed."""
+        vod = found(s, Vod, vod_id, "video")
+        if vod.status in ("ready", "failed"):
+            raise HTTPException(409, "It isn't being processed")
+        vod.paused, vod.updated_at = True, utcnow()
+        s.add(vod)
+        s.commit()
+        s.refresh(vod)
+        return vod_out(s, vod)
+
+    @app.post("/api/vods/{vod_id}/resume")
+    def resume_vod(vod_id: int, s: Session = Depends(db)) -> VodOut:
+        vod = found(s, Vod, vod_id, "video")
+        vod.paused, vod.updated_at = False, utcnow()
+        s.add(vod)
+        s.commit()
+        s.refresh(vod)
+        return vod_out(s, vod)
+
+    @app.post("/api/vods/{vod_id}/delete-files")
+    def delete_vod_files(vod_id: int, s: Session = Depends(db)) -> VodOut:
+        """Delete a stream's video files now. Its clips that aren't uploaded can't be cut any more, so they're rejected."""
+        vod = found(s, Vod, vod_id, "video")
+        if vod.status not in ("ready", "failed") or not vod.workspace:
+            raise HTTPException(409, "Only the files of a video that's done processing (or failed) can be deleted")
+        clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod_id)).all()
+        if any(c.status == "rendering" for c in clips):
+            raise HTTPException(409, "A clip from it is rendering right now. Pause rendering first.")
+        for clip in clips:
+            if clip.status not in ("uploaded", "rejected"):
+                discard_render(s, clip, vod)
+                clip.status, clip.updated_at = "rejected", utcnow()
+                s.add(clip)
+        freed = Workspace(settings.vods_dir / vod.workspace).delete_media()
+        vod.cleaned_at = vod.updated_at = utcnow()
+        s.add(vod)
+        s.commit()
+        s.refresh(vod)
+        log.info("Deleted the files of video %d (%s) from the app: freed %.1f GB", vod_id, vod.title, freed / 1e9)
         return vod_out(s, vod)
 
     # --- Shows and the channels they watch ---
@@ -823,7 +949,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clip, vod = get_clip(s, clip_id)
         if clip.status in ("approved", "rendering", "rendered", "uploaded"):
             return clip_out(clip, vod)
+        if vod.cleaned_at:
+            raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
         return set_status(s, clip, vod, "approved")
+
+    @app.post("/api/clips/{clip_id}/pause")
+    def pause_clip(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+        """Hold a clip's render: a render that's running stops within a few seconds."""
+        clip, vod = get_clip(s, clip_id)
+        if clip.status not in ("approved", "rendering"):
+            raise HTTPException(409, "It isn't waiting to render")
+        clip.paused, clip.updated_at = True, utcnow()
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
+
+    @app.post("/api/clips/{clip_id}/resume")
+    def resume_clip(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+        clip, vod = get_clip(s, clip_id)
+        clip.paused, clip.updated_at = False, utcnow()
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
 
     @app.post("/api/clips/{clip_id}/uploaded")
     def mark_uploaded(clip_id: int, body: Uploaded, s: Session = Depends(db)) -> ClipOut:
@@ -925,7 +1074,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clip, vod = get_clip(s, clip_id)
         if clip.status != "uploaded":
             raise HTTPException(409, "This clip isn't marked as uploaded")
-        clip.status, clip.uploaded_at, clip.updated_at = "rendered", None, utcnow()
+        # Uploaded files are deleted to save space; then it renders again.
+        rendered = bool(clip.video_path) and Path(clip.video_path).exists()
+        clip.status, clip.uploaded_at, clip.updated_at = "rendered" if rendered else "approved", None, utcnow()
+        if not rendered:
+            clip.reviewed_at = utcnow()
         s.add(clip)
         s.commit()
         s.refresh(clip)
@@ -933,13 +1086,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/clips/{clip_id}/reject")
     def reject(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+        """Also deletes a render, so a clip that's ready to upload can be thrown away."""
         clip, vod = get_clip(s, clip_id)
+        if clip.status == "uploaded":
+            raise HTTPException(409, "It's on YouTube already")
+        if clip.status in ACTIVE_CLIP:
+            discard_render(s, clip, vod)
         return set_status(s, clip, vod, "rejected")
 
     @app.post("/api/clips/{clip_id}/restore")
     def restore(clip_id: int, s: Session = Depends(db)) -> ClipOut:
-        """Back to the inbox (undo for approve and reject)."""
+        """Back to the inbox: undo for approve and reject, or taking back an approved clip (its render is deleted)."""
         clip, vod = get_clip(s, clip_id)
+        if clip.status == "uploaded":
+            raise HTTPException(409, "It's on YouTube already")
+        if clip.status in ACTIVE_CLIP:
+            discard_render(s, clip, vod)
         return set_status(s, clip, vod, "proposed")
 
     @app.get("/api/clips/{clip_id}/transcript")

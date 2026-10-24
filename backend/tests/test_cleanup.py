@@ -55,12 +55,18 @@ def test_a_finished_stream_loses_its_big_files_and_keeps_the_rest(settings):
     assert w.clean_up_next() is False  # nothing left to do
 
 
+def test_by_default_a_stream_is_cleaned_up_as_soon_as_its_clips_are_done_and_extras_count_as_done(settings):
+    finished_stream(settings, ("uploaded", "extra", "rejected"), days_ago=0)
+    assert worker_module.Worker(settings).clean_up_next() is True
+
+
 @pytest.mark.parametrize("statuses, days_ago", [
     (("uploaded", "proposed"), 30),  # a clip still waits for review
     (("uploaded", "rendered"), 30),  # one is rendered but not uploaded yet
     (("uploaded", "rejected"), 1),  # finished, but still in the grace period
 ])
 def test_streams_that_arent_finished_or_due_are_left_alone(settings, statuses, days_ago):
+    settings.cleanup_after_days = 3
     _, ws, source = finished_stream(settings, statuses, days_ago)
     assert worker_module.Worker(settings).clean_up_next() is False
     assert source.exists()

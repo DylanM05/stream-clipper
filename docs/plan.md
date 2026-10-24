@@ -240,9 +240,11 @@ Keep the code in a git repo, either outside this Nextcloud folder or excluded fr
 **Phase 4: monitors and automation.**
 - YouTube, Twitch and Kick monitors, the rules engine, the scheduler, ntfy notifications, phone share ingest and the watched folder.
 - The `xbrowser` service: live view, X feed list and preshow rule. Done in the upload browser instead (see the X section).
+- As built (Oct 2026): notifications go to an ntfy topic and/or a Discord webhook (`notify.py`; ntfy can't forward to Discord). Downloads, processing, renders and uploads can each be paused, as can one video or clip; running work stops at its next progress report.
 
 **Phase 5: auto mode and polish.**
 - Per-source auto-publish thresholds, Shorts layouts and captions, chat-spike signals, cleanup of old files, and per-source approval-rate stats (used to decide when auto mode can be trusted).
+- As built (Oct 2026), simpler than thresholds: each show offers its N best-scored chapters and Shorts per stream (Claude now scores chapters too) and keeps the rest as extras; per kind (full episode, chapters, Shorts) it can review, render without review, or render and upload. Cleanup runs as soon as a stream is done, and each render is deleted once uploaded.
 - Per-creator segment style (requested after the first test): for the 8-hour Kick streams, longer and broader chapters that follow specific people (such as Jer), split where the hosts announce a new segment.
 - A stacked Shorts layout for two-webcam shows: each webcam cropped and placed one above the other.
 

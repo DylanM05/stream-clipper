@@ -83,7 +83,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
             ))}
           </div>
         )}
-        {rendered && (
+        {rendered && size > 0 && (
           <video
             key={which}
             src={media.file(clip, which)}
@@ -93,13 +93,18 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
             className={cn("w-full rounded-xl bg-black", which === "short" ? "mx-auto aspect-[9/16] max-h-96 w-auto" : "aspect-video")}
           />
         )}
+        {rendered && size === 0 && (
+          <p className="text-sm text-zinc-500">
+            {clip.status === "uploaded" ? "The file was deleted once it was uploaded, to save space." : "The file isn't there any more."}
+          </p>
+        )}
         <div className="mt-3 grid gap-2">
-          <ShareToPhone clip={clip} which={which} size={size} />
+          {size > 0 && <ShareToPhone clip={clip} which={which} size={size} />}
           <a
             href={media.file(clip, which, true)}
             className={cn(
               "inline-flex items-center justify-center gap-1.5 rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold active:bg-zinc-700",
-              !rendered && "pointer-events-none opacity-40",
+              (!rendered || size === 0) && "pointer-events-none opacity-40",
             )}
           >
             <DownloadIcon className="size-4" /> Download{size ? ` (${formatBytes(size)})` : ""}
@@ -124,7 +129,16 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
                 {clip.youtube_url}
               </a>
             )}
-            <Button onClick={() => act(() => api.unmarkUploaded(clip.id), "Moved back to Ready to upload")}>Not uploaded yet</Button>
+            <Button
+              onClick={() =>
+                act(
+                  () => api.unmarkUploaded(clip.id),
+                  clip.has_video ? "Moved back to Ready to upload" : "Its file was deleted after uploading, so it renders again first",
+                )
+              }
+            >
+              Not uploaded yet
+            </Button>
           </div>
         ) : (
           <div className="space-y-2">

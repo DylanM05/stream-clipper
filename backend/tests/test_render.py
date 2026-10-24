@@ -1,3 +1,8 @@
+import shutil
+import time
+
+import pytest
+
 from clipper import ffmpeg
 from clipper.config import Settings
 from clipper.models import Clip
@@ -10,6 +15,22 @@ def test_none_turns_optional_settings_off():
     s = Settings(hwaccel="none", language="None", llm_effort="")
     assert s.hwaccel is None and s.language is None and s.llm_effort is None
     assert Settings(hwaccel="cuda").hwaccel == "cuda"
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_ffmpeg_stops_when_progress_reporting_raises(tmp_path):
+    class Stop(Exception):
+        pass
+
+    def stop(_fraction):
+        raise Stop
+
+    started = time.monotonic()
+    with pytest.raises(Stop):
+        # 10 minutes of generated video, far longer than the test waits
+        ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=1280x720:rate=30", "-t", "600", "-c:v", "mpeg4",
+                    str(tmp_path / "out.mp4")], on_progress=stop, duration=600)
+    assert time.monotonic() - started < 20
 
 
 def test_falls_back_to_cpu_decoding_when_the_gpu_cant_decode(monkeypatch, tmp_path):
