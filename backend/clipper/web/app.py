@@ -1,6 +1,7 @@
 """JSON API for the review app, plus media streaming and the built phone app."""
 
 import html
+import ipaddress
 import logging
 import mimetypes
 import re
@@ -268,6 +269,18 @@ def iso(dt: datetime | None) -> str | None:
 def studio_upload_url(channel_id: str) -> str:
     """YouTube Studio's upload page, straight on the right channel when its UC… id is known."""
     return f"https://studio.youtube.com/channel/{channel_id}/videos/upload?d=ud" if channel_id else "https://www.youtube.com/upload"
+
+
+def google_accepts(origin: str) -> bool:
+    """Whether Google sends its sign-in back to this address: https on a real domain, or localhost."""
+    url = urlparse(origin)
+    if url.hostname in ("localhost", "127.0.0.1"):
+        return True
+    try:
+        ipaddress.ip_address(url.hostname or "")
+        return False
+    except ValueError:
+        return url.scheme == "https" and "." in (url.hostname or "")
 
 
 def sign_in_page(message: str, ok: bool) -> HTMLResponse:
@@ -645,6 +658,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         origin = body.origin.rstrip("/")
         if not re.fullmatch(r"https?://[\w.:-]+", origin):
             raise HTTPException(422, "That isn't the app's address")
+        if not google_accepts(origin):
+            raise HTTPException(409, f"Google won't sign in to {urlparse(origin).netloc}: it needs an https address on a "
+                                     "real domain. Open the app at its https://….ts.net address and connect from there.")
         redirect_uri = origin + CALLBACK_PATH
         state = auth.sign_data({"dest": dest_id, "redirect_uri": redirect_uri})
         return {"url": sign_in_url(client.client_id, redirect_uri, state)}

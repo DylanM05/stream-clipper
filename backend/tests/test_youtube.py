@@ -359,6 +359,9 @@ def test_picking_the_wrong_channel_or_a_forged_state_connects_nothing(settings, 
     dest = get(settings, Destination, 1)
     assert dest.youtube_token == "" and "You picked" in dest.youtube_error
 
+    lan = app_client.post("/api/destinations/1/connect", json={"origin": "http://192.168.50.166:8976"})
+    assert lan.status_code == 409 and "192.168.50.166:8976" in lan.json()["detail"]  # Google refuses private IPs
+
     forged = app_client.get("/api/youtube/callback", params={"state": "e30.forged", "code": "abc"})
     assert forged.status_code == 400 and "expired" in forged.text
 

@@ -156,16 +156,28 @@ export function UploadChannels() {
   );
 }
 
-const HTTPS_OK = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
+// Google only sends its sign-in back to an https address on a real domain (not an IP address), or to localhost.
+const GOOGLE_OK =
+  ["localhost", "127.0.0.1"].includes(location.hostname) ||
+  (location.protocol === "https:" && !/^[\d.]+$|^\[/.test(location.hostname));
+const APP_ADDRESS = GOOGLE_OK ? location.origin : "https://<server>.<tailnet>.ts.net";
+const APP_DOMAIN = GOOGLE_OK ? location.hostname.split(".").slice(1).join(".") : "<tailnet>.ts.net";
 
 /** Uploading through the YouTube API: how to set it up in Google Cloud, or how connecting works once it is. */
 function YouTubeApiPanel({ configured, callbackPath }: { configured: boolean; callbackPath: string }) {
   const toast = useToast();
-  const redirect = `${location.origin}${callbackPath}`;
+  const redirect = `${APP_ADDRESS}${callbackPath}`;
   const link = "font-medium text-violet-300 underline-offset-2 active:underline";
   return (
     <div className="mb-4 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
       <p className="text-sm font-semibold">Upload through the YouTube API</p>
+      {!GOOGLE_OK && (
+        <p className="rounded-xl bg-amber-500/10 p-3 text-xs text-amber-200 ring-1 ring-amber-500/20">
+          Google won't sign in to <b>{location.host}</b>: it needs an https address on a real domain, not an IP address.
+          Open the app at its Tailscale address, <code>https://&lt;server&gt;.&lt;tailnet&gt;.ts.net</code> (README, setup
+          step 7), and set this up and connect channels from there.
+        </p>
+      )}
       {configured ? (
         <p className="text-xs text-zinc-500">
           Tap <b>Connect</b> on each channel below and pick that channel when Google asks which account to use. Google
@@ -194,8 +206,8 @@ function YouTubeApiPanel({ configured, callbackPath }: { configured: boolean; ca
                 Google Auth Platform
               </a>{" "}
               and tap <b>Get started</b>: any app name, your email, audience <b>External</b>. Under <b>Branding</b>, set the
-              home page to <code>{location.origin}</code>, the privacy policy to <code>{location.origin}/privacy.html</code>,
-              and add <code>{location.hostname.split(".").slice(1).join(".")}</code> to the authorized domains. Then under{" "}
+              home page to <code>{APP_ADDRESS}</code>, the privacy policy to <code>{APP_ADDRESS}/privacy.html</code>, and
+              add <code>{APP_DOMAIN}</code> to the authorized domains. Then under{" "}
               <b>Audience</b>, tap <b>Publish app</b>; while it's in testing, Google signs channels out after 7 days.
             </li>
             <li>
@@ -214,11 +226,6 @@ function YouTubeApiPanel({ configured, callbackPath }: { configured: boolean; ca
             </li>
           </ol>
         </>
-      )}
-      {!HTTPS_OK && (
-        <p className="text-xs text-amber-300">
-          Google only signs in to https addresses: open the app through its https://….ts.net address to connect channels.
-        </p>
       )}
     </div>
   );
@@ -328,7 +335,11 @@ function DestinationRow(props: { destination: Destination; apiReady: boolean; on
             </button>
           )}
           {apiReady && (!connected || destination.api_error) && (
-            <button onClick={connect} className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700">
+            <button
+              onClick={connect}
+              disabled={!GOOGLE_OK}
+              className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700 disabled:opacity-40"
+            >
               {connected ? "Reconnect" : "Connect"}
             </button>
           )}
