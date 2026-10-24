@@ -5,7 +5,7 @@ Needs a browser; skipped where none is installed (the real Studio is only reacha
 
 import pytest
 
-from clipper.studio import Studio
+from clipper.studio import Studio, StudioError
 
 DIALOG = """
 <a href="https://www.youtube.com/watch?v=OLDVIDEO123">An older video in the list behind the dialog</a>
@@ -46,3 +46,26 @@ def test_waits_while_uploading_and_reports_progress(page):
     page.evaluate("setTimeout(() => document.getElementById('footer').textContent = 'Checks complete. No issues found.', 1500)")
     Studio("unused", None)._wait_for_upload(page, seen.append)
     assert seen[0] == 0.45 and seen[-1] == 1.0
+
+
+def _google_page(page, body: str):
+    """A fresh tab where Google's account pages and Studio are stand-ins served without the network."""
+    tab = page.context.browser.new_page()
+    tab.route("https://accounts.google.com/**", lambda r: r.fulfill(content_type="text/html", body=body))
+    tab.route("https://studio.youtube.com/**", lambda r: r.fulfill(content_type="text/html", body="<input type=file>"))
+    tab.goto("https://accounts.google.com/ServiceLogin?passive=true", wait_until="domcontentloaded")
+    return tab
+
+
+def test_waits_for_google_to_send_the_page_on_to_studio(page):
+    tab = _google_page(page, "<script>setTimeout(() => location.href = 'https://studio.youtube.com/channel/UCx/videos/upload', 1000)</script>")
+    Studio._wait_for_studio(tab, wait_s=10)
+    assert tab.url.startswith("https://studio.youtube.com/")
+    tab.close()
+
+
+def test_a_sign_in_page_that_stays_means_signing_in(page):
+    tab = _google_page(page, "<form>Sign in</form>")
+    with pytest.raises(StudioError, match="sign in"):
+        Studio._wait_for_studio(tab, wait_s=2)
+    tab.close()

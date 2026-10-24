@@ -24,6 +24,7 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.sync_api import Page, sync_playwright
+from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 from yt_dlp import YoutubeDL
 
 log = logging.getLogger(__name__)
@@ -137,8 +138,7 @@ class Studio:
             if job.channel_id else "https://www.youtube.com/upload"
         )
         page.goto(url, wait_until="domcontentloaded", timeout=60_000)
-        if "accounts.google.com" in page.url:
-            raise StudioError("The upload browser isn't signed in to YouTube. Open it, sign in, then retry.")
+        self._wait_for_studio(page)
 
         log.info("Studio: choosing %s", job.file.name)
         page.locator('input[type="file"]').set_input_files(str(job.file), timeout=60_000)
@@ -162,6 +162,23 @@ class Studio:
         page.wait_for_timeout(3000)  # let Studio save before the tab closes
         log.info("Studio: uploaded %s", progress.link or "(link not found)")
         return progress.link
+
+    @staticmethod
+    def _wait_for_studio(page: Page, wait_s: float = 30) -> None:
+        """Wait to land in Studio. Google's account pages can come first, e.g. to refresh the sign-in after
+        the browser restarts or to switch to another channel, and send the page on by themselves; one
+        that stays is asking for a sign-in."""
+        try:
+            page.wait_for_url(
+                lambda url: urlparse(url).hostname == "studio.youtube.com",
+                wait_until="domcontentloaded",
+                timeout=wait_s * 1000,
+            )
+        except PlaywrightTimeoutError:
+            raise StudioError(
+                "YouTube asked the upload browser to sign in before opening this channel's Studio. Open the "
+                "upload browser, sign in to the Google account that manages the channel, then retry."
+            ) from None
 
     @staticmethod
     def _video_link(page: Page, wait_s: float = 30) -> str:
