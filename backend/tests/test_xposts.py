@@ -109,7 +109,7 @@ def loads(*operations: str) -> str:
     return f"<script>setTimeout(() => {{ {calls} }}, 300)</script>"
 
 
-@pytest.mark.parametrize("operation", ["UserTweets", "UserPosts"])  # whatever X calls it
+@pytest.mark.parametrize("operation", ["UserTweets", "UserOriginalsTimeline", "UserPosts"])  # whatever X calls it
 def test_reads_the_posts_the_profile_page_loads(browser, operation):
     tab = stand_in_x(browser, loads(operation))
     posts = parse_posts(read_profile(tab, "Andywarski", wait_s=5), "Andywarski")

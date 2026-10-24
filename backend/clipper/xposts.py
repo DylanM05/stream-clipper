@@ -20,7 +20,8 @@ from playwright.sync_api import Page, sync_playwright
 
 from .studio import NOT_RUNNING, X_SIGNED_IN_COOKIES, signed_in
 
-# X's page loads its data from these, each named after what it fetches (the posts came from "UserTweets").
+# X's page loads its data from these, each named after what it fetches. A profile's posts came from
+# "UserTweets"; by Oct 2026 they come from "UserOriginalsTimeline".
 GRAPHQL = re.compile(r"/graphql/[^/?]+/(\w+)")
 SIGNED_OUT = (
     "The upload browser isn't signed in to X. Open it, sign in at x.com with a spare X account (not your main "
