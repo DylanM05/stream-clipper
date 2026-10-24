@@ -126,9 +126,7 @@ Start one from a clip's **Upload** page and pick Public, Unlisted or Private. Up
 The worker uploads with the channel's Google sign-in, as "not made for kids", in the Entertainment category (`CLIPPER_YOUTUBE_CATEGORY_ID`). The file goes up in pieces, so a dropped connection or a worker restart carries on from what YouTube already has. It can't post a video twice.
 
 - **Daily limit:** each Google Cloud project can upload 100 videos a day.
-- **Private videos:** Google used to lock every upload from a project it hadn't audited to private. Its docs say that no longer happens, but the change was never announced. Make your first upload Unlisted to check:
-  - If YouTube kept it Unlisted, you're set.
-  - If YouTube made it Private, the upload says so. The project then needs YouTube's [API audit](https://support.google.com/youtube/contact/yt_api_form), and until it passes, change videos to Public in Studio by hand.
+- **Private videos:** Google used to lock every upload from a project it hadn't audited to private. That no longer happens: since Oct 2026 Google's docs say so, and a test upload from an unaudited project stayed Unlisted (Oct 24, 2026). If YouTube ever makes an upload Private anyway, the upload says so. The project would then need YouTube's [API audit](https://support.google.com/youtube/contact/yt_api_form).
 - **Expired sign-ins:** if a channel's sign-in expires or you revoke it in your Google account, its uploads fail with a message to connect it again. Tap **Reconnect** under **Shows → YouTube channels**.
 - **Where the sign-ins are stored:** in the database in the data folder. Disconnecting a channel deletes its sign-in and revokes it at Google.
 

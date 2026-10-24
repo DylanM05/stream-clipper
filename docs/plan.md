@@ -143,7 +143,7 @@ Rules can match on: keywords (any or all), regex, exclude words, category or gam
 - **⚠ Blocker to start on day one:** API projects that haven't passed Google's audit can only upload **locked-private** videos. Submit the *YouTube API Services Audit & Quota Extension* form in Phase 0, because approval can take weeks. Until then:
   - test against a throwaway channel
   - the app can hand you the rendered file to upload by hand
-- **Update, Oct 2026:** the `videos.insert` docs now say uploads from unverified projects *aren't* restricted to private, and uploads have their own bucket of 100 per day. The change wasn't in the revision history, so the app flags any upload YouTube made private when you asked for something else.
+- **Update, Oct 2026:** the `videos.insert` docs now say uploads from unverified projects *aren't* restricted to private, and uploads have their own bucket of 100 per day. The change wasn't in the revision history, so the app flags any upload YouTube made private when you asked for something else. Confirmed Oct 24, 2026: an Unlisted upload from the unaudited project stayed Unlisted.
 
 ### 8. Orchestration
 - **Language and storage:** Python 3.12, SQLite in WAL mode, and SQLModel.
