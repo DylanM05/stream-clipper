@@ -1,11 +1,13 @@
 """Background worker: checks watched channels, processes queued videos, renders approved clips and
-uploads them through YouTube Studio. Run with `clipper worker`.
+uploads them, through the YouTube API or YouTube Studio. Run with `clipper worker`.
 
 Each job runs on its own thread, so approving a clip doesn't wait for an 8-hour video to finish
 transcribing. The heavy work happens in ffmpeg and Whisper, outside Python's GIL.
 """
 
+import hashlib
 import html
+import json
 import logging
 import re
 import threading
@@ -29,6 +31,7 @@ from .pipeline import audio, download, refine, render, segment, signals, transcr
 from .studio import Studio, StudioError, Upload, write_status
 from .timecode import to_seconds
 from .workspace import Workspace, disk_free_gb, remove
+from .youtube import Google, Video, YouTubeError
 
 log = logging.getLogger(__name__)
 
@@ -42,6 +45,9 @@ class Worker:
         self.engine = get_engine(settings)
         self.monitor = Monitor(settings)
         self.studio = Studio(settings.studio_cdp_url, settings.studio_dir, desktop_profile=settings.browser_profile_dir)
+        self.youtube = (
+            Google(settings.google_client_id, settings.google_client_secret) if settings.google_client_id else None
+        )
         self.stopping = threading.Event()
         self._studio_checked = 0.0
 
@@ -74,9 +80,14 @@ class Worker:
                 clip.status = "approved"
                 s.add(clip)
             for job in s.exec(select(UploadJob).where(UploadJob.status == "uploading")):
-                # Not retried automatically: it may have finished, and retrying would post it twice.
-                job.status = "failed"
-                job.error = "The worker stopped during this upload. Check YouTube Studio before retrying."
+                if job.method == "api":
+                    # YouTube keeps what it received, and the next attempt carries on from there (or finds
+                    # it finished), so it can't post twice.
+                    job.status = "queued"
+                else:
+                    # Not retried automatically: it may have finished, and retrying would post it twice.
+                    job.status = "failed"
+                    job.error = "The worker stopped during this upload. Check YouTube Studio before retrying."
                 s.add(job)
             s.commit()
 
@@ -310,7 +321,7 @@ class Worker:
             s.add(clip)
             s.commit()
 
-    # --- Uploads through YouTube Studio ------------------------------------------
+    # --- Uploads: through the YouTube API for connected channels, else YouTube Studio ----------
 
     def upload_next(self) -> bool:
         with Session(self.engine) as s:
@@ -340,29 +351,71 @@ class Worker:
             clip = s.get(ClipRecord, job.clip_id)
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
             path = clip.short_path if job.which == "short" else clip.video_path
-            upload = Upload(
-                file=Path(path).resolve() if path else Path(),
-                title=clip.title,
-                description=clip.description,
-                visibility=job.visibility,
-                channel_id=dest.channel_id if dest else "",
-            )
-        log.info("Uploading clip %d (%s) as %s", job.clip_id, job.which, job.visibility)
+        file = Path(path).resolve() if path else None
+        through_api = bool(self.youtube and dest and dest.youtube_token)
+        self._update_job(job_id, method="api" if through_api else "studio")
+        log.info("Uploading clip %d (%s) as %s through %s", job.clip_id, job.which, job.visibility,
+                 "the YouTube API" if through_api else "YouTube Studio")
+        if not file or not file.exists():
+            self._update_job(job_id, status="failed", error="The file isn't rendered (any more)")
+            return
+        note = ""
         try:
-            if not path or not upload.file.exists():
-                raise StudioError("The file isn't rendered (any more)")
-            url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
+            if through_api:
+                url, note = self._upload_through_api(job, clip, dest, file)
+            else:
+                upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+                                channel_id=dest.channel_id if dest else "")
+                url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
         except StudioError as e:
             log.warning("Upload %d failed: %s", job_id, e)
             self._update_job(job_id, status="failed", error=str(e), screenshot=e.screenshot, youtube_url=e.link)
             return
-        self._update_job(job_id, status="done", progress=1, youtube_url=url, error="")
+        except YouTubeError as e:
+            log.warning("Upload %d failed: %s", job_id, e)
+            if e.signed_out:
+                self._update_destination(dest.id, youtube_error=str(e))
+            self._update_job(job_id, status="failed", error=str(e))
+            return
+        self._update_job(job_id, status="done", progress=1, youtube_url=url, error=note)
+        if through_api and dest.youtube_error:
+            self._update_destination(dest.id, youtube_error="")  # e.g. a cancelled reconnect: the sign-in works
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, job.clip_id)
             if job.which == "video" or not clip.youtube_url:
                 clip.youtube_url = url
             clip.status, clip.uploaded_at, clip.updated_at = "uploaded", utcnow(), utcnow()
             s.add(clip)
+            s.commit()
+
+    def _upload_through_api(self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path) -> tuple[str, str]:
+        """Upload with the channel's Google sign-in. Returns the link, and a note if YouTube didn't use the
+        visibility asked for (what Google does to uploads from projects it hasn't audited)."""
+        video = Video(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+                      category_id=self.settings.youtube_category_id, short=job.which == "short")
+        # An earlier attempt's session only carries on if the same file is going to the same place, the same way.
+        key = hashlib.sha256(json.dumps(
+            [dest.id, str(file), file.stat().st_size, video.title, video.description, video.visibility]
+        ).encode()).hexdigest()[:16]
+        result = self.youtube.upload(
+            dest.youtube_token, video,
+            on_progress=self._upload_progress(job.id),
+            session_url=job.session_url if job.session_key == key else "",
+            on_session=lambda url: self._update_job(job.id, session_url=url, session_key=key),
+        )
+        note = ""
+        if result.privacy != job.visibility:
+            note = (f"YouTube made this video {result.privacy}, not {job.visibility}. If that happens to every API "
+                    "upload, the Google Cloud project needs YouTube's API audit (see the README). Change it in "
+                    "YouTube Studio for now.")
+        return result.url, note
+
+    def _update_destination(self, dest_id: int, **fields) -> None:
+        with Session(self.engine) as s:
+            dest = s.get(Destination, dest_id)
+            for k, v in fields.items():
+                setattr(dest, k, v)
+            s.add(dest)
             s.commit()
 
     def _upload_progress(self, job_id: int) -> Callable[[float], None]:

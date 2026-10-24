@@ -80,18 +80,22 @@ export interface Destination {
   url: string;
   channel_id: string;
   studio_upload_url: string;
+  api_connected: boolean; // uploads go through the YouTube API; otherwise through YouTube Studio
+  api_account: string; // the channel name Google reported when it was connected
+  api_error: string; // why connecting failed, or why its sign-in stopped working
 }
 
-/** One file of a clip being uploaded through YouTube Studio by the worker. */
+/** One file of a clip being uploaded by the worker, through the YouTube API or YouTube Studio. */
 export interface UploadJob {
   id: number;
   clip_id: number;
   which: "video" | "short";
   visibility: Visibility;
   status: "queued" | "uploading" | "done" | "failed";
+  method: "api" | "studio" | "";
   progress: number;
   youtube_url: string;
-  error: string;
+  error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;
   created_at: string;
 }
@@ -238,6 +242,11 @@ export const api = {
   addDestination: (body: { name: string; url: string }) => post<Destination>("/api/destinations", body),
   updateDestination: (id: number, body: { name: string; url: string }) => patch<Destination>(`/api/destinations/${id}`, body),
   deleteDestination: (id: number) => remove(`/api/destinations/${id}`),
+  youtube: () => request<{ configured: boolean; callback_path: string }>("/api/youtube"),
+  /** Google's sign-in page for the channel; it comes back to the app at this same address. */
+  connectDestination: (id: number) =>
+    post<{ url: string }>(`/api/destinations/${id}/connect`, { origin: location.origin }),
+  disconnectDestination: (id: number) => post<Destination>(`/api/destinations/${id}/disconnect`),
 
   shows: () => request<Show[]>("/api/shows"),
   show: (id: number) => request<Show>(`/api/shows/${id}`),

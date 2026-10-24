@@ -1,7 +1,9 @@
 """Password login with a signed, long-lived cookie. The app is reached privately (Tailscale), so one shared password is enough."""
 
+import base64
 import hashlib
 import hmac
+import json
 import time
 
 from ..config import Settings
@@ -36,6 +38,19 @@ class Auth:
             and hmac.compare_digest(signature, self._sign(expires))
             and int(expires) > time.time()
         )
+
+    def sign_data(self, data: dict) -> str:
+        """`data` as a token that can't be altered, e.g. to carry through Google's sign-in and back."""
+        payload = base64.urlsafe_b64encode(json.dumps({**data, "at": int(time.time())}).encode()).decode()
+        return f"{payload}.{self._sign(payload)}"
+
+    def read_data(self, token: str, max_age_s: int) -> dict | None:
+        """The data in a `sign_data` token; None if it was altered or is older than `max_age_s`."""
+        payload, _, signature = token.partition(".")
+        if not payload or not hmac.compare_digest(signature, self._sign(payload)):
+            return None
+        data = json.loads(base64.urlsafe_b64decode(payload))
+        return data if time.time() - data["at"] <= max_age_s else None
 
     def _sign(self, value: str) -> str:
         return hmac.new(self._key, value.encode(), hashlib.sha256).hexdigest()

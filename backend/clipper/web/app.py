@@ -1,5 +1,6 @@
 """JSON API for the review app, plus media streaming and the built phone app."""
 
+import html
 import logging
 import mimetypes
 import re
@@ -11,7 +12,7 @@ from typing import Literal
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func
@@ -27,6 +28,7 @@ from ..monitor import ChannelUrlError, parse_channel
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
 from ..pipeline import render
 from ..workspace import Workspace
+from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url
 from .auth import COOKIE, MAX_AGE_S, Auth
 
 log = logging.getLogger(__name__)
@@ -35,7 +37,10 @@ mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 MAX_SHORT_S = 180  # YouTube's limit for Shorts
 REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
-PUBLIC_PATHS = {"/api/session", "/api/login"}
+# Google's sign-in returns to the callback in whatever browser it ran in, which on an iPhone isn't the
+# home-screen app and has no login cookie. The signed `state` it carries stands in for the login there.
+PUBLIC_PATHS = {"/api/session", "/api/login", CALLBACK_PATH}
+SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
 
 
@@ -143,6 +148,13 @@ class DestinationOut(BaseModel):
     url: str
     channel_id: str  # empty if it couldn't be found from the link
     studio_upload_url: str  # where to upload by hand
+    api_connected: bool  # uploads go through the YouTube API
+    api_account: str  # the channel name Google reported when it was connected
+    api_error: str  # why connecting failed, or why the sign-in stopped working
+
+
+class ConnectRequest(BaseModel):
+    origin: str = Field(max_length=200)  # the app's address in your browser, e.g. https://server.tailnet.ts.net
 
 
 class UploadRequest(BaseModel):
@@ -156,6 +168,7 @@ class UploadJobOut(BaseModel):
     which: str
     visibility: str
     status: str
+    method: str  # "api" or "studio"; empty until it starts
     progress: float
     youtube_url: str
     error: str
@@ -255,6 +268,19 @@ def iso(dt: datetime | None) -> str | None:
 def studio_upload_url(channel_id: str) -> str:
     """YouTube Studio's upload page, straight on the right channel when its UC… id is known."""
     return f"https://studio.youtube.com/channel/{channel_id}/videos/upload?d=ud" if channel_id else "https://www.youtube.com/upload"
+
+
+def sign_in_page(message: str, ok: bool) -> HTMLResponse:
+    """What the browser shows after Google's sign-in, which may not be the app's window."""
+    color = "#6ee7b7" if ok else "#fca5a5"
+    return HTMLResponse(
+        '<!doctype html><html><head><meta charset="utf-8">'
+        '<meta name="viewport" content="width=device-width,initial-scale=1"><title>YouTube sign-in</title></head>'
+        '<body style="background:#09090b;color:#e4e4e7;font:16px system-ui,sans-serif;padding:24px;max-width:32rem;margin:auto">'
+        f'<p style="color:{color}">{html.escape(message)}</p>'
+        '<p><a href="/#/shows/youtube" style="color:#c4b5fd">Back to the app</a></p></body></html>',
+        status_code=200 if ok else 400,
+    )
 
 
 def file_name(title: str) -> str:
@@ -362,12 +388,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     def destination_out(d: Destination) -> DestinationOut:
         return DestinationOut(id=d.id, name=d.name, url=d.url, channel_id=d.channel_id,
-                              studio_upload_url=studio_upload_url(d.channel_id))
+                              studio_upload_url=studio_upload_url(d.channel_id),
+                              api_connected=bool(d.youtube_token), api_account=d.youtube_account, api_error=d.youtube_error)
 
     def job_out(job: UploadJob) -> UploadJobOut:
-        return UploadJobOut(**job.model_dump(exclude={"screenshot", "created_at", "updated_at"}),
+        return UploadJobOut(**job.model_dump(exclude={"screenshot", "session_url", "session_key", "created_at", "updated_at"}),
                             has_screenshot=bool(job.screenshot) and Path(job.screenshot).exists(),
                             created_at=iso(job.created_at))
+
+    def google() -> Google:
+        if not (settings.google_client_id and settings.google_client_secret):
+            raise HTTPException(409, "The YouTube API isn't set up yet: see Shows → YouTube channels")
+        return Google(settings.google_client_id, settings.google_client_secret)
+
+    def forget_sign_in(s: Session, dest: Destination) -> None:
+        """Drop a channel's YouTube API sign-in. Revoking it at Google ends every sign-in of that account to
+        the app, so it's skipped while another entry for the same channel is connected."""
+        shared = s.exec(select(Destination).where(
+            Destination.id != dest.id, Destination.channel_id == dest.channel_id, col(Destination.youtube_token) != "",
+        )).first()
+        if dest.youtube_token and not shared:
+            Google(settings.google_client_id, settings.google_client_secret).revoke(dest.youtube_token)
+        dest.youtube_token = dest.youtube_account = dest.youtube_error = ""
 
     def check_destinations(s: Session, *ids: int | None) -> None:
         for id_ in ids:
@@ -559,7 +601,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         dest = found(s, Destination, dest_id, "YouTube channel")
         url = body.url.strip()
         if url != dest.url or not dest.channel_id:
-            dest.channel_id = resolve_channel_id(url) if url else ""
+            channel_id = resolve_channel_id(url) if url else ""
+            if channel_id != dest.channel_id and dest.channel_id:
+                forget_sign_in(s, dest)  # it's for the old channel
+            dest.channel_id = channel_id
         dest.name, dest.url = body.name.strip(), url
         s.add(dest)
         s.commit()
@@ -580,9 +625,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for clip in s.exec(select(ClipRecord).where(ClipRecord.destination_id == dest_id)):
             clip.destination_id = None
             s.add(clip)
+        forget_sign_in(s, dest)
         s.flush()
         s.delete(dest)
         s.commit()
+
+    # --- Uploading through the YouTube API (youtube.py) ---
+
+    @app.get("/api/youtube")
+    def youtube_setup() -> dict:
+        """Whether the app has a Google OAuth client, and the path to register as its redirect URI."""
+        return {"configured": bool(settings.google_client_id and settings.google_client_secret), "callback_path": CALLBACK_PATH}
+
+    @app.post("/api/destinations/{dest_id}/connect")
+    def connect_destination(dest_id: int, body: ConnectRequest, s: Session = Depends(db)) -> dict:
+        """Google's sign-in page for this channel. It comes back to the callback below on the same address."""
+        found(s, Destination, dest_id, "YouTube channel")
+        client = google()
+        origin = body.origin.rstrip("/")
+        if not re.fullmatch(r"https?://[\w.:-]+", origin):
+            raise HTTPException(422, "That isn't the app's address")
+        redirect_uri = origin + CALLBACK_PATH
+        state = auth.sign_data({"dest": dest_id, "redirect_uri": redirect_uri})
+        return {"url": sign_in_url(client.client_id, redirect_uri, state)}
+
+    @app.get(CALLBACK_PATH, include_in_schema=False)
+    def youtube_callback(state: str = "", code: str = "", error: str = "") -> HTMLResponse:
+        data = auth.read_data(state, SIGN_IN_MAX_AGE_S)
+        if not data:
+            return sign_in_page("This sign-in has expired. Go back to the app and tap Connect again.", ok=False)
+        with Session(engine) as s:
+            dest = s.get(Destination, data["dest"])
+            if not dest:
+                return sign_in_page("That channel isn't in the app any more.", ok=False)
+            try:
+                if error or not code:
+                    raise YouTubeError("Google sign-in was cancelled." if error == "access_denied" else f"Google sign-in failed ({error}).")
+                client = google()
+                refresh_token, access_token = client.exchange_code(code, data["redirect_uri"])
+                channel_id, channel_name = client.channel(access_token)
+                if dest.channel_id and channel_id != dest.channel_id:
+                    # Not revoked: that would also end the sign-in of an entry that channel is connected to.
+                    raise YouTubeError(
+                        f"You picked “{channel_name}”, but this is {dest.name}. Tap Connect again and pick "
+                        f"{dest.name}'s channel when Google asks which account to use."
+                    )
+                dest.channel_id = channel_id
+                dest.youtube_token, dest.youtube_account, dest.youtube_error = refresh_token, channel_name, ""
+                message, ok = f"Connected {dest.name} (“{channel_name}”). Uploads to it now go through the YouTube API.", True
+            except YouTubeError as e:
+                dest.youtube_error, message, ok = str(e), str(e), False
+            s.add(dest)
+            s.commit()
+        return sign_in_page(message, ok)
+
+    @app.post("/api/destinations/{dest_id}/disconnect")
+    def disconnect_destination(dest_id: int, s: Session = Depends(db)) -> DestinationOut:
+        """Uploads to it go back to YouTube Studio."""
+        dest = found(s, Destination, dest_id, "YouTube channel")
+        forget_sign_in(s, dest)
+        s.add(dest)
+        s.commit()
+        s.refresh(dest)
+        return destination_out(dest)
 
     @app.post("/api/shows/{show_id}/channels", status_code=201)
     def add_channel(show_id: int, body: ChannelIn, s: Session = Depends(db)) -> ChannelOut:
@@ -716,7 +821,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.refresh(clip)
         return clip_out(clip, vod)
 
-    # --- Uploading through YouTube Studio (done by the worker; see studio.py) ---
+    # --- Uploads, done by the worker; the upload browser is for channels not connected to the API ---
 
     @app.get("/api/studio")
     def studio_status() -> dict:

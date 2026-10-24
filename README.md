@@ -5,9 +5,9 @@ Turns long stream VODs (Twitch, YouTube, Kick, X) into chapter videos and highli
 **Status:** see the [plan](docs/plan.md).
 - **Phase 1:** the processing pipeline.
 - **Phase 2:** the review app.
-- **Phase 3, first step:** the upload kit for posting by hand.
+- **Phase 3:** uploads through the YouTube API, with YouTube Studio automation as a fallback, plus the upload kit for posting by hand.
 - **Phase 4, part:** shows, plus watching Kick, Twitch and YouTube channels.
-- **Next:** uploading through the YouTube API once Google approves the audit, then X monitoring and notifications.
+- **Next:** X monitoring and notifications.
 
 How it works:
 
@@ -71,7 +71,19 @@ A pre-show from X is usually posted whole, and Claude writes its short title fro
    - On your phone, open `https://<server-name>.<your-tailnet>.ts.net` and sign in with `CLIPPER_APP_PASSWORD`.
    - Add it to your home screen: in Safari use **Share → Add to Home Screen**; in Chrome use **⋮ → Add to Home screen**. It then opens full-screen like an app.
 
-8. **Sign in the upload browser (for automatic uploads).**
+8. **Set up uploading through the YouTube API.** Do this once in Google Cloud; it's free.
+   1. [Create a project](https://console.cloud.google.com/projectcreate), then [enable the YouTube Data API v3](https://console.cloud.google.com/apis/library/youtube.googleapis.com) in it.
+   2. Open [Google Auth Platform](https://console.cloud.google.com/auth/overview) and click **Get started**:
+      - App name: anything.
+      - Contact email: yours.
+      - Audience: **External**.
+   3. Under **Audience**, click **Publish app**. While the app is in testing, Google signs channels out after 7 days. Google doesn't need to verify it, since only you use it.
+   4. Under **Clients**, create a client:
+      - Type: **Web application**.
+      - Authorized redirect URI: `https://<server-name>.<your-tailnet>.ts.net/api/youtube/callback`. The app shows the exact address to copy under **Shows → YouTube channels**.
+   5. Put its ID and secret in `.env` as `CLIPPER_GOOGLE_CLIENT_ID` and `CLIPPER_GOOGLE_CLIENT_SECRET`, then run `docker compose up -d`.
+   6. In the app, go to **Shows → YouTube channels** and tap **Connect** on each channel. Pick that channel when Google asks which account to use. Google warns that it hasn't verified the app: click **Advanced → Go to … (unsafe)**.
+9. **Optional: the upload browser**, for channels you don't connect to the API.
    ```bash
    sudo tailscale serve --bg --https=8443 6080
    ```
@@ -100,18 +112,30 @@ docker compose up -d
 
 Anything that was mid-processing carries on from the files already there.
 
-## Automatic uploads through YouTube Studio
+## Automatic uploads
 
-The worker uploads by driving YouTube Studio in that signed-in browser, the same clicks you'd make:
+Start one from a clip's **Upload** page and pick Public, Unlisted or Private. Uploads run one at a time and show their progress there. A channel connected to the YouTube API uploads through the API; any other channel uploads through YouTube Studio in the upload browser.
 
+### Through the YouTube API
+
+The worker uploads with the channel's Google sign-in, as "not made for kids", in the Entertainment category (`CLIPPER_YOUTUBE_CATEGORY_ID`). The file goes up in pieces, so a dropped connection or a worker restart carries on from what YouTube already has. It can't post a video twice.
+
+- **Daily limit:** each Google Cloud project can upload 100 videos a day.
+- **Private videos:** Google used to lock every upload from a project it hadn't audited to private. Its docs say that no longer happens, but the change was never announced. Make your first upload Unlisted to check:
+  - If YouTube kept it Unlisted, you're set.
+  - If YouTube made it Private, the upload says so. The project then needs YouTube's [API audit](https://support.google.com/youtube/contact/yt_api_form), and until it passes, change videos to Public in Studio by hand.
+- **Expired sign-ins:** if a channel's sign-in expires or you revoke it in your Google account, its uploads fail with a message to connect it again. Tap **Reconnect** under **Shows → YouTube channels**.
+- **Where the sign-ins are stored:** in the database in the data folder. Disconnecting a channel deletes its sign-in and revokes it at Google.
+
+### Through YouTube Studio
+
+For channels not connected to the API, the worker drives YouTube Studio in the signed-in upload browser, making the same clicks you would:
 - It picks the right channel, attaches the file and fills in the title and description.
-- It sets "not made for kids" and the visibility you chose (Public, Unlisted or Private).
+- It sets "not made for kids" and the visibility you chose.
 - It waits for the upload to finish and saves the video's link.
 
-Start one from a clip's **Upload** page. Uploads run one at a time and show their progress there.
-
 **Know the risks:**
-- **YouTube's terms:** they only allow automated access through the official API, so this puts the channels at some risk of strikes or suspension. It was chosen over waiting for API approval.
+- **YouTube's terms:** they only allow automated access through the official API, so this puts the channels at some risk of strikes or suspension.
 - **Studio changes:** Studio is a web page. When YouTube changes it, uploads fail until the selectors in `backend/clipper/studio.py` are updated. A failed upload saves a screenshot (**What Studio showed**) of where it got stuck.
 - **Language:** Studio must be set to English.
 - **Interrupted uploads:** if the worker restarts mid-upload, the job is marked failed rather than retried, so it can't post twice. Check Studio before retrying.
@@ -125,8 +149,8 @@ The manual steps (share to the YouTube app, or download and drag into Studio) st
 | **Inbox** | Review proposed clips. Swipe right to approve, left to reject, or use the buttons. After each decision you get an **Undo**. |
 | **Clip editor** | Tap a clip to open it. Drag the handles on the strip under the video, or fine-tune with **−1s / −0.2 / Here / +0.2 / +1s**; every change plays the few seconds around the new cut. **Last 5s** checks that nothing is cut off. Tap a transcript line to hear it, or use its **Start** and **End** buttons to cut there. Edit the title and description, and turn the vertical Short on or off. The volume slider only changes the preview, not the clip; on iPhones it's a mute button, because iOS only allows the hardware buttons. **Approve** takes you straight to the next clip. |
 | **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). The line below it shows free disk space and when finished streams' files are deleted. |
-| **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through YouTube Studio, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
-| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name` or `youtube.com/@name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**. |
+| **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through the YouTube API, or YouTube Studio for channels not connected to it, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
+| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name` or `youtube.com/@name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**, where you connect each one to the YouTube API. |
 
 ## Command line
 

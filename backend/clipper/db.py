@@ -43,11 +43,15 @@ class Destination(SQLModel, table=True):
     name: str
     url: str = ""  # the channel's YouTube link
     channel_id: str = ""  # UC…, looked up from the link; picks the channel in YouTube Studio
+    # Connected to the YouTube API (youtube.py): uploads to it go through the API instead of Studio.
+    youtube_token: str = ""  # Google refresh token for the channel
+    youtube_account: str = ""  # the channel's name as Google reported it when connecting
+    youtube_error: str = ""  # why connecting failed, or why the sign-in stopped working
     created_at: datetime = Field(default_factory=utcnow)
 
 
 class UploadJob(SQLModel, table=True):
-    """One file of a clip uploaded through YouTube Studio by the worker (see studio.py)."""
+    """One file of a clip uploaded by the worker, through the YouTube API or YouTube Studio."""
 
     __tablename__ = "upload_job"
 
@@ -56,10 +60,15 @@ class UploadJob(SQLModel, table=True):
     which: str = "video"  # "video" or "short"
     visibility: str = "public"  # public, unlisted, private
     status: str = Field(default="queued", index=True)  # queued, uploading, done, failed
+    method: str = ""  # "api" or "studio", set when it starts
     progress: float = 0
     youtube_url: str = ""
-    error: str = ""
+    error: str = ""  # why it failed; on a finished upload, a note (e.g. YouTube changed the visibility)
     screenshot: str = ""  # of Studio when it failed
+    # The API's resumable upload session, so a retry carries on from the bytes YouTube already has.
+    # session_key fingerprints what was sent; anything changed since means a fresh upload.
+    session_url: str = ""
+    session_key: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

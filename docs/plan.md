@@ -143,6 +143,7 @@ Rules can match on: keywords (any or all), regex, exclude words, category or gam
 - **⚠ Blocker to start on day one:** API projects that haven't passed Google's audit can only upload **locked-private** videos. Submit the *YouTube API Services Audit & Quota Extension* form in Phase 0, because approval can take weeks. Until then:
   - test against a throwaway channel
   - the app can hand you the rendered file to upload by hand
+- **Update, Oct 2026:** the `videos.insert` docs now say uploads from unverified projects *aren't* restricted to private, and uploads have their own bucket of 100 per day. The change wasn't in the revision history, so the app flags any upload YouTube made private when you asked for something else.
 
 ### 8. Orchestration
 - **Language and storage:** Python 3.12, SQLite in WAL mode, and SQLModel.
@@ -231,8 +232,8 @@ Keep the code in a git repo, either outside this Nextcloud folder or excluded fr
 **Phase 2: review app.**
 - Proxy generation, Inbox, the clip editor with trimming, metadata editing, and approve and reject.
 
-**Phase 3: YouTube publishing.** First step done (decided after the first test): an upload kit for posting by hand, with an Upload tab, the destination channel per clip, share-to-YouTube-app on phones, downloads named after the title, and "mark as uploaded". It works without the API, so publishing isn't blocked on Google's audit. Embedding YouTube Studio in an iframe isn't possible (YouTube blocks it). Then, at the user's request and knowing it breaks YouTube's terms, automatic uploads by driving YouTube Studio in a signed-in browser on the server (the `browser` service, signed in through noVNC). The API below remains the compliant option.
-- OAuth for each destination, the quota-aware upload queue, scheduling, playlists and thumbnails.
+**Phase 3: YouTube publishing.** First step done (decided after the first test): an upload kit for posting by hand, with an Upload tab, the destination channel per clip, share-to-YouTube-app on phones, downloads named after the title, and "mark as uploaded". It works without the API, so publishing isn't blocked on Google's audit. Embedding YouTube Studio in an iframe isn't possible (YouTube blocks it). Then, at the user's request and knowing it breaks YouTube's terms, automatic uploads by driving YouTube Studio in a signed-in browser on the server (the `browser` service, signed in through noVNC). Then, once Google's docs said unaudited projects can post public videos, uploads through the API (`youtube.py`): Google sign-in per channel from the app, and resumable uploads that carry on after a dropped connection or restart. Channels not connected still go through Studio.
+- Still to do: scheduling, playlists and thumbnails.
 
 **Phase 4: monitors and automation.**
 - YouTube, Twitch and Kick monitors, the rules engine, the scheduler, ntfy notifications, phone share ingest and the watched folder.

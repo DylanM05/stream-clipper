@@ -51,6 +51,12 @@ class Settings(BaseSettings):
     worker_poll_s: float = 3.0
     monitor_interval_s: int = 600  # how often each watched channel is checked
 
+    # Uploading through the YouTube API (youtube.py): a Google Cloud OAuth client of type "Web application".
+    # Channels connected in the app upload this way; the others go through YouTube Studio.
+    google_client_id: str = ""
+    google_client_secret: str = ""
+    youtube_category_id: str = "24"  # Entertainment; the API doesn't use the channel's upload defaults
+
     # Uploading through YouTube Studio in a signed-in browser (studio.py)
     studio_cdp_url: str = "http://127.0.0.1:9222"  # the browser's remote debugging address
     browser_view_url: str = ""  # where you see that browser to sign in, e.g. its noVNC page

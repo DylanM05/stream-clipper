@@ -10,8 +10,8 @@ import {
   type Show,
   type ShowFields,
 } from "../api";
-import { LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
-import { ago, applyTitlePattern, cn, go, length, titleDate, usePoll } from "../lib";
+import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
+import { ago, applyTitlePattern, cn, copyText, go, length, titleDate, usePoll } from "../lib";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
 
@@ -109,7 +109,8 @@ const channelName = (c: Channel) => c.url.replace(/^https?:\/\/(www\.)?[^/]+\//,
 
 export function UploadChannels() {
   const toast = useToast();
-  const { data: destinations, refresh } = usePoll(api.destinations, 0);
+  const { data: destinations, refresh } = usePoll(api.destinations, 15000);
+  const { data: youtube } = usePoll(api.youtube, 0);
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
 
@@ -126,7 +127,7 @@ export function UploadChannels() {
 
   return (
     <Screen title="YouTube channels" subtitle="Where your videos get uploaded." onBack={() => go("shows")}>
-      <SignInPanel />
+      {youtube && <YouTubeApiPanel configured={youtube.configured} callbackPath={youtube.callback_path} />}
       <div className="space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Kino Casino Clips" className={cn(input, "bg-zinc-800 ring-0")} />
         <input
@@ -147,29 +148,97 @@ export function UploadChannels() {
       </div>
       <div className="mt-4 space-y-3">
         {destinations?.map((d) => (
-          <DestinationRow key={d.id} destination={d} onChanged={refresh} />
+          <DestinationRow key={d.id} destination={d} apiReady={!!youtube?.configured} onChanged={refresh} />
         ))}
       </div>
+      {destinations?.some((d) => !d.api_connected) && <SignInPanel />}
     </Screen>
   );
 }
 
-/** The browser that automatic uploads go through, and whether it's signed in. */
-function SignInPanel() {
+const HTTPS_OK = location.protocol === "https:" || ["localhost", "127.0.0.1"].includes(location.hostname);
+
+/** Uploading through the YouTube API: how to set it up in Google Cloud, or how connecting works once it is. */
+function YouTubeApiPanel({ configured, callbackPath }: { configured: boolean; callbackPath: string }) {
+  const toast = useToast();
+  const redirect = `${location.origin}${callbackPath}`;
+  const link = "font-medium text-violet-300 underline-offset-2 active:underline";
   return (
     <div className="mb-4 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+      <p className="text-sm font-semibold">Upload through the YouTube API</p>
+      {configured ? (
+        <p className="text-xs text-zinc-500">
+          Tap <b>Connect</b> on each channel below and pick that channel when Google asks which account to use. Google
+          warns that it hasn't verified the app, since it's your own: tap <b>Advanced → Go to … (unsafe)</b> to continue.
+          Channels you don't connect upload through the upload browser instead.
+        </p>
+      ) : (
+        <>
+          <p className="text-xs text-zinc-500">
+            Set it up once in Google Cloud (free). It's sturdier than the upload browser and within YouTube's rules.
+          </p>
+          <ol className="list-decimal space-y-2 pl-5 text-xs text-zinc-300">
+            <li>
+              <a className={link} href="https://console.cloud.google.com/projectcreate" target="_blank" rel="noreferrer">
+                Create a project
+              </a>
+              , then{" "}
+              <a className={link} href="https://console.cloud.google.com/apis/library/youtube.googleapis.com" target="_blank" rel="noreferrer">
+                enable the YouTube Data API v3
+              </a>{" "}
+              in it.
+            </li>
+            <li>
+              Open{" "}
+              <a className={link} href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noreferrer">
+                Google Auth Platform
+              </a>{" "}
+              and tap <b>Get started</b>: any app name, your email, audience <b>External</b>. Then under <b>Audience</b>, tap{" "}
+              <b>Publish app</b>; while it's in testing, Google signs channels out after 7 days.
+            </li>
+            <li>
+              Under <b>Clients</b>, create a client of type <b>Web application</b> with this authorized redirect URI:
+              <button
+                onClick={async () => toast({ text: (await copyText(redirect)) ? "Redirect URI copied" : "Couldn't copy" })}
+                className="mt-1.5 flex w-full items-center gap-2 rounded-lg bg-zinc-800 px-3 py-2 text-left font-mono text-[11px] active:bg-zinc-700"
+              >
+                <span className="min-w-0 flex-1 break-all">{redirect}</span>
+                <CopyIcon className="size-3.5 shrink-0 text-violet-300" />
+              </button>
+            </li>
+            <li>
+              Put its client ID and secret in the server's <code>.env</code> as <code>CLIPPER_GOOGLE_CLIENT_ID</code> and{" "}
+              <code>CLIPPER_GOOGLE_CLIENT_SECRET</code>, then run <code>docker compose up -d</code>.
+            </li>
+          </ol>
+        </>
+      )}
+      {!HTTPS_OK && (
+        <p className="text-xs text-amber-300">
+          Google only signs in to https addresses: open the app through its https://….ts.net address to connect channels.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The browser that uploads to channels not connected to the API go through, and whether it's signed in. */
+function SignInPanel() {
+  return (
+    <div className="mt-6 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
       <p className="text-sm font-semibold">Upload browser</p>
       <p className="text-xs text-zinc-500">
-        Automatic uploads go through YouTube Studio in a separate browser that this app controls. The app never asks
-        for your password: open that browser, sign in to YouTube there once with the Google account that manages these
-        channels, and it stays signed in.
+        Channels that aren't connected to the API upload through YouTube Studio in a separate browser that this app
+        controls. Open it and sign in to YouTube there once with the Google account that manages those channels; it
+        stays signed in.
       </p>
       <UploadBrowserStatus />
     </div>
   );
 }
 
-function DestinationRow({ destination, onChanged }: { destination: Destination; onChanged: () => void }) {
+function DestinationRow(props: { destination: Destination; apiReady: boolean; onChanged: () => void }) {
+  const { destination, apiReady, onChanged } = props;
   const toast = useToast();
   const [editing, setEditing] = useState(false);
   const [name, setName] = useState(destination.name);
@@ -199,35 +268,71 @@ function DestinationRow({ destination, onChanged }: { destination: Destination; 
       </div>
     );
   }
+  const connect = async () => {
+    try {
+      location.href = (await api.connectDestination(destination.id)).url;
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+  const connected = destination.api_connected;
+
   return (
-    <div className="flex items-center gap-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <div className="min-w-0 flex-1">
-        <p className="truncate font-semibold">{destination.name}</p>
-        {destination.url ? (
-          <a href={destination.url} target="_blank" rel="noreferrer" className="block truncate text-xs text-violet-300">
-            {destination.url}
-          </a>
-        ) : (
-          <p className="text-xs text-zinc-500">No link</p>
-        )}
-        <p className={cn("text-xs", destination.channel_id ? "text-zinc-500" : "text-amber-300")}>
-          {destination.channel_id
-            ? `Channel ID ${destination.channel_id}`
-            : "Channel ID not found: automatic uploads go to whichever channel the browser has selected"}
-        </p>
+    <div className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+      <div className="flex items-center gap-3">
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-semibold">{destination.name}</p>
+          {destination.url ? (
+            <a href={destination.url} target="_blank" rel="noreferrer" className="block truncate text-xs text-violet-300">
+              {destination.url}
+            </a>
+          ) : (
+            <p className="text-xs text-zinc-500">No link</p>
+          )}
+          <p className={cn("text-xs", destination.channel_id || connected ? "text-zinc-500" : "text-amber-300")}>
+            {destination.channel_id
+              ? `Channel ID ${destination.channel_id}`
+              : "Channel ID not found: uploads through the browser go to whichever channel it has selected"}
+          </p>
+        </div>
+        <button onClick={() => setEditing(true)} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700">
+          Edit
+        </button>
+        <button
+          onClick={() =>
+            confirm(`Remove "${destination.name}"? Shows and clips headed there will need a channel picked again.`) &&
+            run(() => api.deleteDestination(destination.id))
+          }
+          className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-red-300 active:bg-zinc-700"
+        >
+          Remove
+        </button>
       </div>
-      <button onClick={() => setEditing(true)} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700">
-        Edit
-      </button>
-      <button
-        onClick={() =>
-          confirm(`Remove "${destination.name}"? Shows and clips headed there will need a channel picked again.`) &&
-          run(() => api.deleteDestination(destination.id))
-        }
-        className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-red-300 active:bg-zinc-700"
-      >
-        Remove
-      </button>
+      {(apiReady || connected) && (
+        <div className="mt-3 flex items-center gap-2 border-t border-white/5 pt-3">
+          <span className={cn("size-2 shrink-0 rounded-full", connected && !destination.api_error ? "bg-emerald-400" : "bg-zinc-500")} />
+          <span className="min-w-0 flex-1 text-xs text-zinc-400">
+            {connected ? `Uploads through the YouTube API as “${destination.api_account}”` : "Uploads through the upload browser"}
+          </span>
+          {connected && (
+            <button
+              onClick={() =>
+                confirm(`Disconnect "${destination.name}" from the YouTube API? Uploads to it go back through the upload browser.`) &&
+                run(() => api.disconnectDestination(destination.id))
+              }
+              className="rounded-lg px-2 py-1.5 text-xs font-semibold text-zinc-400"
+            >
+              Disconnect
+            </button>
+          )}
+          {apiReady && (!connected || destination.api_error) && (
+            <button onClick={connect} className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700">
+              {connected ? "Reconnect" : "Connect"}
+            </button>
+          )}
+        </div>
+      )}
+      {destination.api_error && <p className="mt-2 text-xs text-red-300">{destination.api_error}</p>}
     </div>
   );
 }

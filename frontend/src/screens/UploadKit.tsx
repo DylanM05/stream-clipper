@@ -7,8 +7,8 @@ import { Button, DestinationSelect, ErrorNote, ProgressBar, Screen, useToast } f
 const MAX_SHARE_BYTES = 1e9; // bigger than this is a job for a computer
 
 /**
- * Posting one clip: the channel it goes to, then either an automatic upload through YouTube Studio
- * (done by the worker) or everything needed to upload it by hand.
+ * Posting one clip: the channel it goes to, then either an automatic upload by the worker (through the
+ * YouTube API, or YouTube Studio for channels not connected to it) or everything needed to upload it by hand.
  */
 export function UploadKit({ id }: { id: number }) {
   const { data: clip, error, setData } = usePoll(() => api.clip(id), 5000, id);
@@ -153,8 +153,9 @@ const JOB_STATUS: Record<UploadJob["status"], string> = {
   done: "Uploaded",
   failed: "Failed",
 };
+const METHOD_LABEL: Record<UploadJob["method"], string> = { api: " · YouTube API", studio: " · Studio", "": "" };
 
-/** The worker uploads through YouTube Studio in the server's signed-in browser. */
+/** The worker uploads through the YouTube API if the channel is connected, else through YouTube Studio. */
 function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destination }) {
   const toast = useToast();
   const { data: jobs, refresh } = usePoll(() => api.uploads(clip.id), 4000, clip.id);
@@ -178,13 +179,28 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
 
   return (
     <div className="space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <UploadBrowserStatus />
-      {destination && !destination.channel_id && (
-        <p className="text-xs text-amber-300">
-          This channel's ID isn't known, so it goes to whichever channel the upload browser has selected. Fix the
-          link under Shows → YouTube channels.
-        </p>
+      {destination?.api_connected ? (
+        <div className="flex items-start gap-2 text-xs">
+          <span className="mt-1 size-2 shrink-0 rounded-full bg-emerald-400" />
+          <span className="text-zinc-400">Uploads through the YouTube API as “{destination.api_account}”</span>
+        </div>
+      ) : (
+        <>
+          <UploadBrowserStatus />
+          {destination && (
+            <p className="text-xs text-zinc-500">
+              Connect this channel to the YouTube API under Shows → YouTube channels to upload without the browser.
+            </p>
+          )}
+          {destination && !destination.channel_id && (
+            <p className="text-xs text-amber-300">
+              This channel's ID isn't known, so it goes to whichever channel the upload browser has selected. Fix the
+              link under Shows → YouTube channels.
+            </p>
+          )}
+        </>
       )}
+      {destination?.api_error && <p className="text-xs text-red-300">{destination.api_error}</p>}
       <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
         {(Object.keys(VISIBILITY_LABEL) as Visibility[]).map((v) => (
           <button
@@ -214,7 +230,10 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
             <li key={job.id} className="space-y-2 p-3 text-sm">
               <div className="flex items-center gap-2">
                 <span className="font-semibold">{job.which === "short" ? "Short" : "Video"}</span>
-                <span className="text-zinc-500">· {VISIBILITY_LABEL[job.visibility]}</span>
+                <span className="text-zinc-500">
+                  · {VISIBILITY_LABEL[job.visibility]}
+                  {METHOD_LABEL[job.method]}
+                </span>
                 <span
                   className={cn(
                     "ml-auto text-xs font-semibold",
@@ -231,6 +250,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
                   <LinkIcon className="size-4" /> {job.youtube_url}
                 </a>
               )}
+              {job.status === "done" && job.error && <p className="break-words text-xs text-amber-300">{job.error}</p>}
               {job.status === "failed" && (
                 <>
                   <p className="break-words text-xs text-red-300">{job.error}</p>
