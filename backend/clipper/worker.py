@@ -206,6 +206,7 @@ class Worker:
             day = titles.format_date(titles.stream_date(meta.get("upload_date"), vod.created_at.date()))
             context = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
 
+            self._start(vod_id, "preparing", "processing")  # until transcription starts, or for whole videos
             preview = self._preview(vod_id, ws)
             clips: list[Clip] = []
             episode_title = episode_summary = chapters = ""
@@ -276,7 +277,6 @@ class Worker:
 
     def _preview(self, vod_id: int, ws: Workspace) -> Preview:
         """Start making the preview copy in the background, or pick up the one an earlier attempt left running."""
-        self._check_paused(vod_id, "processing")
         preview = self._previews.get(vod_id)
         if not preview or not preview.is_alive() or preview.stop.is_set():
             preview = self._previews[vod_id] = Preview(self, vod_id, ws)
