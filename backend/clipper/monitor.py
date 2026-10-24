@@ -1,12 +1,14 @@
-"""Watches channels on Kick, Twitch and YouTube and queues their new videos for processing.
+"""Watches channels on Kick, Twitch and YouTube, and accounts on X, and queues their new videos for processing.
 
 A new video is queued once it's finished: not live, and the same length on two checks in a row,
-because Twitch doesn't say whether a VOD is still recording. Videos that were already on a channel
-when it was added are listed as "older" and only processed if you ask for them in the app, except a
-stream that was live at the time, which is treated as new.
+because Twitch doesn't say whether a VOD is still recording. A video posted on X is finished as soon as
+it's seen. Videos that were already on a channel when it was added are listed as "older" and only
+processed if you ask for them in the app, except a stream that was live at the time, which is treated
+as new.
 """
 
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -16,12 +18,15 @@ from sqlmodel import Session, col, or_, select
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, unsmuggle_url
 
+from . import xposts
 from .config import Settings
 from .db import Channel, ChannelVideo, Show, get_engine, queue_vod, utcnow
 
 log = logging.getLogger(__name__)
 
 RECENT = 15  # newest videos looked at on each listing
+# x.com pages that aren't accounts
+X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
 
 
 class ChannelUrlError(ValueError):
@@ -35,13 +40,14 @@ class Listed:
     title: str
     duration: float | None
     live: bool
+    final: bool = False  # a post, done as soon as it's up, rather than a stream's VOD
 
 
 def parse_channel(url: str) -> tuple[str, str]:
     """The platform and canonical link for a channel, e.g. ("twitch", "https://www.twitch.tv/shroud")."""
     url = url.strip()
     parsed = urlparse(url if "://" in url else f"https://{url}")
-    host = (parsed.hostname or "").lower().removeprefix("www.").removeprefix("m.")
+    host = (parsed.hostname or "").lower().removeprefix("www.").removeprefix("m.").removeprefix("mobile.")
     parts = [p for p in parsed.path.split("/") if p]
     if host == "kick.com" and parts:
         return "kick", f"https://kick.com/{parts[0].lower()}"
@@ -52,7 +58,11 @@ def parse_channel(url: str) -> tuple[str, str]:
             return "youtube", f"https://www.youtube.com/{parts[0]}"
         if parts[0] in ("channel", "c", "user") and len(parts) > 1:
             return "youtube", f"https://www.youtube.com/{parts[0]}/{parts[1]}"
-    raise ChannelUrlError("Use a channel link like kick.com/name, twitch.tv/name or youtube.com/@name")
+    if host in ("x.com", "twitter.com") and parts:
+        handle = parts[0].removeprefix("@")
+        if re.fullmatch(r"\w{1,15}", handle, re.ASCII) and handle.lower() not in X_PAGES:
+            return "x", f"https://x.com/{handle.lower()}"
+    raise ChannelUrlError("Use a channel link like kick.com/name, twitch.tv/name, youtube.com/@name or x.com/name")
 
 
 def listing_urls(platform: str, channel_url: str) -> list[str]:
@@ -111,10 +121,16 @@ def skip_reason(channel: Channel, item: Listed) -> str:
 
 
 class Monitor:
-    def __init__(self, settings: Settings, lister: Callable[[str, str], list[Listed]] = list_recent):
+    def __init__(self, settings: Settings, lister: Callable[[str, str], list[Listed]] | None = None):
         self.settings = settings
         self.engine = get_engine(settings)
-        self.lister = lister
+        self.lister = lister or self._list
+
+    def _list(self, platform: str, channel_url: str) -> list[Listed]:
+        if platform != "x":
+            return list_recent(platform, channel_url)
+        posts = xposts.video_posts(self.settings.studio_cdp_url, channel_url.rsplit("/", 1)[-1])
+        return [Listed(id=p.id, url=p.url, title=p.text[:1000], duration=p.duration, live=False, final=True) for p in posts]
 
     def check_next(self) -> bool:
         """Check the most overdue channel, if one is due. True if a channel was checked."""
@@ -139,7 +155,8 @@ class Monitor:
             listed = self.lister(platform, url)
         except Exception as e:
             log.warning("Checking %s failed: %s", url, e)
-            self._finish(channel_id, last_error=f"{type(e).__name__}: {e}"[:500])
+            error = str(e) if isinstance(e, xposts.XError) else f"{type(e).__name__}: {e}"
+            self._finish(channel_id, last_error=error[:500])
             return
 
         with Session(self.engine) as s:
@@ -152,22 +169,19 @@ class Monitor:
                 ).first()
                 if row is None:
                     # A stream that's live when the channel is added still counts as new: its VOD isn't done yet.
-                    if channel.baseline_done or item.live or not item.duration:
-                        s.add(ChannelVideo(
-                            channel_id=channel_id, video_id=item.id, url=item.url, title=item.title,
-                            duration=item.duration, status="waiting", reason=_waiting_reason(item),
-                        ))
-                    else:
+                    if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
                         s.add(ChannelVideo(
                             channel_id=channel_id, video_id=item.id, url=item.url, title=item.title,
                             duration=item.duration, status="older", reason="Already on the channel when you added it",
                         ))
+                        continue
+                    row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
+                elif row.status != "waiting":
                     continue
-                if row.status != "waiting":
-                    continue
-                row.title, row.updated_at = item.title, utcnow()
-                if item.live or not item.duration or row.duration != item.duration:
-                    row.duration, row.reason = item.duration, _waiting_reason(item)
+                finished = not item.live and (item.final or bool(item.duration and row.duration == item.duration))
+                row.title, row.duration, row.updated_at = item.title, item.duration, utcnow()
+                if not finished:
+                    row.status, row.reason = "waiting", _waiting_reason(item)
                 elif reason := skip_reason(channel, item):
                     row.status, row.reason = "skipped", reason
                 else:

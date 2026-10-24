@@ -148,13 +148,13 @@ class ClipRecord(SQLModel, table=True):
 
 
 class Channel(SQLModel, table=True):
-    """A channel on Kick, Twitch or YouTube that the worker checks for new videos (see monitor.py)."""
+    """A channel on Kick, Twitch or YouTube, or an account on X, that the worker checks for new videos (see monitor.py)."""
 
     id: int | None = Field(default=None, primary_key=True)
     show_id: int = Field(foreign_key="show.id", index=True)
     url: str  # canonical channel link, e.g. https://kick.com/name
-    platform: str  # kick, twitch, youtube
-    keywords: str = ""  # only titles with one of these, comma-separated; empty means every video
+    platform: str  # kick, twitch, youtube, x
+    keywords: str = ""  # only titles (on X, post text) with one of these, comma-separated; empty means every video
     exclude: str = ""  # skip titles with any of these
     min_minutes: float = 0
     enabled: bool = True

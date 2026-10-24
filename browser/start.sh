@@ -20,7 +20,7 @@ websockify --web /usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 &
 
 while kill -0 "$xvfb" 2>/dev/null; do
   rm -f /profile/Singleton*  # left behind when the container stopped with Chromium running
-  # --no-sandbox: Docker's default seccomp profile blocks Chromium's sandbox. It only visits YouTube.
+  # --no-sandbox: Docker's default seccomp profile blocks Chromium's sandbox. It only visits YouTube and X.
   chromium --no-first-run --no-default-browser-check --no-sandbox --disable-dev-shm-usage \
     --user-data-dir=/profile --remote-debugging-port=9222 --remote-allow-origins='*' \
     --window-position=0,0 --window-size=1440,900 https://studio.youtube.com || true

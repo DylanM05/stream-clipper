@@ -283,23 +283,25 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
 }
 
 /**
- * Whether the upload browser is up and signed in to YouTube, with buttons to open it (on a desktop,
- * or its view on the server) and to check again after signing in.
+ * Whether the upload browser is up and signed in to YouTube (or to X, which it reads posts from), with
+ * buttons to open it (on a desktop, or its view on the server) and to check again after signing in.
  */
-export function UploadBrowserStatus() {
+export function UploadBrowserStatus({ site = "youtube" }: { site?: "youtube" | "x" }) {
   const toast = useToast();
   const { data: studio, setData } = usePoll(api.studio, 15000);
   const [checking, setChecking] = useState(false);
   if (!studio) return null;
 
-  const ok = studio.browser && studio.signed_in;
+  const siteName = site === "x" ? "X" : "YouTube";
+  const signedIn = site === "x" ? studio.x_signed_in : studio.signed_in;
+  const ok = studio.browser && signedIn;
   const message = !studio.checked_at
     ? "The upload browser hasn't been checked yet."
     : !studio.browser
       ? "The upload browser isn't open."
-      : !studio.signed_in
-        ? "The upload browser isn't signed in to YouTube yet."
-        : `Upload browser signed in to YouTube · checked ${ago(studio.checked_at)}`;
+      : !signedIn
+        ? `The upload browser isn't signed in to ${siteName} yet.`
+        : `Upload browser signed in to ${siteName} · checked ${ago(studio.checked_at)}`;
 
   const open = async () => {
     if (studio.browser_view_url) {
@@ -308,7 +310,7 @@ export function UploadBrowserStatus() {
     }
     try {
       await api.openStudioBrowser();
-      toast({ text: "Opened a separate browser window. Sign in to YouTube there, then tap Check again." });
+      toast({ text: `Opened a separate browser window. Sign in to ${siteName} there, then tap Check again.` });
     } catch (e) {
       toast({ text: errorText(e) });
     }

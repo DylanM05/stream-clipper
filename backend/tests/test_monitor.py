@@ -14,8 +14,11 @@ def test_parse_channel_links():
     assert parse_channel("https://www.twitch.tv/Shroud/videos?filter=archives") == ("twitch", "https://www.twitch.tv/shroud")
     assert parse_channel("https://m.youtube.com/@LinusTechTips/streams") == ("youtube", "https://www.youtube.com/@LinusTechTips")
     assert parse_channel("youtube.com/channel/UC123/videos") == ("youtube", "https://www.youtube.com/channel/UC123")
-    with pytest.raises(ChannelUrlError):
-        parse_channel("https://x.com/Andywarski")
+    assert parse_channel("https://x.com/Andywarski") == ("x", "https://x.com/andywarski")
+    assert parse_channel("twitter.com/@Andywarski/status/2113687311779282973") == ("x", "https://x.com/andywarski")
+    for not_an_account in ("https://x.com/i/status/1", "x.com/home", "x.com/someone.else"):
+        with pytest.raises(ChannelUrlError):
+            parse_channel(not_an_account)
 
 
 def test_shows_match_by_link_or_channel_name():
@@ -102,6 +105,50 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
         vod = s.get(Vod, new.vod_id)
         assert (vod.url, vod.show_id, vod.mode, vod.mode_auto) == ("https://kick.com/kino/videos/new", show_id, "segment", True)
         assert len(s.exec(select(Vod)).all()) == 1
+
+
+def post(id_, duration=1250.0):
+    return Listed(id=id_, url=f"https://x.com/Andywarski/status/{id_}", title="LIVE TONIGHT ON KINO CASINO",
+                  duration=duration, live=False, final=True)
+
+
+def test_videos_posted_on_x_are_queued_as_soon_as_they_are_seen(tmp_path, monkeypatch):
+    settings = Settings(data_dir=tmp_path)
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Pre-show", mode="whole")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url="https://x.com/andywarski", platform="x", min_minutes=5)
+        s.add(channel)
+        s.commit()
+        show_id, channel_id = show.id, channel.id
+    on_x = [post("1")]
+    asked = []
+    monkeypatch.setattr(monitor.xposts, "video_posts", lambda cdp_url, handle: asked.append(handle) or [
+        monitor.xposts.Post(id=p.id, url=p.url, text=p.title, duration=p.duration) for p in on_x
+    ])
+    mon = Monitor(settings)
+
+    mon.check(channel_id)  # what's already there is only listed
+    assert asked == ["andywarski"]
+    assert items(settings)["1"].status == "older"
+
+    on_x = [post("3", duration=40), post("2"), post("1")]
+    mon.check(channel_id)
+    found = items(settings)
+    assert found["2"].status == "queued"
+    assert (found["3"].status, found["3"].reason) == ("skipped", "Shorter than 5 minutes")
+    with Session(get_engine(settings)) as s:
+        vod = s.get(Vod, found["2"].vod_id)
+        assert (vod.url, vod.show_id, vod.mode) == ("https://x.com/Andywarski/status/2", show_id, "whole")
+
+
+def test_x_problems_read_as_they_are(setup):
+    settings, mon, fake, (_, channel_id) = setup
+    fake.error = monitor.xposts.XError(monitor.xposts.SIGNED_OUT)
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        assert s.get(Channel, channel_id).last_error == monitor.xposts.SIGNED_OUT
 
 
 def test_errors_are_shown_on_the_channel_and_checks_wait_for_the_interval(setup):

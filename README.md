@@ -6,8 +6,8 @@ Turns long stream VODs (Twitch, YouTube, Kick, X) into chapter videos and highli
 - **Phase 1:** the processing pipeline.
 - **Phase 2:** the review app.
 - **Phase 3:** uploads through the YouTube API, with YouTube Studio automation as a fallback, plus the upload kit for posting by hand.
-- **Phase 4, part:** shows, plus watching Kick, Twitch and YouTube channels.
-- **Next:** X monitoring and notifications.
+- **Phase 4, part:** shows, plus watching Kick, Twitch and YouTube channels and X accounts.
+- **Next:** notifications.
 
 How it works:
 
@@ -17,8 +17,8 @@ How it works:
    - title patterns
    - context and guidance for Claude
    - which channel the clips and the full episodes go to
-   - the Kick, Twitch or YouTube channels to watch
-3. New streams are picked up from watched channels once they've ended. You can also paste any link in the app.
+   - the Kick, Twitch or YouTube channels, or X accounts, to watch
+3. New streams are picked up from watched channels once they've ended, and videos posted on X as soon as they're seen. You can also paste any link in the app.
 4. The worker downloads the video and makes a small preview copy. Then it transcribes the video, has Claude (through Claude Code on your subscription) pick chapters and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. Titles follow the show's patterns, e.g. `KINO CASINO Oct 23, 2026 - <title Claude wrote>`. A full episode gets Claude's episode title and summary, plus YouTube chapter timestamps in its description.
 5. Everything lands in your **Inbox**. Swipe right to approve and left to reject, or tap one to trim it on the preview, fix the title, pick its channel, and choose whether it also becomes a vertical Short.
 6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them.
@@ -88,11 +88,15 @@ A pre-show from X is usually posted whole, and Claude writes its short title fro
       - Authorized redirect URI: `https://<server-name>.<your-tailnet>.ts.net/api/youtube/callback`. The app shows the exact address to copy under **Shows → YouTube channels**.
    6. Put its ID and secret in `.env` as `CLIPPER_GOOGLE_CLIENT_ID` and `CLIPPER_GOOGLE_CLIENT_SECRET`, then run `docker compose up -d`.
    7. In the app, go to **Shows → YouTube channels** and tap **Connect** on each channel. Pick that channel when Google asks which account to use. Google warns that it hasn't verified the app: click **Advanced → Go to … (unsafe)**.
-9. **Optional: the upload browser**, for channels you don't connect to the API.
+9. **The upload browser**, for watching X accounts and for channels you don't connect to the API.
    ```bash
    sudo tailscale serve --bg --https=8443 6080
    ```
-   Open `https://<server-name>.<your-tailnet>.ts.net:8443/vnc.html` and enter `CLIPPER_BROWSER_PASSWORD`. You'll see a Chromium window: sign in to YouTube with the Google account that manages your clips channels. It stays signed in. Set `CLIPPER_BROWSER_VIEW_URL` in `.env` to that address so the app links to it.
+   Open `https://<server-name>.<your-tailnet>.ts.net:8443/vnc.html` and enter `CLIPPER_BROWSER_PASSWORD`. You'll see a Chromium window. It stays signed in to whatever you sign in to there:
+   - **To watch X accounts:** open a new tab and sign in at x.com with a spare X account (see [Watching X accounts](#watching-x-accounts)).
+   - **For channels not connected to the API:** sign in to YouTube with the Google account that manages them.
+
+   Set `CLIPPER_BROWSER_VIEW_URL` in `.env` to that address so the app links to it.
 
 To update after pulling new code: `docker compose build && docker compose up -d`.
 
@@ -145,6 +149,14 @@ For channels not connected to the API, the worker drives YouTube Studio in the s
 
 The manual steps (share to the YouTube app, or download and drag into Studio) stay on the same page as a fallback.
 
+## Watching X accounts
+
+Add `x.com/name` under a show's **Channels to watch**. X only shows an account's posts to signed-in visitors, and its API costs money, so the worker reads them through the upload browser, signed in to X (setup step 9). Every 10 minutes it opens the account's profile there and reads the posts from the data X's page loads.
+- **What's picked up:** the account's own posts with a video, as soon as they're seen. Reposts and text-only posts are left out. The filters apply to the post's text and the video's length; a minimum length keeps short clips out.
+- **Signed out:** the account's card under **Shows** says whether the browser is signed in to X. If X signs it out or asks it to verify itself, the card shows that; sign in again in the browser.
+- **X's terms:** they don't allow automated access, even through your own sign-in. One profile looked at every 10 minutes is unlikely to stand out, but X could ask the account to verify itself or lock it. Use a spare X account, never your main one.
+- **X changes its site:** if the card says it found no posts at all, X has changed how its page sends them, and `backend/clipper/xposts.py` needs updating. Pasting the post's link on **Videos** still works meanwhile.
+
 ## The phone app
 
 | Screen | What you do there |
@@ -153,7 +165,7 @@ The manual steps (share to the YouTube app, or download and drag into Studio) st
 | **Clip editor** | Tap a clip to open it. Drag the handles on the strip under the video, or fine-tune with **−1s / −0.2 / Here / +0.2 / +1s**; every change plays the few seconds around the new cut. **Last 5s** checks that nothing is cut off. Tap a transcript line to hear it, or use its **Start** and **End** buttons to cut there. Edit the title and description, and turn the vertical Short on or off. The volume slider only changes the preview, not the clip; on iPhones it's a mute button, because iOS only allows the hardware buttons. **Approve** takes you straight to the next clip. |
 | **Videos** | Paste a link and it's matched to its show, which sets the mode, notes and title pattern. You can override the mode with **Clips**, **Full** or **Both**, and add notes for Claude. Shows each video's progress. Failed videos can be retried; videos that hit your Claude usage limit retry on their own once it resets. Downloads are capped at 50 Mbit/s by default so the rest of your internet stays usable: about an hour for an 8-hour stream. Tap **Change** under the form to adjust it (0 = no limit). The line below it shows free disk space and when finished streams' files are deleted. |
 | **Upload** | Clips being rendered, clips ready to upload, and uploaded ones. Tap **Upload** on a ready clip: pick its channel, then either **upload automatically** (Public, Unlisted or Private; the worker does it through the YouTube API, or YouTube Studio for channels not connected to it, see below) or do it by hand. By hand means sharing the file straight to the YouTube app from a phone, or downloading it on a computer (it's named after the title, so Studio fills that in). Copy the title and description, then **Mark as uploaded**. New cut points render the clip again; a new title or channel doesn't. |
-| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name` or `youtube.com/@name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**, where you connect each one to the YouTube API. |
+| **Shows** | One per show. **What to make** is Clips, Full episode or Both. **Title patterns** (one for clips, one for full episodes) use `{date}` for the stream date (e.g. Oct 23, 2026) and `{title}` for the part Claude writes; Claude gets however many characters are left of YouTube's 100. **Clips go to / Full episodes go to** pick the YouTube channels. **About the show** gives Claude context; **What the chapters and clips should be** tells Claude what to look for, and it follows that over its defaults. **Links that belong to this show** match pasted links. **Channels to watch** takes `kick.com/name`, `twitch.tv/name`, `youtube.com/@name` or `x.com/name`, with optional filters: keywords, words to skip, minimum length. The worker checks each channel every 10 minutes and queues a stream once it has ended, or a video posted on X as soon as it's seen. Videos already on a channel when you add it are listed with a **Process** button but not processed automatically. Your YouTube channels are listed under **Shows → YouTube channels you upload to**, where you connect each one to the YouTube API. |
 
 ## Command line
 
@@ -164,7 +176,7 @@ Everything the app does is also available from the command line, e.g. `docker co
 | `add "<url>" [--whole/--segment] [--notes "..."]` | Queue a video for the worker, same as the app's **Add video**. |
 | `process "<url>" [--notes "..."] [--no-render] [--redo STEP] [--only ID]` | Run the whole pipeline in the foreground without the app; handy for testing prompts. |
 | `doctor`, `llm-check` | Check the setup and the Claude Code login. |
-| `browser` | On a desktop: open the upload browser (Chrome or Edge with its own profile) to sign in to YouTube. |
+| `browser` | On a desktop: open the upload browser (Chrome or Edge with its own profile) to sign in to YouTube or X. |
 | `serve`, `worker` | The two services `docker compose up` runs. |
 
 Each video's files are in `<data>/vods/<platform>-<id>/`:

@@ -841,12 +841,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.get("/api/studio")
     def studio_status() -> dict:
-        """What the worker last saw of the upload browser, and where to open it to sign in."""
+        """What the worker last saw of the upload browser (signed in to YouTube, and to X for watching
+        accounts there), and where to open it to sign in."""
         status = read_status(settings.studio_dir / "status.json")
         checked = status.get("checked_at")
         return {
             "browser": bool(status.get("browser")),
             "signed_in": bool(status.get("signed_in")),
+            "x_signed_in": bool(status.get("x_signed_in")),
             "checked_at": iso(datetime.fromtimestamp(checked, timezone.utc)) if checked else None,
             "browser_view_url": settings.browser_view_url,
         }

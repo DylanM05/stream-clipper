@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 VISIBILITY = {"public": "PUBLIC", "unlisted": "UNLISTED", "private": "PRIVATE"}
 UPLOAD_TIMEOUT_S = 12 * 3600  # full episodes can be tens of gigabytes
 SIGNED_IN_COOKIES = {"SAPISID", "__Secure-3PAPISID", "SID", "__Secure-1PSID"}
+X_SIGNED_IN_COOKIES = {"auth_token"}  # the same browser reads X posts (xposts.py)
 
 
 class StudioError(RuntimeError):
@@ -70,15 +71,19 @@ class Studio:
         self.desktop_profile = desktop_profile
 
     def status(self) -> dict:
-        """Whether the browser is reachable and signed in to YouTube."""
+        """Whether the browser is reachable and signed in to YouTube, and to X."""
         try:
             with sync_playwright() as p:
                 browser = p.chromium.connect_over_cdp(self.cdp_url, timeout=10_000)
-                cookies = browser.contexts[0].cookies("https://www.youtube.com") if browser.contexts else []
-                return {"browser": True, "signed_in": bool({c["name"] for c in cookies} & SIGNED_IN_COOKIES)}
+                context = browser.contexts[0] if browser.contexts else None
+                return {
+                    "browser": True,
+                    "signed_in": signed_in(context, "https://www.youtube.com", SIGNED_IN_COOKIES),
+                    "x_signed_in": signed_in(context, "https://x.com", X_SIGNED_IN_COOKIES),
+                }
         except Exception as e:
             log.debug("Browser not reachable at %s: %s", self.cdp_url, e)
-            return {"browser": False, "signed_in": False}
+            return {"browser": False, "signed_in": False, "x_signed_in": False}
 
     def upload(self, job: Upload, on_progress: Callable[[float], None] = lambda _: None) -> str:
         """Upload through Studio and return the video's link. Raises StudioError, with a screenshot when it can."""
@@ -241,6 +246,11 @@ def resolve_channel_id(url: str) -> str:
         return ""
 
 
+def signed_in(context, site: str, cookie_names: set[str]) -> bool:
+    """Whether the browser has a sign-in cookie for the site."""
+    return bool(context and {c["name"] for c in context.cookies(site)} & cookie_names)
+
+
 def write_status(status_file: Path, status: dict) -> None:
     status_file.parent.mkdir(parents=True, exist_ok=True)
     status_file.write_text(json.dumps({**status, "checked_at": time.time()}), encoding="utf-8")
@@ -250,7 +260,7 @@ def read_status(status_file: Path) -> dict:
     try:
         return json.loads(status_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"browser": False, "signed_in": False, "checked_at": None}
+        return {"browser": False, "signed_in": False, "x_signed_in": False, "checked_at": None}
 
 
 def launch_desktop_browser(profile_dir: Path, port: int = 9222) -> subprocess.Popen:

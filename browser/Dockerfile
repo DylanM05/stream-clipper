@@ -1,8 +1,9 @@
-# The browser that YouTube uploads go through (backend/clipper/studio.py).
+# The browser that YouTube uploads go through (backend/clipper/studio.py) and that reads posts on X
+# (backend/clipper/xposts.py).
 #
 # Chromium runs on a virtual screen that you can see and use from any browser through noVNC (port
-# 6080), to sign in to YouTube once; the sign-in is kept in the /profile volume. The worker drives it
-# through Chromium's remote debugging port, which only it can reach: it shares this container's network.
+# 6080), to sign in to YouTube and X once; the sign-ins are kept in the /profile volume. The worker drives
+# it through Chromium's remote debugging port, which only it can reach: it shares this container's network.
 FROM debian:bookworm-slim
 
 RUN apt-get update \

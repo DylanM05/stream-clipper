@@ -17,7 +17,7 @@ import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
 const SAMPLE_TITLE = "Short title written by Claude";
-const PLATFORM_NAME: Record<Channel["platform"], string> = { kick: "Kick", twitch: "Twitch", youtube: "YouTube" };
+const PLATFORM_NAME: Record<Channel["platform"], string> = { kick: "Kick", twitch: "Twitch", youtube: "YouTube", x: "X" };
 
 const hasClips = (mode: Mode) => mode !== "whole";
 const hasEpisode = (mode: Mode) => mode !== "segment";
@@ -55,7 +55,7 @@ export function Shows() {
           <h2 className="mt-4 text-lg font-semibold">No shows yet</h2>
           <p className="mt-1 max-w-xs text-sm text-zinc-400">
             A show sets the titles, context for Claude and upload channel for its videos, and can watch Kick, Twitch
-            and YouTube channels for new streams.
+            and YouTube channels for new streams, and X accounts for new videos.
           </p>
         </div>
       )}
@@ -587,8 +587,8 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
     <section className="mt-10">
       <h2 className="text-lg font-bold tracking-tight">Channels to watch</h2>
       <p className="mt-1 text-sm text-zinc-400">
-        Checked every 10 minutes. A new stream's VOD is picked up once the stream has ended. Videos already on the channel
-        are listed but not processed; tap one to process it.
+        Checked every 10 minutes. A new stream's VOD is picked up once the stream has ended, and a video posted on X as
+        soon as it's seen. Videos already there are listed but not processed; tap one to process it.
       </p>
 
       <div className="mt-3 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
@@ -597,7 +597,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="kick.com/name, twitch.tv/name or youtube.com/@name"
+          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name or x.com/name"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
         {showFilters ? (
@@ -701,6 +701,16 @@ function ChannelCard({ channel, onChanged }: { channel: Channel; onChanged: () =
           />
         </label>
       </div>
+
+      {channel.platform === "x" && channel.enabled && (
+        <div className="space-y-2 border-t border-white/5 p-4">
+          <p className="text-xs text-zinc-500">
+            X only shows posts to signed-in visitors, so the upload browser reads them. Sign it in at x.com with a spare X
+            account, not your main one: X doesn't allow automated access and could lock the account.
+          </p>
+          <UploadBrowserStatus site="x" />
+        </div>
+      )}
 
       {editing && (
         <div className="space-y-3 border-t border-white/5 p-4">

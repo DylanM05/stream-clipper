@@ -39,7 +39,8 @@ services:
               count: all
               capabilities: [gpu]
 
-  # The browser that uploads go through (YouTube Studio). Sign in to YouTube once through noVNC on port 6080.
+  # The browser that uploads to channels not connected to the YouTube API go through (YouTube Studio), and
+  # that reads posts on X accounts a show watches. Sign in to those once through noVNC on port 6080.
   browser:
     build: ./browser
     image: stream-clipper-browser
@@ -56,4 +57,4 @@ services:
 volumes:
   claude-config: # Claude Code login
   models: # Whisper model download (about 1.6 GB)
-  browser-profile: # the upload browser's YouTube sign-in
+  browser-profile: # the upload browser's YouTube and X sign-ins

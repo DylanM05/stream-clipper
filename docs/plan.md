@@ -169,6 +169,8 @@ Rules can match on: keywords (any or all), regex, exclude words, category or gam
 
 **Why not an iframe:** x.com refuses to be embedded in other sites, so an iframe of it would show up blank. The app gets the same result another way.
 
+**As built (Oct 2026):** there's no separate `xbrowser`. The upload browser (the `browser` service) also reads X, signed in to a spare account through its noVNC view (`xposts.py`). An X account is a channel to watch like Kick or Twitch: every 10 minutes the worker opens the profile, reads the posts from X's own timeline data, and queues the account's new video posts straight away. Filters (keywords in the post's text, minimum length) take the place of a preshow rule, and the account's card shows whether the browser is signed in to X. Videos download with yt-dlp without cookies, which works for public posts. Not built: the feed list with thumbnails, faster checks around the preshow's time slots, and ntfy alerts.
+
 - **Real browser:** a Chromium browser runs on the server with a saved profile (the `xbrowser` service).
 - **Logging in:** the app's **X** tab embeds a live view of that browser over noVNC. noVNC is self-hosted, so it *can* go in an iframe.
   - You log in once, including 2FA, from your phone or PC.
@@ -237,7 +239,7 @@ Keep the code in a git repo, either outside this Nextcloud folder or excluded fr
 
 **Phase 4: monitors and automation.**
 - YouTube, Twitch and Kick monitors, the rules engine, the scheduler, ntfy notifications, phone share ingest and the watched folder.
-- The `xbrowser` service: live view, X feed list and preshow rule.
+- The `xbrowser` service: live view, X feed list and preshow rule. Done in the upload browser instead (see the X section).
 
 **Phase 5: auto mode and polish.**
 - Per-source auto-publish thresholds, Shorts layouts and captions, chat-spike signals, cleanup of old files, and per-source approval-rate stats (used to decide when auto mode can be trusted).

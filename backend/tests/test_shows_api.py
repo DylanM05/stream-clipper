@@ -46,7 +46,7 @@ def test_shows_set_the_mode_of_matching_links(client):
 def test_channels(client, settings):
     show = client.post("/api/shows", json={"name": "Kino Casino", "title_template": "KINO CASINO {date} - {title}"}).json()
     url = f"/api/shows/{show['id']}/channels"
-    assert client.post(url, json={"url": "https://x.com/Andywarski"}).status_code == 422
+    assert client.post(url, json={"url": "https://x.com/i/status/1"}).status_code == 422
     channel = client.post(url, json={"url": "kick.com/KinoCasino", "exclude": "rerun", "min_minutes": 60}).json()
     assert (channel["platform"], channel["url"], channel["min_minutes"]) == ("kick", "https://kick.com/kinocasino", 60)
     assert client.post(url, json={"url": "https://kick.com/kinocasino/videos"}).status_code == 409
@@ -70,6 +70,15 @@ def test_channels(client, settings):
     assert client.delete(f"/api/shows/{show['id']}").status_code == 204
     assert client.get(f"/api/vods/{queued['vod_id']}").json()["vod"]["show_id"] is None
     assert client.get(f"/api/channels/{channel['id']}/videos").status_code == 404
+
+
+def test_watching_an_x_account(client):
+    show = client.post("/api/shows", json=PRESHOW).json()
+    url = f"/api/shows/{show['id']}/channels"
+    channel = client.post(url, json={"url": "https://x.com/Andywarski", "min_minutes": 5}).json()
+    assert (channel["platform"], channel["url"]) == ("x", "https://x.com/andywarski")
+    assert client.get(f"/api/shows/{show['id']}").json()["match"] == "x.com/Andywarski"  # it already matched
+    assert client.get("/api/studio").json()["x_signed_in"] is False  # the worker hasn't seen the browser yet
 
 
 def test_upload_channels_shows_and_the_upload_kit(client, settings, monkeypatch):

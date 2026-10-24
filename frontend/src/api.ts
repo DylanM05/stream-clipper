@@ -102,10 +102,11 @@ export interface UploadJob {
 
 export type Visibility = "public" | "unlisted" | "private";
 
-/** What the worker last saw of the browser that uploads go through. */
+/** What the worker last saw of the browser that uploads go through, which also reads X. */
 export interface StudioStatus {
   browser: boolean;
   signed_in: boolean;
+  x_signed_in: boolean;
   checked_at: string | null;
   browser_view_url: string;
 }
@@ -114,7 +115,7 @@ export interface Channel {
   id: number;
   show_id: number;
   url: string;
-  platform: "kick" | "twitch" | "youtube";
+  platform: "kick" | "twitch" | "youtube" | "x";
   keywords: string;
   exclude: string;
   min_minutes: number;
