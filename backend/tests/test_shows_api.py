@@ -38,6 +38,30 @@ def test_shows_keep_how_many_clips_to_offer_and_what_goes_ahead_without_review(c
     assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": 12}).json()["max_shorts"] == 12
 
 
+def test_a_watched_channel_can_move_to_its_own_show_with_its_link(client, settings):
+    kino = client.post("/api/shows", json={"name": "Kino Casino", "mode": "both", "match": "kick.com/kinocasinogaming"}).json()
+    x = client.post(f"/api/shows/{kino['id']}/channels", json={"url": "x.com/Andywarski", "keywords": "tonight on"}).json()
+    with Session(get_engine(settings)) as s:
+        s.add(ChannelVideo(channel_id=x["id"], video_id="1", url="https://x.com/Andywarski/status/1", status="older"))
+        s.commit()
+    preshow = client.post("/api/shows", json=PRESHOW).json()  # its links already have x.com/Andywarski
+
+    moved = client.patch(f"/api/channels/{x['id']}", json={"show_id": preshow["id"]}).json()
+    assert (moved["show_id"], moved["keywords"]) == (preshow["id"], "tonight on")
+    assert client.get(f"/api/shows/{kino['id']}").json()["match"] == "kick.com/kinocasinogaming"
+    assert client.get(f"/api/shows/{preshow['id']}").json()["match"] == "x.com/Andywarski"  # not added twice
+    assert [v["url"] for v in client.get(f"/api/channels/{x['id']}/videos").json()] == [
+        "https://x.com/Andywarski/status/1",  # still seen, so not picked up again
+    ]
+
+    # pasted links now go to the pre-show
+    assert client.post("/api/vods", json={"url": "https://x.com/Andywarski/status/2"}).json()["show_id"] == preshow["id"]
+
+    again = client.post(f"/api/shows/{kino['id']}/channels", json={"url": "x.com/Andywarski"}).json()
+    assert client.patch(f"/api/channels/{again['id']}", json={"show_id": preshow["id"]}).status_code == 409
+    assert client.patch(f"/api/channels/{again['id']}", json={"show_id": 999}).status_code == 404
+
+
 def test_shows_set_the_mode_of_matching_links(client):
     assert client.post("/api/shows", json={**PRESHOW, "title_template": "no title here"}).status_code == 422
     show = client.post("/api/shows", json={**PRESHOW, "mode": "segment"}).json()

@@ -685,6 +685,8 @@ function PatternField(props: { label: string; value: string; placeholder: string
 
 function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   const toast = useToast();
+  const { data: shows } = usePoll(api.shows, 0);
+  const otherShows = shows?.filter((s) => s.id !== show.id) ?? [];
   const [url, setUrl] = useState("");
   const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0 });
   const [showFilters, setShowFilters] = useState(false);
@@ -737,7 +739,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
 
       <div className="mt-3 space-y-3">
         {show.channels.map((c) => (
-          <ChannelCard key={c.id} channel={c} onChanged={onChanged} />
+          <ChannelCard key={c.id} channel={c} otherShows={otherShows} onChanged={onChanged} />
         ))}
       </div>
     </section>
@@ -773,7 +775,7 @@ function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChan
   );
 }
 
-function ChannelCard({ channel, onChanged }: { channel: Channel; onChanged: () => void }) {
+function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; otherShows: Show[]; onChanged: () => void }) {
   const toast = useToast();
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState(false);
@@ -850,6 +852,27 @@ function ChannelCard({ channel, onChanged }: { channel: Channel; onChanged: () =
           >
             Save filters
           </Button>
+          {otherShows.length > 0 && (
+            <Field label="Belongs to another show?">
+              <select
+                value=""
+                onChange={(e) => {
+                  const to = otherShows.find((s) => s.id === Number(e.target.value));
+                  if (to && confirm(`Move ${channelName(channel)} to ${to.name}? Its new videos then get ${to.name}'s settings.`)) {
+                    void act(() => api.updateChannel(channel.id, { show_id: to.id }), `Moved to ${to.name}`);
+                  }
+                }}
+                className={cn(input, "appearance-none bg-zinc-800 ring-0")}
+              >
+                <option value="">Move it to…</option>
+                {otherShows.map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
         </div>
       )}
 
@@ -858,7 +881,7 @@ function ChannelCard({ channel, onChanged }: { channel: Channel; onChanged: () =
         <CardAction onClick={() => act(() => api.checkChannel(channel.id), "Checking now")}>
           <RefreshIcon className="size-4" /> Check
         </CardAction>
-        <CardAction onClick={() => setEditing((e) => !e)}>Filters</CardAction>
+        <CardAction onClick={() => setEditing((e) => !e)}>Settings</CardAction>
         <CardAction onClick={() => confirm("Stop watching this channel?") && act(() => api.deleteChannel(channel.id))} danger>
           Remove
         </CardAction>

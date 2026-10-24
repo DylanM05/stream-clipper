@@ -52,8 +52,8 @@ class Paused(Exception):
 
 
 class Preview(threading.Thread):
-    """Makes a video's preview copy alongside its transcription and Claude's step, which don't need it. NVDEC
-    and NVENC are separate parts of the GPU from what Whisper uses, so the two barely slow each other down."""
+    """Makes a video's preview copy in the background while Claude picks clips (and, with
+    CLIPPER_PREVIEW_WITH_TRANSCRIPTION, while it's transcribed), since neither needs it."""
 
     def __init__(self, worker: "Worker", vod_id: int, ws: Workspace):
         super().__init__(name=f"preview-{vod_id}", daemon=True)
@@ -206,14 +206,16 @@ class Worker:
             day = titles.format_date(titles.stream_date(meta.get("upload_date"), vod.created_at.date()))
             context = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
 
-            self._start(vod_id, "preparing", "processing")  # until transcription starts, or for whole videos
-            preview = self._preview(vod_id, ws)
+            # A whole video has nothing else to do while its preview is made.
+            early = settings.preview_with_transcription or mode == "whole"
+            preview = self._preview(vod_id, ws) if early else None
             clips: list[Clip] = []
             episode_title = episode_summary = chapters = ""
             if mode in ("segment", "both"):
-                audio.extract(ws)
                 self._start(vod_id, "transcribing", "processing")
+                audio.extract(ws)
                 transcript = transcribe.run(ws, settings, on_progress=self._progress(vod_id, "processing"))
+                preview = preview or self._preview(vod_id, ws)
                 self._start(vod_id, "analysing", "processing")
                 hints = signals.run(ws, settings)
                 self._start(vod_id, "segmenting", "processing")
@@ -277,6 +279,7 @@ class Worker:
 
     def _preview(self, vod_id: int, ws: Workspace) -> Preview:
         """Start making the preview copy in the background, or pick up the one an earlier attempt left running."""
+        self._check_paused(vod_id, "processing")
         preview = self._previews.get(vod_id)
         if not preview or not preview.is_alive() or preview.stop.is_set():
             preview = self._previews[vod_id] = Preview(self, vod_id, ws)

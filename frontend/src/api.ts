@@ -298,7 +298,7 @@ export const api = {
 
   addChannel: (showId: number, body: { url: string } & ChannelFields) =>
     post<Channel>(`/api/shows/${showId}/channels`, body),
-  updateChannel: (id: number, fields: Partial<ChannelFields & { enabled: boolean }>) =>
+  updateChannel: (id: number, fields: Partial<ChannelFields & { enabled: boolean; show_id: number }>) =>
     patch<Channel>(`/api/channels/${id}`, fields),
   deleteChannel: (id: number) => remove(`/api/channels/${id}`),
   checkChannel: (id: number) => post<Channel>(`/api/channels/${id}/check`),

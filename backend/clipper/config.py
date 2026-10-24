@@ -44,6 +44,11 @@ class Settings(BaseSettings):
     caption_font: str = "DejaVu Sans"
     short_layout: Literal["blur", "crop"] = "blur"
     proxy_height: int = 480  # the small copy the phone app previews and trims with
+    # The preview is made in the background once transcription is done, while Claude picks clips. With
+    # preview_with_transcription it starts right after the download, alongside transcription: done sooner,
+    # but the GPU and memory carry both at once. preview_on_gpu shrinks frames on the GPU when ffmpeg can.
+    preview_with_transcription: bool = False
+    preview_on_gpu: bool = True
 
     # Review app and worker
     app_password: str | None = None  # unset means no login, which is only for local testing

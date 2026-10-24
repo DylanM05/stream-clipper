@@ -258,6 +258,7 @@ class ChannelPatch(BaseModel):
     exclude: str | None = Field(default=None, max_length=1000)
     min_minutes: float | None = Field(default=None, ge=0, le=1440)
     enabled: bool | None = None
+    show_id: int | None = None  # move it to another show; what it has already seen stays seen
 
 
 class ChannelOut(BaseModel):
@@ -889,20 +890,38 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ch = Channel(show_id=show_id, url=url, platform=platform, keywords=body.keywords.strip(),
                      exclude=body.exclude.strip(), min_minutes=body.min_minutes)
         s.add(ch)
-        # Links pasted from this channel belong to the show too.
-        show = s.get(Show, show_id)
-        term = url.split("://", 1)[1].removeprefix("www.")
-        if term.lower() not in show.terms():
-            show.match = "\n".join(filter(None, [show.match.strip(), term]))
-            s.add(show)
+        add_term(s, s.get(Show, show_id), url)
         s.commit()
         s.refresh(ch)
         return channel_out(s, ch)
 
+    def channel_term(url: str) -> str:
+        return url.split("://", 1)[1].removeprefix("www.")
+
+    def add_term(s: Session, show: Show, url: str) -> None:
+        """Links pasted from a watched channel belong to its show too."""
+        term = channel_term(url)
+        if term.lower() not in show.terms():
+            show.match = "\n".join(filter(None, [show.match.strip(), term]))
+            s.add(show)
+
+    def drop_term(s: Session, show: Show, url: str) -> None:
+        term = channel_term(url).lower()
+        show.match = "\n".join(t.strip() for t in re.split(r"[\n,]+", show.match) if t.strip() and t.strip().lower() != term)
+        s.add(show)
+
     @app.patch("/api/channels/{channel_id}")
     def update_channel(channel_id: int, patch: ChannelPatch, s: Session = Depends(db)) -> ChannelOut:
         ch = found(s, Channel, channel_id, "channel")
-        for k, v in patch.model_dump(exclude_unset=True).items():
+        changes = patch.model_dump(exclude_unset=True)
+        if (show_id := changes.pop("show_id", None)) and show_id != ch.show_id:
+            show = found(s, Show, show_id, "show")
+            if s.exec(select(Channel).where(Channel.show_id == show_id, Channel.url == ch.url)).first():
+                raise HTTPException(409, f"{show.name} already watches that channel")
+            drop_term(s, s.get(Show, ch.show_id), ch.url)
+            add_term(s, show, ch.url)
+            ch.show_id = show_id
+        for k, v in changes.items():
             setattr(ch, k, v.strip() if isinstance(v, str) else v)
         s.add(ch)
         s.commit()

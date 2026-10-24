@@ -143,8 +143,9 @@ def render_proxy(ws: Workspace, settings: Settings, on_progress: Callable[[float
 
 
 def gpu_proxy(settings: Settings) -> bool:
-    """Whether previews can be made entirely on the GPU."""
-    return settings.hwaccel == "cuda" and "nvenc" in settings.video_encoder and ffmpeg.has_filter("scale_cuda")
+    """Whether previews are made entirely on the GPU."""
+    return (settings.preview_on_gpu and settings.hwaccel == "cuda" and "nvenc" in settings.video_encoder
+            and ffmpeg.has_filter("scale_cuda"))
 
 
 def render_thumbnail(video: Path, t: float, out: Path) -> None:

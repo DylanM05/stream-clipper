@@ -1,4 +1,5 @@
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -466,21 +467,34 @@ def test_a_paused_clip_waits_while_others_render(settings, fake_pipeline, fake_r
     assert (get(settings, ClipRecord, held).status, get(settings, ClipRecord, other).status) == ("approved", "rendered")
 
 
-def test_the_preview_is_made_while_transcribing(settings, fake_pipeline, monkeypatch):
-    transcribing = threading.Event()
+@pytest.mark.parametrize("with_transcription", [False, True])
+def test_the_preview_is_made_alongside_claudes_step_or_also_transcription(settings, fake_pipeline, monkeypatch,
+                                                                          with_transcription):
+    settings.preview_with_transcription = with_transcription
+    transcribing, transcribed, picking = threading.Event(), threading.Event(), threading.Event()
+    seen = {}
 
     def proxy(ws, settings_, on_progress=None):
-        assert transcribing.wait(5), "the preview should be made alongside transcription"
+        seen["started_after_transcription"] = transcribed.is_set()
+        assert (transcribing if with_transcription else picking).wait(5), "the preview should run alongside"
 
     def transcribe_run(*args, **kwargs):
         transcribing.set()
+        time.sleep(0.2)  # a preview started now would overlap
+        transcribed.set()
         return TRANSCRIPT
+
+    def segment_run(*args, **kwargs):
+        picking.set()
+        return SEGMENTATION
 
     monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
     monkeypatch.setattr(worker_module.transcribe, "run", transcribe_run)
+    monkeypatch.setattr(worker_module.segment, "run", segment_run)
     vod_id = add_vod(settings)
     worker_module.Worker(settings).process_vod(vod_id)
     assert get(settings, Vod, vod_id).status == "ready"
+    assert seen["started_after_transcription"] is not with_transcription
 
 
 def test_a_failed_preview_fails_the_video_once_the_rest_is_done(settings, fake_pipeline, monkeypatch):
