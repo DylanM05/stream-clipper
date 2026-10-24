@@ -77,12 +77,17 @@ A pre-show from X is usually posted whole, and Claude writes its short title fro
       - App name: anything.
       - Contact email: yours.
       - Audience: **External**.
-   3. Under **Audience**, click **Publish app**. While the app is in testing, Google signs channels out after 7 days. Google doesn't need to verify it, since only you use it.
-   4. Under **Clients**, create a client:
+   3. Under **Branding**, fill in:
+      - Application home page: `https://<server-name>.<your-tailnet>.ts.net`.
+      - Privacy policy: `https://<server-name>.<your-tailnet>.ts.net/privacy.html`. The app serves this page without a login.
+      - Authorized domains: `<your-tailnet>.ts.net`. `ts.net` is on the public suffix list, so Google treats each tailnet as a domain of its own.
+      - Terms of service: leave empty.
+   4. Under **Audience**, click **Publish app**. While the app is in testing, Google signs channels out after 7 days. Google doesn't need to verify it, since only you use it.
+   5. Under **Clients**, create a client:
       - Type: **Web application**.
       - Authorized redirect URI: `https://<server-name>.<your-tailnet>.ts.net/api/youtube/callback`. The app shows the exact address to copy under **Shows → YouTube channels**.
-   5. Put its ID and secret in `.env` as `CLIPPER_GOOGLE_CLIENT_ID` and `CLIPPER_GOOGLE_CLIENT_SECRET`, then run `docker compose up -d`.
-   6. In the app, go to **Shows → YouTube channels** and tap **Connect** on each channel. Pick that channel when Google asks which account to use. Google warns that it hasn't verified the app: click **Advanced → Go to … (unsafe)**.
+   6. Put its ID and secret in `.env` as `CLIPPER_GOOGLE_CLIENT_ID` and `CLIPPER_GOOGLE_CLIENT_SECRET`, then run `docker compose up -d`.
+   7. In the app, go to **Shows → YouTube channels** and tap **Connect** on each channel. Pick that channel when Google asks which account to use. Google warns that it hasn't verified the app: click **Advanced → Go to … (unsafe)**.
 9. **Optional: the upload browser**, for channels you don't connect to the API.
    ```bash
    sudo tailscale serve --bg --https=8443 6080

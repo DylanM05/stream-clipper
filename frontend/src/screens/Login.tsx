@@ -39,6 +39,9 @@ export function Login({ onDone }: { onDone: () => void }) {
         <Button type="submit" tone="primary" disabled={!password || busy} className="w-full">
           {busy ? "Signing in…" : "Sign in"}
         </Button>
+        <a href="/privacy.html" className="block pt-4 text-xs text-zinc-500">
+          Privacy policy
+        </a>
       </form>
     </div>
   );

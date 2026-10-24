@@ -366,6 +366,15 @@ def test_picking_the_wrong_channel_or_a_forged_state_connects_nothing(settings, 
     assert "cancelled" in cancelled.text
 
 
+def test_the_privacy_policy_google_links_to_needs_no_login(settings):
+    settings.web_dir.mkdir(parents=True)
+    (settings.web_dir / "index.html").write_text("<div id=root></div>")
+    (settings.web_dir / "privacy.html").write_text("<h1>Privacy policy</h1>")
+    client = TestClient(web_app.create_app(settings))  # not signed in
+    assert "Privacy policy" in client.get("/privacy.html").text
+    assert client.get("/api/destinations").status_code == 401
+
+
 def test_connecting_needs_the_google_client_set_up(tmp_path):
     client = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web")))
     assert client.get("/api/youtube").json()["configured"] is False

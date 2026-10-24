@@ -193,8 +193,10 @@ function YouTubeApiPanel({ configured, callbackPath }: { configured: boolean; ca
               <a className={link} href="https://console.cloud.google.com/auth/overview" target="_blank" rel="noreferrer">
                 Google Auth Platform
               </a>{" "}
-              and tap <b>Get started</b>: any app name, your email, audience <b>External</b>. Then under <b>Audience</b>, tap{" "}
-              <b>Publish app</b>; while it's in testing, Google signs channels out after 7 days.
+              and tap <b>Get started</b>: any app name, your email, audience <b>External</b>. Under <b>Branding</b>, set the
+              home page to <code>{location.origin}</code>, the privacy policy to <code>{location.origin}/privacy.html</code>,
+              and add <code>{location.hostname.split(".").slice(1).join(".")}</code> to the authorized domains. Then under{" "}
+              <b>Audience</b>, tap <b>Publish app</b>; while it's in testing, Google signs channels out after 7 days.
             </li>
             <li>
               Under <b>Clients</b>, create a client of type <b>Web application</b> with this authorized redirect URI:
