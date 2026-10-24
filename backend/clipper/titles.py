@@ -1,0 +1,102 @@
+"""Video titles from a show's pattern, such as "KINO CASINO {date} - {title}".
+
+Claude writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
+"""
+
+from datetime import date, datetime
+from pathlib import Path
+
+from pydantic import BaseModel, Field
+
+from .config import Settings
+from .llm import ClaudeCode
+
+MAX_TITLE = 100  # YouTube's limit
+PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
+
+
+def youtube_length(text: str) -> int:
+    """Length counted in UTF-16 units, so emoji count double. That's at least what YouTube counts."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def format_date(day: date | None) -> str:
+    """Oct 23, 2026"""
+    return f"{day:%b} {day.day}, {day.year}" if day else ""
+
+
+def stream_date(upload_date: str | None, fallback: date) -> date:
+    """The stream or post date from yt-dlp's YYYYMMDD, or `fallback` when it's missing."""
+    try:
+        return datetime.strptime(upload_date or "", "%Y%m%d").date()
+    except ValueError:
+        return fallback
+
+
+def apply(template: str, title: str, day: str) -> str:
+    text = (template or "{title}").replace("{date}", day).replace("{title}", title)
+    return " ".join(text.split())
+
+
+def room_for_title(template: str, day: str) -> int:
+    """How long the {title} part may be so the whole title fits YouTube's limit."""
+    fixed = youtube_length(apply(template, "", day))
+    return max(20, MAX_TITLE - fixed - (1 if fixed else 0))
+
+
+def build(template: str, title: str, day: str) -> str:
+    """The full title, with the {title} part shortened at a word boundary if it doesn't fit."""
+    return apply(template, fit(" ".join(title.split()), room_for_title(template, day)), day)
+
+
+def fit(text: str, limit: int) -> str:
+    if youtube_length(text) <= limit:
+        return text
+    kept = ""
+    for word in text.split():
+        candidate = f"{kept} {word}".strip()
+        if youtube_length(candidate) + 1 > limit:
+            break
+        kept = candidate
+    return (kept or text[: max(1, limit - 1)]) + "…"
+
+
+def chapter_list(chapters: list[tuple[float, str]]) -> str:
+    """Chapter lines for a full episode's description, which YouTube turns into video chapters.
+
+    YouTube needs at least three, the first at 0:00, each at least 10 seconds long; otherwise "".
+    """
+    entries = sorted(chapters)
+    if entries and entries[0][0] > 0:
+        entries = [(0.0, "Start"), *entries] if entries[0][0] >= 10 else [(0.0, entries[0][1]), *entries[1:]]
+    kept: list[tuple[float, str]] = []
+    for t, title in entries:
+        if not kept or t - kept[-1][0] >= 10:
+            kept.append((t, title))
+    if len(kept) < 3:
+        return ""
+    return "Chapters\n" + "\n".join(f"{_stamp(t)} {title}" for t, title in kept)
+
+
+def _stamp(seconds: float) -> str:
+    s = int(seconds)
+    return f"{s // 3600}:{s % 3600 // 60:02d}:{s % 60:02d}" if s >= 3600 else f"{s // 60}:{s % 60:02d}"
+
+
+class _Preview(BaseModel):
+    title: str = Field(description="The short title, without the show name or date")
+
+
+def preview_title(post_text: str, room: int, settings: Settings, notes: str = "") -> str:
+    """A short title previewing what a posted video is about, written by Claude from the post's text."""
+    llm = ClaudeCode(bin=settings.claude_bin, model=settings.llm_model, effort="low", timeout_s=300)
+    stdin = f"# Post text\n{post_text.strip()}\n"
+    if notes.strip():
+        stdin += f"\n# Notes about the show\n{notes.strip()}\n"
+    answer = llm.structured(
+        system_prompt=(PROMPTS_DIR / "preview_title.md").read_text(encoding="utf-8"),
+        task=f"Write the title preview, at most {room} characters.",
+        stdin_text=stdin,
+        schema=_Preview,
+    )
+    return " ".join(answer.title.split())

@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stream-clipper"
+version = "0.1.0"
+description = "Turns long stream VODs into chapter and highlight clips."
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115",
+  "numpy>=1.26",
+  "playwright>=1.48",  # drives YouTube Studio for uploads (connects to a running browser)
+  "pydantic>=2.7",
+  "pydantic-settings>=2.3",
+  "sqlmodel>=0.0.22",
+  "typer>=0.12",
+  "uvicorn>=0.30",
+  # curl-cffi gets past Kick's bot protection; "default" brings the YouTube JavaScript solver (needs deno)
+  "yt-dlp[default,curl-cffi]>=2026.10.21",
+]
+
+[project.optional-dependencies]
+# GPU transcription. Installed in the server image; not needed to run the tests.
+transcribe = ["faster-whisper>=1.1"]
+dev = ["httpx>=0.27", "pytest>=8"]
+
+[project.scripts]
+clipper = "clipper.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["clipper*"]
+
+[tool.setuptools.package-data]
+clipper = ["prompts/*.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

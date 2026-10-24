@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Frontend
+node_modules/
+
+# Runtime data: media never goes in git (or Nextcloud)
+data/
+*.mp4
+*.mkv
+*.wav
+
+# Secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db

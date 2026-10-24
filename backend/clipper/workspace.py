@@ -1,0 +1,108 @@
+"""Per-VOD working folder. Every pipeline step writes its output here, so a re-run skips steps that already finished."""
+
+import json
+import os
+import re
+import shutil
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+# Pipeline steps after download, in order, with the files each one produces.
+STEP_OUTPUTS = {
+    "audio": ["audio.wav"],
+    "transcribe": ["transcript.json"],
+    "signals": ["signals.json"],
+    "segment": ["llm/segmentation.json"],
+    "refine": ["segments.json"],
+    "render": ["clips"],
+}
+STEPS = list(STEP_OUTPUTS)
+
+
+def safe_id(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_-]+", "-", text).strip("-").lower()[:80] or "vod"
+
+
+@dataclass(frozen=True)
+class Workspace:
+    root: Path
+
+    @classmethod
+    def open(cls, vods_dir: Path, vod_id: str) -> "Workspace":
+        ws = cls(vods_dir / safe_id(vod_id))
+        ws.root.mkdir(parents=True, exist_ok=True)
+        return ws
+
+    @property
+    def meta_json(self) -> Path:
+        return self.root / "meta.json"
+
+    @property
+    def audio_wav(self) -> Path:
+        return self.root / "audio.wav"
+
+    @property
+    def transcript_json(self) -> Path:
+        return self.root / "transcript.json"
+
+    @property
+    def signals_json(self) -> Path:
+        return self.root / "signals.json"
+
+    @property
+    def llm_dir(self) -> Path:
+        return self.root / "llm"
+
+    @property
+    def segmentation_json(self) -> Path:
+        return self.llm_dir / "segmentation.json"
+
+    @property
+    def segments_json(self) -> Path:
+        return self.root / "segments.json"
+
+    @property
+    def clips_dir(self) -> Path:
+        return self.root / "clips"
+
+    @property
+    def proxy_mp4(self) -> Path:
+        return self.root / "proxy.mp4"
+
+    @property
+    def thumbs_dir(self) -> Path:
+        return self.root / "thumbs"
+
+    def meta(self) -> dict:
+        return read_json(self.meta_json)
+
+    @property
+    def source(self) -> Path:
+        return Path(self.meta()["source_path"])
+
+    def clear_from(self, step: str) -> None:
+        """Delete the output of `step` and every later step, so they run again."""
+        for later in STEPS[STEPS.index(step):]:
+            for name in STEP_OUTPUTS[later]:
+                path = self.root / name
+                if path.is_dir():
+                    shutil.rmtree(path)
+                elif path.exists():
+                    path.unlink()
+
+
+def read_json(path: Path) -> Any:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_json(path: Path, data: Any) -> None:
+    write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
+
+
+def write_text(path: Path, text: str) -> None:
+    """Write via a temp file, so an interrupted run never leaves a half-written output that looks finished."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    os.replace(tmp, path)

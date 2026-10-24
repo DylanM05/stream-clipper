@@ -1,0 +1,77 @@
+"""Settings, read from CLIPPER_* environment variables or a .env file."""
+
+from functools import lru_cache
+from pathlib import Path
+from typing import Literal
+
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="CLIPPER_", env_file=".env", extra="ignore")
+
+    data_dir: Path = Path("data")
+
+    # Download
+    max_height: int = 1080
+
+    # Transcription (faster-whisper)
+    whisper_model: str = "turbo"
+    whisper_device: str = "cuda"
+    whisper_compute_type: str = "float16"
+    language: str | None = "en"  # None = auto-detect
+
+    # Segmentation (Claude Code in headless mode, signed in with your subscription)
+    claude_bin: str = "claude"
+    llm_model: str = "opus"
+    llm_effort: str | None = "high"
+    llm_timeout_s: int = 3600
+    highlights_per_hour: float = 3.0
+
+    # Rendering
+    video_encoder: str = "h264_nvenc"
+    hwaccel: str | None = "cuda"
+    caption_font: str = "DejaVu Sans"
+    short_layout: Literal["blur", "crop"] = "blur"
+    proxy_height: int = 480  # the small copy the phone app previews and trims with
+
+    # Review app and worker
+    app_password: str | None = None  # unset means no login, which is only for local testing
+    secret_key: str | None = None  # signs login cookies; derived from the password when unset
+    web_dir: Path | None = None  # the built phone app; defaults to frontend/dist in the repo
+    worker_poll_s: float = 3.0
+    monitor_interval_s: int = 600  # how often each watched channel is checked
+
+    # Uploading through YouTube Studio in a signed-in browser (studio.py)
+    studio_cdp_url: str = "http://127.0.0.1:9222"  # the browser's remote debugging address
+    browser_view_url: str = ""  # where you see that browser to sign in, e.g. its noVNC page
+
+    @property
+    def studio_dir(self) -> Path:
+        """Upload screenshots and the browser status the worker reports."""
+        return self.data_dir / "studio"
+
+    @property
+    def browser_profile_dir(self) -> Path:
+        """The desktop upload browser's profile (`clipper browser`), which keeps its YouTube sign-in."""
+        return self.data_dir / "browser-profile"
+
+    @field_validator("language", "llm_effort", "hwaccel", mode="before")
+    @classmethod
+    def _none_values(cls, v):
+        # "none" as well as empty: PowerShell deletes a variable that is set to "".
+        return None if isinstance(v, str) and v.strip().lower() in ("", "none", "off") else v
+
+    @property
+    def vods_dir(self) -> Path:
+        return self.data_dir / "vods"
+
+    @property
+    def db_path(self) -> Path:
+        return self.data_dir / "clipper.db"
+
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()

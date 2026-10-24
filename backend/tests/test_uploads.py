@@ -1,0 +1,144 @@
+"""Uploads through YouTube Studio: the queue, the worker's handling, and the API. Studio itself is faked."""
+
+from pathlib import Path
+
+import pytest
+from fastapi.testclient import TestClient
+from sqlmodel import Session
+
+from clipper import worker as worker_module
+from clipper.config import Settings
+from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine
+from clipper.studio import StudioError, read_status, resolve_channel_id, write_status
+from clipper.web import app as web_app
+
+
+@pytest.fixture
+def settings(tmp_path):
+    return Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web")
+
+
+@pytest.fixture
+def clip_id(settings):
+    video = settings.data_dir / "clip.mp4"
+    video.parent.mkdir(parents=True, exist_ok=True)
+    video.write_bytes(b"video")
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips", channel_id="UC1234567890123456789012")
+        vod = Vod(url="https://kick.com/kino/videos/1", status="ready", duration=600)
+        s.add_all([dest, vod])
+        s.commit()
+        clip = ClipRecord(vod_id=vod.id, key="hl01", kind="highlight", start=1, end=40, title="Huck Blend Is Back",
+                          description="Jer returns.", status="rendered", video_path=str(video), destination_id=dest.id)
+        s.add(clip)
+        s.commit()
+        return clip.id
+
+
+class FakeStudio:
+    def __init__(self, error: StudioError | None = None):
+        self.error = error
+        self.uploads = []
+
+    def upload(self, job, on_progress=lambda _: None):
+        self.uploads.append(job)
+        on_progress(0.5)
+        if self.error:
+            raise self.error
+        return "https://youtu.be/abc123"
+
+    def status(self):
+        return {"browser": True, "signed_in": True}
+
+
+def get(settings, model, id_):
+    with Session(get_engine(settings)) as s:
+        return s.get(model, id_)
+
+
+def test_api_queues_uploads_once_and_reports_the_browser(settings, clip_id):
+    client = TestClient(web_app.create_app(settings))
+    job = client.post(f"/api/clips/{clip_id}/uploads", json={"visibility": "unlisted"}).json()
+    assert (job["status"], job["which"], job["visibility"]) == ("queued", "video", "unlisted")
+    assert client.post(f"/api/clips/{clip_id}/uploads", json={}).status_code == 409  # already queued
+    assert client.post(f"/api/clips/{clip_id}/uploads", json={"which": "short"}).status_code == 409  # no Short rendered
+    assert [j["id"] for j in client.get(f"/api/clips/{clip_id}/uploads").json()] == [job["id"]]
+    assert client.delete(f"/api/upload-jobs/{job['id']}").status_code == 204
+
+    assert client.get("/api/studio").json()["browser"] is False
+    write_status(settings.studio_dir / "status.json", {"browser": True, "signed_in": True})
+    status = client.get("/api/studio").json()
+    assert status["browser"] and status["signed_in"] and status["checked_at"]
+
+
+def test_worker_uploads_to_the_clips_channel_and_records_the_link(settings, clip_id):
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio()
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, visibility="private"))
+        s.commit()
+
+    assert w.upload_next() is True
+    [upload] = w.studio.uploads
+    assert (upload.title, upload.description, upload.visibility, upload.channel_id) == (
+        "Huck Blend Is Back", "Jer returns.", "private", "UC1234567890123456789012",
+    )
+    job = get(settings, UploadJob, 1)
+    assert (job.status, job.progress, job.youtube_url) == ("done", 1, "https://youtu.be/abc123")
+    clip = get(settings, ClipRecord, clip_id)
+    assert (clip.status, clip.youtube_url) == ("uploaded", "https://youtu.be/abc123")
+    assert read_status(settings.studio_dir / "status.json")["signed_in"] is True
+    assert w.upload_next() is False
+
+
+def test_failed_uploads_keep_the_error_and_screenshot_and_can_be_retried(settings, clip_id):
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio(StudioError("The browser isn't signed in to YouTube.", screenshot="shot.png"))
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id))
+        s.commit()
+    w.upload_next()
+
+    job = get(settings, UploadJob, 1)
+    assert (job.status, job.error, job.screenshot) == ("failed", "The browser isn't signed in to YouTube.", "shot.png")
+    assert get(settings, ClipRecord, clip_id).status == "rendered"
+
+    client = TestClient(web_app.create_app(settings))
+    assert client.post("/api/upload-jobs/1/retry").json()["status"] == "queued"
+
+
+def test_an_upload_interrupted_by_a_restart_is_not_retried_automatically(settings, clip_id):
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, status="uploading"))
+        s.commit()
+    worker_module.Worker(settings).recover()
+    job = get(settings, UploadJob, 1)
+    assert job.status == "failed" and "Check YouTube Studio" in job.error
+
+
+def test_a_closed_upload_browser_gives_a_clear_error_or_is_reopened_on_a_desktop(tmp_path, monkeypatch):
+    from clipper import studio as studio_module
+    from clipper.studio import NOT_RUNNING, Studio, Upload
+
+    job = Upload(file=tmp_path / "clip.mp4", title="t", description="", visibility="private", channel_id="")
+    closed = "http://127.0.0.1:1"  # nothing listens there
+
+    with pytest.raises(StudioError, match="isn't running"):
+        Studio(closed, tmp_path).upload(job)
+
+    launched = []
+
+    def no_browser_installed(profile, port):
+        launched.append((profile, port))
+        raise FileNotFoundError("No Chrome, Chromium or Edge found")
+
+    monkeypatch.setattr(studio_module, "launch_desktop_browser", no_browser_installed)
+    with pytest.raises(StudioError) as err:
+        Studio(closed, tmp_path, desktop_profile=tmp_path / "profile").upload(job)
+    assert str(err.value) == NOT_RUNNING
+    assert launched == [(tmp_path / "profile", 1)]
+
+
+def test_channel_id_from_a_channel_link_needs_no_lookup():
+    assert resolve_channel_id("https://www.youtube.com/channel/UCX6OQ3DkcsbYNE6H8uQQuVA/videos") == "UCX6OQ3DkcsbYNE6H8uQQuVA"
+    assert resolve_channel_id("https://kick.com/someone") == ""

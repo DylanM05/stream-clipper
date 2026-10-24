@@ -1,0 +1,259 @@
+"""SQLite database of shows, watched channels, videos and clips.
+
+The web app and the worker share it; WAL mode lets both use it at once.
+"""
+
+import re
+from collections.abc import Iterable
+from datetime import datetime, timezone
+from functools import lru_cache
+from pathlib import Path
+from urllib.parse import urlparse
+
+from pydantic_core import PydanticUndefined
+from sqlalchemy import Engine, event
+from sqlmodel import Field, Session, SQLModel, col, create_engine, select
+
+from .config import Settings
+
+# Video statuses, in pipeline order. "waiting" means Claude's usage limit was hit; it retries at retry_at.
+VOD_ACTIVE = ("downloading", "preparing", "transcribing", "analysing", "segmenting")
+VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
+
+# Clip statuses: proposed -> approved -> rendering -> rendered -> uploaded, or rejected; failed renders can be retried.
+CLIP_STATUSES = ("proposed", "approved", "rejected", "rendering", "rendered", "uploaded", "failed")
+
+# What a video becomes: "segment" is chapters and highlights, "whole" is the full episode as one
+# video, "both" is the full episode plus the chapters and highlights.
+MODES = ("segment", "whole", "both")
+
+# Posts on these sites are short and get uploaded as they are, not split into clips.
+WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
+
+
+def utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class Destination(SQLModel, table=True):
+    """A YouTube channel that videos are uploaded to."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    url: str = ""  # the channel's YouTube link
+    channel_id: str = ""  # UC…, looked up from the link; picks the channel in YouTube Studio
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class UploadJob(SQLModel, table=True):
+    """One file of a clip uploaded through YouTube Studio by the worker (see studio.py)."""
+
+    __tablename__ = "upload_job"
+
+    id: int | None = Field(default=None, primary_key=True)
+    clip_id: int = Field(foreign_key="clip.id", index=True)
+    which: str = "video"  # "video" or "short"
+    visibility: str = "public"  # public, unlisted, private
+    status: str = Field(default="queued", index=True)  # queued, uploading, done, failed
+    progress: float = 0
+    youtube_url: str = ""
+    error: str = ""
+    screenshot: str = ""  # of Studio when it failed
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class Show(SQLModel, table=True):
+    """A show's settings, applied to every video that matches it."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    # Links or channel names, one per line. A video belongs to the show if its link contains one of
+    # them, or its channel or account is one of them.
+    match: str = ""
+    mode: str = "segment"  # see MODES
+    title_template: str = "{title}"  # clips, e.g. "KINO CASINO {date} - {title}"
+    episode_template: str = ""  # full episodes; empty means the clip pattern
+    notes: str = ""  # for Claude: about the show, who's on it, running jokes
+    clip_guidance: str = ""  # for Claude: what the chapters and highlights should be
+    clip_destination_id: int | None = Field(default=None, foreign_key="destination.id")
+    episode_destination_id: int | None = Field(default=None, foreign_key="destination.id")
+    created_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def full_episode_template(self) -> str:
+        return self.episode_template or self.title_template
+
+    def terms(self) -> list[str]:
+        return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]
+
+
+class Vod(SQLModel, table=True):
+    id: int | None = Field(default=None, primary_key=True)
+    url: str
+    mode: str = "segment"  # see MODES
+    mode_auto: bool = True  # the mode wasn't picked by hand, so the show's mode applies
+    show_id: int | None = Field(default=None, foreign_key="show.id")
+    notes: str = ""  # passed to Claude: names, running jokes, title style
+    workspace: str | None = None  # folder under data/vods, once downloaded
+    title: str = ""
+    channel: str = ""
+    platform: str = ""
+    upload_date: str = ""  # YYYYMMDD of the stream or post
+    duration: float = 0
+    status: str = Field(default="queued", index=True)
+    progress: float = 0  # 0-1 within the current status
+    error: str = ""
+    retry_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+class ClipRecord(SQLModel, table=True):
+    __tablename__ = "clip"
+
+    id: int | None = Field(default=None, primary_key=True)
+    vod_id: int = Field(foreign_key="vod.id", index=True)
+    key: str  # ch01, hl03, full
+    kind: str  # chapter, highlight, whole
+    start: float
+    end: float
+    title: str
+    description: str = ""
+    why: str = ""  # highlights: why Claude picked the moment
+    score: float = 0
+    vertical_ok: bool = False
+    make_short: bool = False  # also render a vertical Short
+    status: str = Field(default="proposed", index=True)
+    error: str = ""
+    video_path: str = ""
+    short_path: str = ""
+    destination_id: int | None = Field(default=None, foreign_key="destination.id")  # where it gets uploaded
+    youtube_url: str = ""  # once uploaded
+    uploaded_at: datetime | None = None
+    created_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+    reviewed_at: datetime | None = None
+
+
+class Channel(SQLModel, table=True):
+    """A channel on Kick, Twitch or YouTube that the worker checks for new videos (see monitor.py)."""
+
+    id: int | None = Field(default=None, primary_key=True)
+    show_id: int = Field(foreign_key="show.id", index=True)
+    url: str  # canonical channel link, e.g. https://kick.com/name
+    platform: str  # kick, twitch, youtube
+    keywords: str = ""  # only titles with one of these, comma-separated; empty means every video
+    exclude: str = ""  # skip titles with any of these
+    min_minutes: float = 0
+    enabled: bool = True
+    baseline_done: bool = False  # the videos already there when the channel was added have been listed
+    last_checked_at: datetime | None = None
+    last_error: str = ""
+    created_at: datetime = Field(default_factory=utcnow)
+
+
+class ChannelVideo(SQLModel, table=True):
+    """A video seen on a watched channel, and what was decided about it."""
+
+    __tablename__ = "channel_video"
+
+    id: int | None = Field(default=None, primary_key=True)
+    channel_id: int = Field(foreign_key="channel.id", index=True)
+    video_id: str
+    url: str
+    title: str = ""
+    duration: float | None = None
+    status: str = "waiting"  # waiting (live or not confirmed finished), queued, skipped, older
+    reason: str = ""
+    vod_id: int | None = Field(default=None, foreign_key="vod.id")
+    first_seen_at: datetime = Field(default_factory=utcnow)
+    updated_at: datetime = Field(default_factory=utcnow)
+
+
+def default_mode(url: str) -> str:
+    host = (urlparse(url).hostname or "").lower().removeprefix("www.").removeprefix("mobile.")
+    return "whole" if host in WHOLE_VIDEO_HOSTS else "segment"
+
+
+def find_show(shows: Iterable[Show], url: str, names: Iterable[str | None] = ()) -> Show | None:
+    """The first show with a term that appears in the link or names the channel.
+
+    A channel link like "twitch.tv/kinocasino" also matches a channel named "kinocasino", since
+    Twitch VOD links (twitch.tv/videos/123) don't contain the channel.
+    """
+    url = url.lower()
+    names = {n.lower().lstrip("@") for n in names if n}
+
+    def matches(term: str) -> bool:
+        return term in url or term.rstrip("/").rsplit("/", 1)[-1].lstrip("@") in names
+
+    return next((s for s in shows if any(matches(t) for t in s.terms())), None)
+
+
+def queue_vod(s: Session, url: str, mode: str | None = None, notes: str = "", show: Show | None = None) -> Vod:
+    """Queue a video for the worker, or return it if it's already queued or done.
+
+    Without a mode it's automatic: the show's mode, else whole for X posts and clips for everything else.
+    Without a show, the first show whose terms appear in the link is used.
+    """
+    existing = s.exec(select(Vod).where(Vod.url == url, Vod.status != "failed")).first()
+    if existing:
+        return existing
+    show = show or find_show(s.exec(select(Show).order_by(col(Show.id))), url)
+    vod = Vod(
+        url=url,
+        mode=mode or (show.mode if show else default_mode(url)),
+        mode_auto=mode is None,
+        show_id=show.id if show else None,
+        notes=notes,
+    )
+    s.add(vod)
+    s.flush()
+    return vod
+
+
+def get_engine(settings: Settings) -> Engine:
+    return _engine(str(settings.db_path.resolve()))
+
+
+@lru_cache
+def _engine(db_path: str) -> Engine:
+    Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+    engine = create_engine(f"sqlite:///{db_path}", connect_args={"check_same_thread": False})
+
+    @event.listens_for(engine, "connect")
+    def _pragmas(dbapi_conn, _record) -> None:
+        cur = dbapi_conn.cursor()
+        cur.execute("PRAGMA journal_mode=WAL")
+        cur.execute("PRAGMA busy_timeout=10000")
+        cur.execute("PRAGMA foreign_keys=ON")
+        cur.close()
+
+    SQLModel.metadata.create_all(engine)
+    _add_missing_columns(engine)
+    return engine
+
+
+def _add_missing_columns(engine: Engine) -> None:
+    """Add columns that newer code expects to a database an older version created. Only ever adds."""
+    with engine.begin() as conn:
+        for model in (Destination, Show, Vod, ClipRecord, Channel, ChannelVideo, UploadJob):
+            table = model.__table__
+            have = {row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table.name}")')}
+            for column in table.columns:
+                if column.name in have:
+                    continue
+                default = model.model_fields[column.name].default
+                default_sql = "" if default is None or default is PydanticUndefined else f" DEFAULT {_sql_literal(default)}"
+                conn.exec_driver_sql(
+                    f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
+                )
+
+
+def _sql_literal(value) -> str:
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return "'" + str(value).replace("'", "''") + "'"

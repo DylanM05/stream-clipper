@@ -1,0 +1,59 @@
+# docker compose up -d       starts the review app (port 8080), the worker and the upload browser (port 6080)
+# docker compose run --rm worker <command>     runs a one-off command, e.g. doctor or process "<url>"
+
+x-clipper: &clipper
+  build:
+    context: .
+    dockerfile: backend/Dockerfile
+  image: stream-clipper
+  env_file:
+    - path: .env
+      required: false
+  volumes:
+    - ${CLIPPER_HOST_DATA_DIR:-./data}:/data
+    - claude-config:/home/clipper/.claude-config
+    - models:/models
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *clipper
+    command: ["serve", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      # Only reachable from the server itself; `tailscale serve` passes it to your devices over HTTPS.
+      - "${CLIPPER_BIND:-127.0.0.1}:${CLIPPER_PORT:-8080}:8080"
+
+  worker:
+    <<: *clipper
+    command: ["worker"]
+    # Shares the upload browser's network, so it reaches Chromium's debugging port at 127.0.0.1:9222.
+    network_mode: "service:browser"
+    depends_on: [browser]
+    environment:
+      NVIDIA_DRIVER_CAPABILITIES: compute,video,utility
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # The browser that uploads go through (YouTube Studio). Sign in to YouTube once through noVNC on port 6080.
+  browser:
+    build: ./browser
+    image: stream-clipper-browser
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      VNC_PASSWORD: ${CLIPPER_BROWSER_PASSWORD:-}
+    volumes:
+      - browser-profile:/profile
+      - ${CLIPPER_HOST_DATA_DIR:-./data}:/data:ro # the worker hands it files by their /data paths
+    ports:
+      - "${CLIPPER_BIND:-127.0.0.1}:6080:6080"
+
+volumes:
+  claude-config: # Claude Code login
+  models: # Whisper model download (about 1.6 GB)
+  browser-profile: # the upload browser's YouTube sign-in
