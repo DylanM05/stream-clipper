@@ -1,15 +1,40 @@
-from datetime import date
+from datetime import date, datetime, timezone
+
+import pytest
 
 from clipper import titles
+from clipper.config import Settings
 
 PRESHOW = "♥️♠️♦️♣️KINO CASINO PRE SHOW♣️♦️♠️♥️ {date} - {title}"
 
 
 def test_dates():
     assert titles.format_date(date(2026, 10, 3)) == "Oct 3, 2026"
-    assert titles.stream_date("20261023", date(2000, 1, 1)) == date(2026, 10, 23)
-    assert titles.stream_date(None, date(2000, 1, 1)) == date(2000, 1, 1)
-    assert titles.stream_date("not a date", date(2000, 1, 1)) == date(2000, 1, 1)
+    assert titles.stream_date({"upload_date": "20261023"}, date(2000, 1, 1)) == date(2026, 10, 23)
+    assert titles.stream_date({}, date(2000, 1, 1)) == date(2000, 1, 1)
+    assert titles.stream_date({"upload_date": "not a date"}, date(2000, 1, 1)) == date(2000, 1, 1)
+
+
+def started(*utc) -> dict:
+    """What yt-dlp says about a Kick VOD: its start time, and that time's day in UTC."""
+    at = datetime(*utc, tzinfo=timezone.utc)
+    return {"timestamp": at.timestamp(), "upload_date": at.strftime("%Y%m%d")}
+
+
+@pytest.mark.parametrize("meta, day", [
+    (started(2026, 10, 27, 0, 30), date(2026, 10, 26)),  # Monday 8:30 PM Eastern is Tuesday in UTC
+    (started(2026, 10, 27, 5, 15), date(2026, 10, 26)),  # a late start, 1:15 AM Tuesday: still Monday's show
+    (started(2026, 10, 27, 11, 0), date(2026, 10, 27)),  # 7 AM Tuesday: Tuesday's
+    ({**started(2026, 10, 27, 12, 0), "release_timestamp": started(2026, 10, 27, 0, 30)["timestamp"]}, date(2026, 10, 26)),
+])
+def test_a_streams_day_is_when_it_started_where_its_creators_are(meta, day):
+    assert titles.stream_date(meta, date(2000, 1, 1), "America/New_York", 6) == day
+
+
+def test_the_time_zone_must_be_a_real_one():
+    assert Settings(timezone="Europe/London").timezone == "Europe/London"
+    with pytest.raises(ValueError, match="unknown time zone"):
+        Settings(timezone="Eastern")
 
 
 def test_build_fills_in_the_pattern():

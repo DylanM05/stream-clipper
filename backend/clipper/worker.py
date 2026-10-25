@@ -204,7 +204,9 @@ class Worker:
             name = meta.get("title") or name
             clip_template = show.title_template if show else "{title}"
             episode_template = show.full_episode_template if show else "{title}"
-            day = titles.format_date(titles.stream_date(meta.get("upload_date"), vod.created_at.date()))
+            day = titles.format_date(
+                titles.stream_date(meta, vod.created_at.date(), settings.timezone, settings.day_starts_at)
+            )
             context = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
 
             # A whole video has nothing else to do while its preview is made.

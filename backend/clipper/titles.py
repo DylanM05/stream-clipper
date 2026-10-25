@@ -3,8 +3,9 @@
 Claude writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, Field
 
@@ -25,10 +26,18 @@ def format_date(day: date | None) -> str:
     return f"{day:%b} {day.day}, {day.year}" if day else ""
 
 
-def stream_date(upload_date: str | None, fallback: date) -> date:
-    """The stream or post date from yt-dlp's YYYYMMDD, or `fallback` when it's missing."""
+def stream_date(meta: dict, fallback: date, timezone: str = "UTC", day_starts_at: int = 0) -> date:
+    """The day of a stream or post as its creators would say it: when it started, in their `timezone`, with
+    the hours before `day_starts_at` counting as the day before.
+
+    yt-dlp's own upload_date is that time's day in UTC, which for an evening stream in America is often
+    already the next day; it's only used when there's no time. Then `fallback`.
+    """
+    if started := meta.get("release_timestamp") or meta.get("timestamp"):
+        local = datetime.fromtimestamp(started, ZoneInfo(timezone))
+        return (local - timedelta(hours=day_starts_at)).date()
     try:
-        return datetime.strptime(upload_date or "", "%Y%m%d").date()
+        return datetime.strptime(meta.get("upload_date") or "", "%Y%m%d").date()
     except ValueError:
         return fallback
 

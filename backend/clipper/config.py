@@ -3,8 +3,9 @@
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import field_validator
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +31,11 @@ class Settings(BaseSettings):
     whisper_device: str = "cuda"
     whisper_compute_type: str = "float16"
     language: str | None = "en"  # None = auto-detect
+
+    # The {date} in titles: the day a stream started where its creators are. One that starts before
+    # day_starts_at (an hour of their day) counts as the night before's show.
+    timezone: str = "America/New_York"
+    day_starts_at: int = Field(default=6, ge=0, le=12)
 
     # Segmentation (Claude Code in headless mode, signed in with your subscription)
     claude_bin: str = "claude"
@@ -90,6 +96,15 @@ class Settings(BaseSettings):
     def _none_values(cls, v):
         # "none" as well as empty: PowerShell deletes a variable that is set to "".
         return None if isinstance(v, str) and v.strip().lower() in ("", "none", "off") else v
+
+    @field_validator("timezone")
+    @classmethod
+    def _known_timezone(cls, v):
+        try:
+            ZoneInfo(v)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise ValueError(f"unknown time zone {v!r}: use a name like America/New_York or Europe/London") from None
+        return v
 
     @property
     def vods_dir(self) -> Path:

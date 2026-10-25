@@ -16,6 +16,7 @@ dependencies = [
   "pydantic-settings>=2.3",
   "sqlmodel>=0.0.22",
   "typer>=0.12",
+  "tzdata>=2024.1",  # time zones for title dates, where the system has none (Windows, slim images)
   "uvicorn>=0.30",
   # curl-cffi gets past Kick's bot protection; "default" brings the YouTube JavaScript solver (needs deno)
   "yt-dlp[default,curl-cffi]>=2026.10.21",

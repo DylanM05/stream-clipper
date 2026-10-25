@@ -15,7 +15,7 @@ log = logging.getLogger(__name__)
 
 _META_FIELDS = (
     "id", "title", "uploader", "uploader_id", "channel", "extractor_key", "webpage_url",
-    "duration", "upload_date", "timestamp", "chapters", "description",
+    "duration", "upload_date", "timestamp", "release_timestamp", "chapters", "description",
 )
 
 
