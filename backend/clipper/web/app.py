@@ -2,6 +2,7 @@
 
 import html
 import ipaddress
+import json
 import logging
 import mimetypes
 import re
@@ -28,6 +29,7 @@ from ..db import (
 )
 from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
+from ..overlay import Overlay, save as save_overlay_image
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
 from ..pipeline import render
 from ..workspace import Workspace
@@ -144,6 +146,7 @@ class ShowIn(BaseModel):
     auto_visibility: Visibility = "public"
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
+    overlay_episodes: bool = False
 
 
 class ShowPatch(BaseModel):
@@ -166,6 +169,7 @@ class ShowPatch(BaseModel):
     auto_visibility: Visibility | None = None
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
+    overlay_episodes: bool | None = None
 
 
 class DestinationIn(BaseModel):
@@ -303,6 +307,9 @@ class ShowOut(BaseModel):
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none
+    overlay: str  # the overlay image's address in the app, or "" for none
+    overlay_screen: list[int] | None  # x, y, w, h of a frame's screen (in its 1920x1080), where clips go
+    overlay_episodes: bool
     channels: list[ChannelOut]
     video_count: int
 
@@ -428,11 +435,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def show_out(s: Session, show: Show) -> ShowOut:
         channels = s.exec(select(Channel).where(Channel.show_id == show.id).order_by(col(Channel.id)))
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
-        image = settings.short_background(show.id)
-        # The file's age in the address, so a new image isn't hidden by the browser's copy of the old one.
-        background = f"/media/shows/{show.id}/short-background.png?v={int(image.stat().st_mtime)}" if image.exists() else ""
-        return ShowOut(**show.model_dump(exclude={"created_at"}), short_background=background,
+        overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen)
+        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen"}),
+                       short_background=image_url(settings.short_background(show.id), f"/media/shows/{show.id}/short-background.png"),
+                       overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
+                       overlay_screen=list(overlay.screen) if overlay and overlay.screen else None,
                        channels=[channel_out(s, c) for c in channels], video_count=videos)
+
+    def image_url(path: Path, url: str) -> str:
+        """A show's image's address, with the file's age in it so a new image isn't hidden by the browser's
+        copy of the old one; "" if there's none."""
+        return f"{url}?v={int(path.stat().st_mtime)}" if path.exists() else ""
 
     def channel_video_out(item: ChannelVideo) -> ChannelVideoOut:
         return ChannelVideoOut(**item.model_dump(exclude={"first_seen_at", "updated_at"}),
@@ -757,6 +770,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.delete(show)
         s.commit()
         settings.short_background(show_id).unlink(missing_ok=True)
+        settings.show_overlay(show_id).unlink(missing_ok=True)
 
     @app.put("/api/shows/{show_id}/short-background")
     async def upload_short_background(show_id: int, request: Request) -> ShowOut:
@@ -790,6 +804,51 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         show = found(s, Show, show_id, "show")
         settings.short_background(show_id).unlink(missing_ok=True)
         return show_out(s, show)
+
+    @app.put("/api/shows/{show_id}/overlay")
+    async def upload_overlay(show_id: int, request: Request) -> ShowOut:
+        """The request's body is the image: a PNG with transparent parts, saved at 1920x1080 (overlay.py)."""
+        data = await request.body()
+        if len(data) > MAX_BACKGROUND_BYTES:
+            raise HTTPException(413, "That image is too big: 30 MB at most")
+        return await run_in_threadpool(save_overlay, show_id, data)
+
+    def save_overlay(show_id: int, data: bytes) -> ShowOut:
+        with Session(engine) as s:
+            show = found(s, Show, show_id, "show")
+            image = settings.show_overlay(show_id)
+            image.parent.mkdir(parents=True, exist_ok=True)
+            upload = image.with_suffix(".upload")
+            upload.write_bytes(data)
+            try:
+                saved = save_overlay_image(upload, image)
+            except ValueError as e:
+                raise HTTPException(422, str(e)) from None
+            finally:
+                upload.unlink(missing_ok=True)
+            show.overlay_box = json.dumps(saved.box)
+            show.overlay_screen = json.dumps(saved.screen) if saved.screen else ""
+            s.add(show)
+            s.commit()
+            s.refresh(show)
+            return show_out(s, show)
+
+    @app.delete("/api/shows/{show_id}/overlay")
+    def delete_overlay(show_id: int, s: Session = Depends(db)) -> ShowOut:
+        show = found(s, Show, show_id, "show")
+        settings.show_overlay(show_id).unlink(missing_ok=True)
+        show.overlay_box = show.overlay_screen = ""
+        s.add(show)
+        s.commit()
+        s.refresh(show)
+        return show_out(s, show)
+
+    @app.get("/media/shows/{show_id}/overlay.png")
+    def overlay_image(show_id: int) -> FileResponse:
+        image = settings.show_overlay(show_id)
+        if not image.exists():
+            raise HTTPException(404, "No overlay")
+        return FileResponse(image, media_type="image/png", headers={"Cache-Control": "max-age=31536000"})
 
     @app.get("/media/shows/{show_id}/short-background.png")
     def short_background_image(show_id: int) -> FileResponse:

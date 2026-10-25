@@ -168,11 +168,14 @@ export interface Show {
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
+  overlay: string; // the overlay image's address, or "" for none
+  overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen in its 1920×1080
+  overlay_episodes: boolean; // full episodes get the overlay too (re-encoding the whole stream)
   channels: Channel[];
   video_count: number;
 }
 
-export type ShowFields = Omit<Show, "id" | "channels" | "video_count" | "short_background">;
+export type ShowFields = Omit<Show, "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_screen">;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
 
 export interface ChannelVideo {
@@ -306,6 +309,14 @@ export const api = {
       headers: { "Content-Type": image.type || "application/octet-stream" },
     }),
   deleteShortBackground: (id: number) => request<Show>(`/api/shows/${id}/short-background`, { method: "DELETE" }),
+  /** A PNG with transparent parts; the server makes it 1920×1080 and works out whether it's a frame. */
+  uploadOverlay: (id: number, image: File) =>
+    request<Show>(`/api/shows/${id}/overlay`, {
+      method: "PUT",
+      body: image,
+      headers: { "Content-Type": image.type || "application/octet-stream" },
+    }),
+  deleteOverlay: (id: number) => request<Show>(`/api/shows/${id}/overlay`, { method: "DELETE" }),
 
   addChannel: (showId: number, body: { url: string } & ChannelFields) =>
     post<Channel>(`/api/shows/${showId}/channels`, body),

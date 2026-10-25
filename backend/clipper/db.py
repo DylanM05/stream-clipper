@@ -113,6 +113,12 @@ class Show(SQLModel, table=True):
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
     short_video_width: float = 1.0
+    # The overlay on its landscape videos (Settings.show_overlay, overlay.py): where its design and, for a
+    # frame, its screen are (JSON [x, y, w, h], found when it's uploaded), and whether full episodes get it
+    # too, which means re-encoding the whole stream.
+    overlay_box: str = ""
+    overlay_screen: str = ""
+    overlay_episodes: bool = False
     created_at: datetime = Field(default_factory=utcnow)
 
     @property

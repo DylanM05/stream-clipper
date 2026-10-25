@@ -234,7 +234,7 @@ def test_failures_are_recorded(settings, fake_pipeline, monkeypatch):
 def fake_render(monkeypatch):
     rendered = []
 
-    def landscape(source, clip, out: Path, settings, on_progress=None):
+    def landscape(source, clip, out: Path, settings, on_progress=None, overlay=None):
         out.write_bytes(b"video")
         rendered.append(out.name)
 
@@ -289,6 +289,39 @@ def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(setting
     assert layouts[-1]["background"] == background
 
 
+def test_the_shows_overlay_goes_on_clips_and_on_full_episodes_only_when_switched_on(settings, fake_pipeline, monkeypatch):
+    show_id = add_show(settings, name="Kino", match="x.com/a", mode="both",
+                       overlay_box="[1440, 40, 440, 140]", overlay_screen="")
+    image = settings.show_overlay(show_id)
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"png")
+    rendered = {}
+
+    def landscape(source, clip, out, settings_, on_progress=None, overlay=None):
+        out.write_bytes(b"video")
+        rendered[clip.id] = overlay
+
+    monkeypatch.setattr(worker_module.render, "render_landscape", landscape)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings, url="https://x.com/a/status/1"))
+    full = approve(settings, "full")
+    approve(settings, "ch01")
+    while w.render_next_clip():
+        pass
+    assert set(rendered) == {"ch01"} and rendered["ch01"].box == (1440, 40, 440, 140)
+    assert Path(get(settings, ClipRecord, full).video_path).name == "source.mp4"  # posted as it is
+
+    with Session(get_engine(settings)) as s:
+        show = s.get(Show, show_id)
+        show.overlay_episodes = True
+        s.add(show)
+        s.commit()
+    approve(settings, "full")
+    w.render_next_clip()
+    assert rendered["full"].box == (1440, 40, 440, 140)
+    assert Path(get(settings, ClipRecord, full).video_path).parent.name == "clips"  # re-encoded with it
+
+
 def test_whole_videos_are_not_re_encoded(settings, fake_pipeline, fake_render):
     w = worker_module.Worker(settings)
     w.process_vod(add_vod(settings, url="https://x.com/a/status/1", mode="whole"))
@@ -305,7 +338,7 @@ def test_a_clip_edited_during_its_render_is_rendered_again(settings, fake_pipeli
     w.process_vod(add_vod(settings))
     clip_id = approve(settings, "hl02")
 
-    def landscape_while_user_edits(source, clip, out, settings_, on_progress=None):
+    def landscape_while_user_edits(source, clip, out, settings_, on_progress=None, overlay=None):
         out.write_bytes(b"video")
         with Session(get_engine(settings)) as s:  # the app re-approves after an edit
             row = s.get(ClipRecord, clip_id)
@@ -323,7 +356,7 @@ def test_an_edit_during_a_render_stops_it_at_the_next_progress_report(settings, 
     w.process_vod(add_vod(settings))
     clip_id = approve(settings, "hl02")
 
-    def landscape(source, clip, out, settings_, on_progress=None):
+    def landscape(source, clip, out, settings_, on_progress=None, overlay=None):
         approve(settings, "hl02")  # the app re-approves after an edit
         on_progress(0.5)
         raise AssertionError("the render should have stopped")
@@ -459,7 +492,7 @@ def test_pausing_renders_stops_the_running_one_and_holds_the_rest(settings, fake
     w.process_vod(add_vod(settings))
     clip_id = approve(settings, "hl02")
 
-    def landscape(source, clip, out, settings_, on_progress=None):
+    def landscape(source, clip, out, settings_, on_progress=None, overlay=None):
         out.with_name(out.stem + ".tmp.mp4").write_bytes(b"half")
         set_paused(settings, part="renders")
         on_progress(0.5)

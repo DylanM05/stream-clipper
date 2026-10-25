@@ -393,6 +393,7 @@ const BLANK: ShowFields = {
   auto_visibility: "public",
   short_video_top: null,
   short_video_width: 1,
+  overlay_episodes: false,
 };
 
 function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
@@ -400,7 +401,8 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const toast = useToast();
   const [fields, setFields] = useState<ShowFields>(() => {
     if (!show) return BLANK;
-    const { id: _id, channels: _channels, video_count: _count, short_background: _background, ...rest } = show;
+    // The images are saved on their own, straight away, so they aren't part of the form.
+    const { id: _id, channels: _channels, video_count: _count, short_background: _b, overlay: _o, overlay_screen: _s, ...rest } = show;
     return rest;
   });
   const [busy, setBusy] = useState(false);
@@ -576,6 +578,12 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           onChanged={props.onChanged}
         />
       )}
+      <ClipOverlay
+        show={show}
+        episodes={hasEpisode(fields.mode) ? fields.overlay_episodes : null}
+        onChange={set}
+        onChanged={props.onChanged}
+      />
 
       <Field label="About the show" hint="context for Claude">
         <textarea
@@ -668,25 +676,9 @@ function ShortsLayout(props: {
   onChanged: () => void;
 }) {
   const { show, top, width } = props;
-  const toast = useToast();
-  const file = useRef<HTMLInputElement>(null);
-  const [busy, setBusy] = useState(false);
   const height = (width * 1080 * 9) / 16 / 1920; // a 16:9 video, as a fraction of the Short's height
   const videoTop = top ?? (1 - height) / 2;
   const background = show?.short_background;
-
-  const run = async (work: () => Promise<unknown>, done: string) => {
-    setBusy(true);
-    try {
-      await work();
-      toast({ text: done });
-      props.onChanged();
-    } catch (e) {
-      toast({ text: errorText(e) });
-    } finally {
-      setBusy(false);
-    }
-  };
 
   return (
     <Group label="Shorts" hint="the vertical videos made from highlights">
@@ -746,41 +738,15 @@ function ShortsLayout(props: {
               className="mt-1 w-full accent-violet-500"
             />
           </label>
-          {show ? (
-            <div className="flex flex-wrap gap-2">
-              <input
-                ref={file}
-                type="file"
-                accept="image/png,image/jpeg,image/webp"
-                className="hidden"
-                onChange={(e) => {
-                  const image = e.target.files?.[0];
-                  e.target.value = "";
-                  if (image) void run(() => api.uploadShortBackground(show.id, image), "Background saved");
-                }}
-              />
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => file.current?.click()}
-                className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700 disabled:opacity-40"
-              >
-                {busy ? "Saving…" : background ? "Change background" : "Add a background"}
-              </button>
-              {background && (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => run(() => api.deleteShortBackground(show.id), "Background removed")}
-                  className="rounded-lg px-3 py-1.5 text-xs font-semibold text-red-300 disabled:opacity-40"
-                >
-                  Remove
-                </button>
-              )}
-            </div>
-          ) : (
-            <p className="text-xs text-zinc-500">Add the show first, then a background.</p>
-          )}
+          <ImageButtons
+            show={show}
+            what="background"
+            has={!!background}
+            accept="image/png,image/jpeg,image/webp"
+            upload={api.uploadShortBackground}
+            remove={api.deleteShortBackground}
+            onChanged={props.onChanged}
+          />
         </div>
       </div>
       <p className="mt-2 text-xs text-zinc-500">
@@ -792,6 +758,137 @@ function ShortsLayout(props: {
         show.
       </p>
     </Group>
+  );
+}
+
+/**
+ * The show's branding on its landscape videos. A frame (its design goes all the way round a transparent screen) has
+ * the clip shrunk into its screen; anything else, like a corner logo, goes on top of the full-size clip.
+ */
+function ClipOverlay(props: {
+  show: Show | null;
+  episodes: boolean | null; // the full-episode switch, when the show makes full episodes
+  onChange: (fields: Partial<ShowFields>) => void;
+  onChanged: () => void;
+}) {
+  const { show } = props;
+  const overlay = show?.overlay;
+  const screen = show?.overlay_screen;
+  const clip = screen
+    ? { left: `${(screen[0] / 1920) * 100}%`, top: `${(screen[1] / 1080) * 100}%`, width: `${(screen[2] / 1920) * 100}%`, height: `${(screen[3] / 1080) * 100}%` }
+    : { inset: 0 };
+
+  return (
+    <Group label="Overlay on clips" hint="the creator's branding on the landscape videos">
+      <div className="relative aspect-video w-full max-w-sm overflow-hidden rounded-xl bg-black ring-1 ring-white/10">
+        <div className="absolute grid place-items-center bg-gradient-to-br from-zinc-600 to-zinc-800 text-xs font-semibold text-zinc-300" style={clip}>
+          Clip
+        </div>
+        {overlay && <img src={overlay} alt="" className="absolute inset-0 size-full" />}
+      </div>
+      <p className="mt-2 text-xs text-zinc-400">
+        {!overlay
+          ? "None yet."
+          : screen
+            ? "A frame: each clip is shrunk to fit its screen, so none of the stream is hidden."
+            : "A logo: it goes on top of the full-size clip."}
+      </p>
+      <div className="mt-2">
+        <ImageButtons
+          show={show}
+          what="overlay"
+          has={!!overlay}
+          accept="image/png"
+          upload={api.uploadOverlay}
+          remove={api.deleteOverlay}
+          onChanged={props.onChanged}
+        />
+      </div>
+      {props.episodes !== null && (
+        <label className="mt-3 flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={props.episodes}
+            onChange={(e) => props.onChange({ overlay_episodes: e.target.checked })}
+            className="mt-0.5 size-5 shrink-0 accent-violet-500"
+          />
+          <span className="text-sm text-zinc-300">
+            Also on full episodes
+            <span className="block text-xs text-zinc-500">
+              That means re-encoding the whole stream: a minute or two for a short pre-show, an hour or two of GPU time for
+              an 8-hour stream, and a second copy on disk until it's uploaded. Off, full episodes go up as they are.
+            </span>
+          </span>
+        </label>
+      )}
+      <p className="mt-2 text-xs text-zinc-500">
+        Use a 1920×1080 PNG with a transparent background. Chapters and highlights get it; Shorts use the background above.
+      </p>
+    </Group>
+  );
+}
+
+/** Add, change or remove one of a show's images. Unlike the show's other settings, it's saved straight away. */
+function ImageButtons(props: {
+  show: Show | null;
+  what: string;
+  has: boolean;
+  accept: string;
+  upload: (showId: number, image: File) => Promise<Show>;
+  remove: (showId: number) => Promise<Show>;
+  onChanged: () => void;
+}) {
+  const { show, what } = props;
+  const toast = useToast();
+  const file = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  if (!show) return <p className="text-xs text-zinc-500">Add the show first, then its {what}.</p>;
+
+  const run = async (work: () => Promise<unknown>, done: string) => {
+    setBusy(true);
+    try {
+      await work();
+      toast({ text: done });
+      props.onChanged();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      <input
+        ref={file}
+        type="file"
+        accept={props.accept}
+        className="hidden"
+        onChange={(e) => {
+          const image = e.target.files?.[0];
+          e.target.value = "";
+          if (image) void run(() => props.upload(show.id, image), `${what[0].toUpperCase()}${what.slice(1)} saved`);
+        }}
+      />
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => file.current?.click()}
+        className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700 disabled:opacity-40"
+      >
+        {busy ? "Saving…" : props.has ? `Change ${what}` : `Add ${what === "overlay" ? "an" : "a"} ${what}`}
+      </button>
+      {props.has && (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => run(() => props.remove(show.id), `${what[0].toUpperCase()}${what.slice(1)} removed`)}
+          className="rounded-lg px-3 py-1.5 text-xs font-semibold text-red-300 disabled:opacity-40"
+        >
+          Remove
+        </button>
+      )}
+    </div>
   );
 }
 

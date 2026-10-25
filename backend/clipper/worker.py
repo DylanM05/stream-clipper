@@ -34,6 +34,7 @@ from .llm import LLMError, UsageLimitError
 from .models import Clip, Segmentation, Transcript
 from .monitor import Monitor
 from .notify import Note
+from .overlay import Overlay
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
 from .studio import Studio, StudioError, Upload, write_status
 from .timecode import to_seconds
@@ -408,7 +409,9 @@ class Worker:
         try:
             ws = Workspace(settings.vods_dir / vod.workspace)
             check = self._render_check(clip_id)
-            if clip.kind == "whole":
+            show = self._get(Show, vod.show_id) if vod.show_id else None
+            overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen) if show else None
+            if clip.kind == "whole" and not (overlay and show.overlay_episodes):
                 video, short = ws.source, None  # posted as it is: no re-encode
             else:
                 # Remove files from an earlier render; the title (and so the file name) may have changed.
@@ -423,12 +426,11 @@ class Worker:
                     description=clip.description, score=clip.score, llm_start="", llm_end="",
                 )
                 video = ws.clips_dir / f"{stem}.mp4"
-                render.render_landscape(source, pipeline_clip, video, settings, on_progress=check)
+                render.render_landscape(source, pipeline_clip, video, settings, on_progress=check, overlay=overlay)
                 short = None
                 if clip.make_short:
                     words = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")).words()
                     short = ws.clips_dir / f"{stem}-short.mp4"
-                    show = self._get(Show, vod.show_id) if vod.show_id else None
                     background = settings.short_background(show.id) if show else None
                     render.render_short(
                         source, pipeline_clip, words, short, settings, on_progress=check,

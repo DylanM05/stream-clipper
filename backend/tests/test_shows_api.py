@@ -67,6 +67,31 @@ def test_a_shorts_background_is_saved_at_the_shorts_size_and_the_video_placed_on
     assert not saved.exists()
 
 
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_an_overlay_is_saved_and_a_frames_screen_reported(client, settings, tmp_path):
+    show = client.post("/api/shows", json={"name": "Kino", "mode": "both"}).json()
+    assert (show["overlay"], show["overlay_screen"], show["overlay_episodes"]) == ("", None, False)
+    tv = tmp_path / "tv.png"  # a frame with a see-through screen, drawn by ffmpeg
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=1920x1080,format=rgba",
+                    "-vf", "drawbox=x=160:y=110:w=1600:h=900:color=black@0.0:replace=1:t=fill", "-frames:v", "1", str(tv)], check=True)
+
+    show = client.put(f"/api/shows/{show['id']}/overlay", content=tv.read_bytes()).json()
+    assert show["overlay"].startswith(f"/media/shows/{show['id']}/overlay.png?v=")
+    assert show["overlay_screen"] == [160, 110, 1600, 900]
+    assert client.get(show["overlay"]).headers["content-type"] == "image/png"
+    assert client.patch(f"/api/shows/{show['id']}", json={"overlay_episodes": True}).json()["overlay_episodes"] is True
+
+    jpg = tmp_path / "photo.jpg"
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=640x360",
+                    "-frames:v", "1", str(jpg)], check=True)
+    refused = client.put(f"/api/shows/{show['id']}/overlay", content=jpg.read_bytes())
+    assert refused.status_code == 422 and "no transparent parts" in refused.json()["detail"]
+    assert client.get(f"/api/shows/{show['id']}").json()["overlay_screen"] == [160, 110, 1600, 900]  # kept
+
+    assert client.delete(f"/api/shows/{show['id']}/overlay").json()["overlay"] == ""
+    assert not settings.show_overlay(show["id"]).exists()
+
+
 def test_a_watched_channel_can_move_to_its_own_show_with_its_link(client, settings):
     kino = client.post("/api/shows", json={"name": "Kino Casino", "mode": "both", "match": "kick.com/kinocasinogaming"}).json()
     x = client.post(f"/api/shows/{kino['id']}/channels", json={"url": "x.com/Andywarski", "keywords": "tonight on"}).json()

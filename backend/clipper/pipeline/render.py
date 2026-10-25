@@ -9,6 +9,7 @@ from pathlib import Path
 from .. import ffmpeg
 from ..config import Settings
 from ..models import Clip, Word
+from ..overlay import Overlay, filter_graph
 from ..workspace import Workspace, write_text
 from .captions import build_ass
 
@@ -40,14 +41,24 @@ def run(
 
 
 def render_landscape(
-    source: Path, clip: Clip, out: Path, settings: Settings, on_progress: Callable[[float], None] | None = None
+    source: Path,
+    clip: Clip,
+    out: Path,
+    settings: Settings,
+    on_progress: Callable[[float], None] | None = None,
+    overlay: Overlay | None = None,
 ) -> None:
+    """With the show's `overlay`, the video comes out 1920x1080 with it on (overlay.py)."""
     tmp = out.with_name(out.stem + ".tmp.mp4")
+    video = (
+        ["-i", str(overlay.path.resolve()), "-filter_complex", filter_graph(overlay), "-map", "[v]"]
+        if overlay else ["-map", "0:v:0"]
+    )
     _encode(
         settings,
         lambda hwaccel: [
             *_input_args(source, clip, hwaccel),
-            "-map", "0:v:0", "-map", "0:a:0?",
+            *video, "-map", "0:a:0?",
             *_video_args(settings), *_audio_args(clip),
             "-movflags", "+faststart", str(tmp),
         ],

@@ -99,6 +99,10 @@ class Settings(BaseSettings):
         """A show's background image for its Shorts, uploaded in the app; 1080x1920 once saved."""
         return self.data_dir / "backgrounds" / f"show-{show_id}.png"
 
+    def show_overlay(self, show_id: int) -> Path:
+        """A show's overlay for its landscape videos, uploaded in the app; 1920x1080 once saved (overlay.py)."""
+        return self.data_dir / "overlays" / f"show-{show_id}.png"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "clipper.db"
