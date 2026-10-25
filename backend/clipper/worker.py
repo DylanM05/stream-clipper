@@ -344,8 +344,8 @@ class Worker:
         """Add clips the database doesn't have yet, so re-running a video never duplicates them.
 
         The full episode and the show's best chapters and highlights go to the inbox, or straight to
-        rendering if the show takes their kind without review; the rest are kept as extras. Returns how
-        many were added with each status.
+        rendering if the show takes their kind (or their score) without review; the rest are kept as
+        extras. Returns how many were added with each status.
         """
         offered = best_picks(clips, show)
         added: dict[str, int] = {}
@@ -358,7 +358,7 @@ class Worker:
                 playlist = (show.episode_playlist_id if c.kind == "whole" else show.clip_playlist_id) if show else ""
                 if c.id not in offered:
                     status = "extra"
-                elif show and show.auto_for(c.kind) != "review":
+                elif show and show.auto_for_clip(c.kind, c.score) != "review":
                     status = "approved"
                 else:
                     status = "proposed"
@@ -506,13 +506,13 @@ class Worker:
             return True
 
     def _auto_upload(self, clip_id: int) -> None:
-        """Queue the upload of a freshly rendered clip whose show uploads its kind without review: for a
-        highlight its Short if it has one, else the video."""
+        """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review:
+        for a highlight its Short if it has one, else the video."""
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod.show_id else None
-            if not show or show.auto_for(clip.kind) != "upload" or clip.status != "rendered":
+            if not show or show.auto_for_clip(clip.kind, clip.score) != "upload" or clip.status != "rendered":
                 return
             which = "short" if clip.short_path else "video"
             if s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id, UploadJob.which == which)).first():

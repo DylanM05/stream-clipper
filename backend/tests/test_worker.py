@@ -457,6 +457,33 @@ def test_a_highlight_uploaded_without_review_goes_up_as_its_short(settings, fake
         ]
 
 
+def test_offered_clips_claude_scores_high_enough_upload_without_review(settings, fake_pipeline, fake_render, monkeypatch):
+    monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: scored())
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips")
+        s.add(dest)
+        s.commit()
+        dest_id = dest.id
+    add_show(settings, name="Kino", match="twitch.tv/videos", max_chapters=2, max_shorts=1, auto_upload_score=0.75,
+             clip_destination_id=dest_id)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+
+    assert {c.title: c.status for c in clips(settings)} == {
+        "Whole show": "proposed",  # 0.6
+        "Second half": "approved",  # 0.8
+        "Vertical": "approved",  # 0.8
+        "Landscape only": "extra",  # 0.6, and only one Short is offered
+    }
+    while w.render_next_clip():
+        pass
+    with Session(get_engine(settings)) as s:
+        jobs = s.exec(select(UploadJob)).all()
+        assert sorted((s.get(ClipRecord, j.clip_id).title, j.which) for j in jobs) == [
+            ("Second half", "video"), ("Vertical", "short"),
+        ]
+
+
 # --- Pausing ----------------------------------------------------------------------------------
 
 

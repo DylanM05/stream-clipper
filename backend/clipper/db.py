@@ -108,6 +108,9 @@ class Show(SQLModel, table=True):
     auto_episode: str = "review"
     auto_chapters: str = "review"
     auto_shorts: str = "review"
+    # Offered chapters and highlights Claude scores at least this (0-1) are uploaded without review, whatever
+    # auto_chapters and auto_shorts say; 0 is off.
+    auto_upload_score: float = 0
     auto_visibility: str = "public"
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
@@ -132,6 +135,12 @@ class Show(SQLModel, table=True):
 
     def auto_for(self, kind: str) -> str:
         return {"whole": self.auto_episode, "chapter": self.auto_chapters, "highlight": self.auto_shorts}[kind]
+
+    def auto_for_clip(self, kind: str, score: float) -> str:
+        """auto_for, except a chapter or highlight scored at least auto_upload_score is uploaded."""
+        if kind != "whole" and self.auto_upload_score and score >= self.auto_upload_score:
+            return "upload"
+        return self.auto_for(kind)
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]

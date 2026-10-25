@@ -164,6 +164,7 @@ export interface Show {
   auto_episode: Auto;
   auto_chapters: Auto;
   auto_shorts: Auto;
+  auto_upload_score: number; // offered chapters and Shorts Claude scores at least this upload without review; 0 is off
   auto_visibility: Visibility; // for automatic uploads
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width

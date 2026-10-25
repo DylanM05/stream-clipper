@@ -390,6 +390,7 @@ const BLANK: ShowFields = {
   auto_episode: "review",
   auto_chapters: "review",
   auto_shorts: "review",
+  auto_upload_score: 0,
   auto_visibility: "public",
   short_video_top: null,
   short_video_width: 1,
@@ -562,6 +563,24 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           Review: waits in your inbox. Render: skips the inbox and waits in Ready to upload. Upload: goes straight to its
           YouTube channel (a highlight as its Short, if it has one).
         </p>
+        {hasClips(fields.mode) && (
+          <>
+            <div className="mt-3 flex items-center gap-3">
+              <span className="w-24 shrink-0 text-sm text-zinc-300">Standouts</span>
+              <Segmented
+                options={SCORE_LABEL}
+                value={String(fields.auto_upload_score)}
+                onChange={(v) => set({ auto_upload_score: Number(v) })}
+              />
+            </div>
+            <p className="mt-1.5 text-xs text-zinc-500">
+              {fields.auto_upload_score
+                ? `Chapters and Shorts Claude scores ${fields.auto_upload_score} or more upload straight away, even if set to Review above. `
+                : "Upload chapters and Shorts straight away when Claude scores them this high, even if set to Review above. "}
+              Only the ones offered per stream count. Claude keeps 0.9 and up for standout moments.
+            </p>
+          </>
+        )}
         {autoUploads(fields) && (
           <div className="mt-3 flex items-center gap-3">
             <span className="w-24 shrink-0 text-sm text-zinc-300">Uploaded as</span>
@@ -646,11 +665,13 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
 
 const AUTO_LABEL: Record<Auto, string> = { review: "Review", render: "Render", upload: "Upload" };
 const VISIBILITY_LABEL: Record<Visibility, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
+// Claude's score (0–1) from which a chapter or Short uploads without review.
+const SCORE_LABEL: Record<string, string> = { "0": "Off", "0.8": "0.8+", "0.85": "0.85+", "0.9": "0.9+", "0.95": "0.95+" };
 
-/** Whether any kind of video the show makes is uploaded without review. */
+/** Whether any video the show makes is uploaded without review. */
 const autoUploads = (f: ShowFields) =>
   (hasEpisode(f.mode) && f.auto_episode === "upload") ||
-  (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload"));
+  (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload" || f.auto_upload_score > 0));
 
 function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
   const keys = Object.keys(props.options) as T[];

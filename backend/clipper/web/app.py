@@ -143,6 +143,7 @@ class ShowIn(BaseModel):
     auto_episode: Auto = "review"
     auto_chapters: Auto = "review"
     auto_shorts: Auto = "review"
+    auto_upload_score: float = Field(default=0, ge=0, le=1)
     auto_visibility: Visibility = "public"
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
@@ -169,6 +170,7 @@ class ShowPatch(BaseModel):
     auto_episode: Auto | None = None
     auto_chapters: Auto | None = None
     auto_shorts: Auto | None = None
+    auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
     auto_visibility: Visibility | None = None
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
@@ -309,6 +311,7 @@ class ShowOut(BaseModel):
     auto_episode: str
     auto_chapters: str
     auto_shorts: str
+    auto_upload_score: float
     auto_visibility: str
     short_video_top: float | None
     short_video_width: float

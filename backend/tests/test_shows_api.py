@@ -39,6 +39,9 @@ def test_shows_keep_how_many_clips_to_offer_and_what_goes_ahead_without_review(c
     assert client.patch(f"/api/shows/{show['id']}", json={"auto_shorts": "sometimes"}).status_code == 422
     assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": -1}).status_code == 422
     assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": 12}).json()["max_shorts"] == 12
+    assert show["auto_upload_score"] == 0  # off
+    assert client.patch(f"/api/shows/{show['id']}", json={"auto_upload_score": 9}).status_code == 422  # it's 0-1
+    assert client.patch(f"/api/shows/{show['id']}", json={"auto_upload_score": 0.9}).json()["auto_upload_score"] == 0.9
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")

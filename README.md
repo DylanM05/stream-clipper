@@ -149,6 +149,8 @@ Start one from a clip's **Upload** page and pick Public, Unlisted or Private. Up
 
 A show can also upload a kind of video by itself: under the show, set **Without review** to **Upload** for its full episode, chapters or Shorts, and pick the visibility. They're rendered and queued for upload as soon as they're processed, to the channel the show sends them to. A highlight goes up as its Short if it has one, else as a regular video.
 
+**Standouts** does the same for single clips: set it to a score (Claude scores every clip from 0 to 1 and keeps 0.9 and up for standout moments), and any chapter or Short scored at least that uploads straight away, even if its kind is set to **Review**. It only applies to the clips offered per stream, so it never uploads more than **Clips offered per stream** allows.
+
 ### Through the YouTube API
 
 The worker uploads with the channel's Google sign-in, as "not made for kids", in the Entertainment category (`CLIPPER_YOUTUBE_CATEGORY_ID`). The file goes up in pieces, so a dropped connection or a worker restart carries on from what YouTube already has. It can't post a video twice.
