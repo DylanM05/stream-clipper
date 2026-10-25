@@ -24,13 +24,20 @@ class Overlay:
     path: Path
     box: tuple[int, int, int, int]  # x, y, w, h of the part of the image with anything in it
     screen: tuple[int, int, int, int] | None  # x, y, w, h of a frame's screen, where the clip goes
+    # A logo moved in the app: its top-left in the picture (None: where it was drawn), and its size compared
+    # with as drawn. A frame always fills the picture.
+    position: tuple[int, int] | None = None
+    scale: float = 1.0
 
     @classmethod
-    def load(cls, path: Path, box: str, screen: str) -> "Overlay | None":
-        """The overlay saved at `path`, with the box and screen `save` found (stored as JSON), if there is one."""
+    def load(cls, path: Path, box: str, screen: str, x: float | None = None, y: float | None = None,
+             scale: float = 1.0) -> "Overlay | None":
+        """The overlay saved at `path`, with the box and screen `save` found (stored as JSON), if there is one.
+        `x` and `y` place a logo's top-left as fractions of the picture."""
         if not path.exists() or not box:
             return None
-        return cls(path, tuple(json.loads(box)), tuple(json.loads(screen)) if screen else None)
+        position = (round(x * WIDTH), round(y * HEIGHT)) if x is not None and y is not None else None
+        return cls(path, tuple(json.loads(box)), tuple(json.loads(screen)) if screen else None, position, scale)
 
 
 def save(upload: Path, out: Path) -> Overlay:
@@ -99,6 +106,12 @@ def filter_graph(overlay: Overlay) -> str:
                 f"pad={WIDTH}:{HEIGHT}:{x}+({w}-iw)/2:{y}+({h}-ih)/2:black,setsar=1[clip];"
                 "[clip][1:v]overlay=0:0[v]")
     x, y, w, h = overlay.box
+    # Only the visible part is cut out, resized and laid over each frame, kept inside the picture.
+    sw = min(WIDTH, max(2, round(w * overlay.scale / 2) * 2))
+    sh = min(HEIGHT, max(2, round(h * overlay.scale / 2) * 2))
+    px, py = overlay.position or (x, y)
+    px, py = min(max(0, px), WIDTH - sw) // 2 * 2, min(max(0, py), HEIGHT - sh) // 2 * 2
+    resize = f",scale={sw}:{sh}" if (sw, sh) != (w, h) else ""
     return (f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
             f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[clip];"
-            f"[1:v]crop={w}:{h}:{x}:{y}[design];[clip][design]overlay={x}:{y}[v]")
+            f"[1:v]crop={w}:{h}:{x}:{y}{resize}[design];[clip][design]overlay={px}:{py}[v]")

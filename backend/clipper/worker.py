@@ -410,7 +410,10 @@ class Worker:
             ws = Workspace(settings.vods_dir / vod.workspace)
             check = self._render_check(clip_id)
             show = self._get(Show, vod.show_id) if vod.show_id else None
-            overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen) if show else None
+            overlay = Overlay.load(
+                settings.show_overlay(show.id), show.overlay_box, show.overlay_screen,
+                show.overlay_x, show.overlay_y, show.overlay_scale,
+            ) if show else None
             if clip.kind == "whole" and not (overlay and show.overlay_episodes):
                 video, short = ws.source, None  # posted as it is: no re-encode
             else:

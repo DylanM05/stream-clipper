@@ -169,13 +169,20 @@ export interface Show {
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
   overlay: string; // the overlay image's address, or "" for none
-  overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen in its 1920×1080
+  overlay_box: [number, number, number, number] | null; // x, y, w, h of its visible part, as drawn, in its 1920×1080
+  overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen
   overlay_episodes: boolean; // full episodes get the overlay too (re-encoding the whole stream)
+  overlay_x: number | null; // a logo's top-left as fractions of the picture; null: where it was drawn
+  overlay_y: number | null;
+  overlay_scale: number; // a logo's size compared with as drawn
   channels: Channel[];
   video_count: number;
 }
 
-export type ShowFields = Omit<Show, "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_screen">;
+export type ShowFields = Omit<
+  Show,
+  "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen"
+>;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
 
 export interface ChannelVideo {

@@ -80,6 +80,12 @@ def test_an_overlay_is_saved_and_a_frames_screen_reported(client, settings, tmp_
     assert show["overlay_screen"] == [160, 110, 1600, 900]
     assert client.get(show["overlay"]).headers["content-type"] == "image/png"
     assert client.patch(f"/api/shows/{show['id']}", json={"overlay_episodes": True}).json()["overlay_episodes"] is True
+    moved = client.patch(f"/api/shows/{show['id']}", json={"overlay_x": 0.05, "overlay_y": 0.7, "overlay_scale": 0.6}).json()
+    assert (moved["overlay_x"], moved["overlay_y"], moved["overlay_scale"]) == (0.05, 0.7, 0.6)
+    assert client.patch(f"/api/shows/{show['id']}", json={"overlay_x": 1.5}).status_code == 422
+    show = client.put(f"/api/shows/{show['id']}/overlay", content=tv.read_bytes()).json()
+    assert (show["overlay_x"], show["overlay_y"], show["overlay_scale"]) == (None, None, 1.0)  # a new image starts as drawn
+    assert show["overlay_box"] == [0, 0, 1920, 1080]
 
     jpg = tmp_path / "photo.jpg"
     subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=gray:s=640x360",

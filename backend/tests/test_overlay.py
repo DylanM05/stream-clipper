@@ -43,6 +43,19 @@ def test_the_clip_fits_a_frames_screen_and_a_logo_goes_over_the_full_clip(tmp_pa
     assert "[1:v]crop=440:140:1440:40[design];[clip][design]overlay=1440:40[v]" in logo
 
 
+def test_a_logo_can_be_moved_and_resized_and_stays_in_the_picture(tmp_path):
+    moved = Overlay.load(tmp_path / "missing.png", "[1440, 40, 440, 140]", "")
+    assert moved is None  # no image saved
+    image = tmp_path / "o.png"
+    image.write_bytes(b"png")
+    moved = Overlay.load(image, "[1440, 40, 440, 140]", "", x=0.05, y=0.1, scale=0.5)
+    assert moved.position == (96, 108) and moved.scale == 0.5
+    assert "crop=440:140:1440:40,scale=220:70[design];[clip][design]overlay=96:108[v]" in filter_graph(moved)
+
+    too_far = Overlay(image, (1440, 40, 440, 140), None, position=(1800, 1050), scale=2)
+    assert "scale=880:280[design];[clip][design]overlay=1040:800[v]" in filter_graph(too_far)  # pulled back inside
+
+
 def png(tmp_path, rgba: np.ndarray, name: str):
     raw = tmp_path / f"{name}.raw"
     rgba.tofile(raw)

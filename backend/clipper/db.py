@@ -119,6 +119,11 @@ class Show(SQLModel, table=True):
     overlay_box: str = ""
     overlay_screen: str = ""
     overlay_episodes: bool = False
+    # Where a logo (not a frame) goes, moved in the app: its top-left as fractions of the picture (None: where
+    # it was drawn), and its size compared with as drawn.
+    overlay_x: float | None = None
+    overlay_y: float | None = None
+    overlay_scale: float = 1.0
     created_at: datetime = Field(default_factory=utcnow)
 
     @property

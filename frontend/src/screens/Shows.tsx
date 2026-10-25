@@ -13,7 +13,7 @@ import {
   type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
-import { ago, applyTitlePattern, cn, copyText, go, length, titleDate, usePoll } from "../lib";
+import { ago, applyTitlePattern, clamp, cn, copyText, go, length, titleDate, usePoll } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
@@ -394,6 +394,9 @@ const BLANK: ShowFields = {
   short_video_top: null,
   short_video_width: 1,
   overlay_episodes: false,
+  overlay_x: null,
+  overlay_y: null,
+  overlay_scale: 1,
 };
 
 function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
@@ -402,7 +405,8 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const [fields, setFields] = useState<ShowFields>(() => {
     if (!show) return BLANK;
     // The images are saved on their own, straight away, so they aren't part of the form.
-    const { id: _id, channels: _channels, video_count: _count, short_background: _b, overlay: _o, overlay_screen: _s, ...rest } = show;
+    const { id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s, ...rest } =
+      show;
     return rest;
   });
   const [busy, setBusy] = useState(false);
@@ -581,6 +585,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       <ClipOverlay
         show={show}
         episodes={hasEpisode(fields.mode) ? fields.overlay_episodes : null}
+        place={{ x: fields.overlay_x, y: fields.overlay_y, scale: fields.overlay_scale }}
         onChange={set}
         onChanged={props.onChanged}
       />
@@ -768,31 +773,107 @@ function ShortsLayout(props: {
 function ClipOverlay(props: {
   show: Show | null;
   episodes: boolean | null; // the full-episode switch, when the show makes full episodes
+  place: { x: number | null; y: number | null; scale: number }; // where a logo goes (the form's values)
   onChange: (fields: Partial<ShowFields>) => void;
   onChanged: () => void;
 }) {
-  const { show } = props;
+  const { show, place } = props;
   const overlay = show?.overlay;
   const screen = show?.overlay_screen;
+  const box = !screen ? show?.overlay_box : null; // a logo's visible part, which can be moved and resized
+  const picture = useRef<HTMLDivElement>(null);
+  const drag = useRef<{ px: number; py: number; left: number; top: number } | null>(null);
   const clip = screen
     ? { left: `${(screen[0] / 1920) * 100}%`, top: `${(screen[1] / 1080) * 100}%`, width: `${(screen[2] / 1920) * 100}%`, height: `${(screen[3] / 1080) * 100}%` }
     : { inset: 0 };
 
+  // The logo in the 1920×1080 picture, kept inside it the way the server keeps it.
+  const logo = box && (() => {
+    const w = Math.min(1920, box[2] * place.scale);
+    const h = Math.min(1080, box[3] * place.scale);
+    const left = clamp(place.x === null ? box[0] : place.x * 1920, 0, 1920 - w);
+    const top = clamp(place.y === null ? box[1] : place.y * 1080, 0, 1080 - h);
+    return { w, h, left, top };
+  })();
+  const maxScale = box ? Math.min(1920 / box[2], 1080 / box[3], 3) : 1;
+  const resize = (scale: number) => {
+    if (!box || !logo) return;
+    const w = box[2] * scale, h = box[3] * scale; // keep it centred where it is
+    props.onChange({
+      overlay_scale: scale,
+      overlay_x: clamp(logo.left + logo.w / 2 - w / 2, 0, 1920 - w) / 1920,
+      overlay_y: clamp(logo.top + logo.h / 2 - h / 2, 0, 1080 - h) / 1080,
+    });
+  };
+
   return (
     <Group label="Overlay on clips" hint="the creator's branding on the landscape videos">
-      <div className="relative aspect-video w-full max-w-sm overflow-hidden rounded-xl bg-black ring-1 ring-white/10">
+      <div ref={picture} className="relative aspect-video w-full max-w-sm overflow-hidden rounded-xl bg-black ring-1 ring-white/10">
         <div className="absolute grid place-items-center bg-gradient-to-br from-zinc-600 to-zinc-800 text-xs font-semibold text-zinc-300" style={clip}>
           Clip
         </div>
-        {overlay && <img src={overlay} alt="" className="absolute inset-0 size-full" />}
+        {overlay && !logo && <img src={overlay} alt="" className="absolute inset-0 size-full" />}
+        {overlay && box && logo && (
+          // Only the visible part of the image: drag it to move it.
+          <div
+            className="absolute cursor-move touch-none overflow-hidden outline-dashed outline-1 outline-white/60"
+            style={{ left: `${(logo.left / 1920) * 100}%`, top: `${(logo.top / 1080) * 100}%`, width: `${(logo.w / 1920) * 100}%`, height: `${(logo.h / 1080) * 100}%` }}
+            onPointerDown={(e) => {
+              e.currentTarget.setPointerCapture(e.pointerId);
+              drag.current = { px: e.clientX, py: e.clientY, left: logo.left, top: logo.top };
+            }}
+            onPointerMove={(e) => {
+              const start = drag.current;
+              const area = picture.current?.getBoundingClientRect();
+              if (!start || !area) return;
+              props.onChange({
+                overlay_x: clamp(start.left + ((e.clientX - start.px) * 1920) / area.width, 0, 1920 - logo.w) / 1920,
+                overlay_y: clamp(start.top + ((e.clientY - start.py) * 1080) / area.height, 0, 1080 - logo.h) / 1080,
+              });
+            }}
+            onPointerUp={() => (drag.current = null)}
+            onPointerCancel={() => (drag.current = null)}
+          >
+            <img
+              src={overlay}
+              alt=""
+              draggable={false}
+              className="pointer-events-none absolute max-w-none"
+              style={{ width: `${(1920 / box[2]) * 100}%`, left: `${(-box[0] / box[2]) * 100}%`, top: `${(-box[1] / box[3]) * 100}%` }}
+            />
+          </div>
+        )}
       </div>
       <p className="mt-2 text-xs text-zinc-400">
         {!overlay
           ? "None yet."
           : screen
-            ? "A frame: each clip is shrunk to fit its screen, so none of the stream is hidden."
-            : "A logo: it goes on top of the full-size clip."}
+            ? "A frame: each clip is shrunk to fit its screen, so none of the stream is hidden. It fills the picture, so it stays put."
+            : "A logo: it goes on top of the full-size clip. Drag it to move it."}
       </p>
+      {overlay && box && (
+        <div className="mt-2 flex items-center gap-3">
+          <label className="flex min-w-0 flex-1 items-center gap-3 text-sm text-zinc-300">
+            Size
+            <input
+              type="range"
+              min={20}
+              max={Math.round(maxScale * 100)}
+              value={Math.round(place.scale * 100)}
+              onChange={(e) => resize(Number(e.target.value) / 100)}
+              className="min-w-0 flex-1 accent-violet-500"
+            />
+            <span className="w-10 text-right text-xs tabular-nums text-zinc-500">{Math.round(place.scale * 100)}%</span>
+          </label>
+          <button
+            type="button"
+            onClick={() => props.onChange({ overlay_x: null, overlay_y: null, overlay_scale: 1 })}
+            className="text-xs font-semibold text-violet-300"
+          >
+            Reset
+          </button>
+        </div>
+      )}
       <div className="mt-2">
         <ImageButtons
           show={show}
@@ -823,6 +904,7 @@ function ClipOverlay(props: {
       )}
       <p className="mt-2 text-xs text-zinc-500">
         Use a 1920×1080 PNG with a transparent background. Chapters and highlights get it; Shorts use the background above.
+        Where it goes and its size are saved with the show.
       </p>
     </Group>
   );

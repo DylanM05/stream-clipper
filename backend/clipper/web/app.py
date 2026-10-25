@@ -147,6 +147,9 @@ class ShowIn(BaseModel):
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
+    overlay_x: float | None = Field(default=None, ge=0, le=1)
+    overlay_y: float | None = Field(default=None, ge=0, le=1)
+    overlay_scale: float = Field(default=1.0, ge=0.1, le=5)
 
 
 class ShowPatch(BaseModel):
@@ -170,6 +173,9 @@ class ShowPatch(BaseModel):
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
+    overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
+    overlay_y: float | None = Field(default=None, ge=0, le=1)
+    overlay_scale: float | None = Field(default=None, ge=0.1, le=5)
 
 
 class DestinationIn(BaseModel):
@@ -308,8 +314,12 @@ class ShowOut(BaseModel):
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none
     overlay: str  # the overlay image's address in the app, or "" for none
-    overlay_screen: list[int] | None  # x, y, w, h of a frame's screen (in its 1920x1080), where clips go
+    overlay_box: list[int] | None  # x, y, w, h of its visible part, as drawn (in its 1920x1080)
+    overlay_screen: list[int] | None  # x, y, w, h of a frame's screen, where clips go
     overlay_episodes: bool
+    overlay_x: float | None
+    overlay_y: float | None
+    overlay_scale: float
     channels: list[ChannelOut]
     video_count: int
 
@@ -439,6 +449,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen"}),
                        short_background=image_url(settings.short_background(show.id), f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
+                       overlay_box=list(overlay.box) if overlay else None,
                        overlay_screen=list(overlay.screen) if overlay and overlay.screen else None,
                        channels=[channel_out(s, c) for c in channels], video_count=videos)
 
@@ -828,6 +839,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 upload.unlink(missing_ok=True)
             show.overlay_box = json.dumps(saved.box)
             show.overlay_screen = json.dumps(saved.screen) if saved.screen else ""
+            show.overlay_x = show.overlay_y = None  # a new design starts where it was drawn
+            show.overlay_scale = 1.0
             s.add(show)
             s.commit()
             s.refresh(show)
