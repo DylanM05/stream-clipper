@@ -524,6 +524,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               value={fields.clip_playlist_id}
               onChange={(clip_playlist_id) => set({ clip_playlist_id })}
             />
+            {fields.clip_playlist_id && <p className="mt-2 text-xs text-zinc-500">Shorts never go in a playlist.</p>}
           </Field>
         )}
       </div>

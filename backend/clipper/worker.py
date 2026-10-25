@@ -576,7 +576,7 @@ class Worker:
                 upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                                 channel_id=dest.channel_id if dest else "")
                 url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
-                if clip.playlist_id:
+                if clip.playlist_id and job.which != "short":
                     note = ("Playlists only work for channels connected to the YouTube API, so add it to the playlist "
                             "in YouTube Studio.")
         except StudioError as e:
@@ -619,9 +619,9 @@ class Worker:
             log.info("Deleted %s now that it's uploaded", Path(path).name)
 
     def _upload_through_api(self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path) -> tuple[str, str]:
-        """Upload with the channel's Google sign-in, then add it to the clip's playlist. Returns the link, and a
-        note if YouTube didn't use the visibility asked for (what Google does to uploads from projects it hasn't
-        audited) or the playlist couldn't take it."""
+        """Upload with the channel's Google sign-in, then add it to the clip's playlist unless it's the Short (Shorts
+        never go in playlists). Returns the link, and a note if YouTube didn't use the visibility asked for (what
+        Google does to uploads from projects it hasn't audited) or the playlist couldn't take it."""
         video = Video(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                       category_id=self.settings.youtube_category_id, short=job.which == "short")
         # An earlier attempt's session only carries on if the same file is going to the same place, the same way.
@@ -639,7 +639,7 @@ class Worker:
             notes.append(f"YouTube made this video {result.privacy}, not {job.visibility}. If that happens to every API "
                          "upload, the Google Cloud project needs YouTube's API audit (see the README). Change it in "
                          "YouTube Studio for now.")
-        if clip.playlist_id:
+        if clip.playlist_id and job.which != "short":
             try:
                 self.youtube.add_to_playlist(dest.youtube_token, clip.playlist_id, result.video_id)
             except YouTubeError as e:

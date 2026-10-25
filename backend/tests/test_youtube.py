@@ -288,6 +288,22 @@ def test_uploads_go_into_the_clips_playlist(settings, clip_id):
     assert get(settings, UploadJob, 1).error == ""
 
 
+def test_shorts_never_go_into_a_playlist(settings, clip_id):
+    short = settings.data_dir / "clip-short.mp4"
+    short.write_bytes(b"short")
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.playlist_id, clip.short_path = "PL1", str(short)
+        s.add_all([clip, UploadJob(clip_id=clip_id, which="short")])
+        s.commit()
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    [(_, video, _)] = w.youtube.calls
+    assert video.short and w.youtube.added == []
+    assert get(settings, UploadJob, 1).status == "done"
+
+
 def test_a_playlist_that_cant_take_it_leaves_the_upload_done_with_a_note(settings, clip_id):
     set_playlist(settings, clip_id)
     w = worker_module.Worker(settings)
