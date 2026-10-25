@@ -52,6 +52,10 @@ class Paused(Exception):
     """Raised from a progress report to stop work that was paused, or taken back, in the app."""
 
 
+class LimitChanged(Exception):
+    """Raised from a download's progress report when the speed limit was changed in the app."""
+
+
 class Preview(threading.Thread):
     """Makes a video's preview copy in the background while Claude picks clips (and, with
     CLIPPER_PREVIEW_WITH_TRANSCRIPTION, while it's transcribed), since neither needs it."""
@@ -184,8 +188,7 @@ class Worker:
         try:
             if not downloaded:
                 self._start(vod_id, "downloading", "downloads")
-                ws = download.fetch(vod.url, settings, on_progress=self._progress(vod_id, "downloads"),
-                                    limit_mbps=self.download_limit())
+                ws = self._download(vod_id, vod.url)
             meta = ws.meta()
             duration = meta.get("duration") or probe_duration(ws.source)
             show = self._show_for(vod, meta)
@@ -369,9 +372,10 @@ class Worker:
             s.commit()
         return added
 
-    def _progress(self, vod_id: int, part: str) -> Callable[[float], None]:
+    def _progress(self, vod_id: int, part: str, limit_mbps: float | None = None) -> Callable[[float], None]:
         """A progress callback that writes to the database at most every 2 seconds, and stops the work (by
-        raising Paused) once the video or `part` of the work is paused."""
+        raising Paused) once the video or `part` of the work is paused. For a download at `limit_mbps`, it
+        also stops it (raising LimitChanged) once the app's speed limit is something else."""
         last = [0.0]
 
         def report(fraction: float) -> None:
@@ -380,8 +384,21 @@ class Worker:
                 last[0] = now
                 self._update_vod(vod_id, progress=round(fraction, 3))
                 self._check_paused(vod_id, part)
+                if limit_mbps is not None and self.download_limit() != limit_mbps:
+                    raise LimitChanged
 
         return report
+
+    def _download(self, vod_id: int, url: str) -> Workspace:
+        """Download at the app's speed limit. yt-dlp fixes the limit when it starts, so a change in the app
+        stops the download, and it starts again at the new speed, carrying on from what it already has."""
+        while True:
+            limit = self.download_limit()
+            try:
+                return download.fetch(url, self.settings, on_progress=self._progress(vod_id, "downloads", limit),
+                                      limit_mbps=limit)
+            except LimitChanged:
+                log.info("Download speed limit changed to %g Mbit/s; carrying on at that", self.download_limit())
 
     # --- Renders ------------------------------------------------------------
 

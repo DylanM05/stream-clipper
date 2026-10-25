@@ -601,7 +601,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.patch("/api/settings")
     def update_settings(body: AppSettingsPatch, s: Session = Depends(db)) -> AppSettings:
-        """The worker picks changes up from its next download or cleanup."""
+        """A running download switches to a new speed limit within a few seconds; cleanup uses its new days
+        from its next round."""
         for key, value in body.model_dump(exclude_none=True).items():
             set_app_setting(s, key, str(value))
         s.commit()

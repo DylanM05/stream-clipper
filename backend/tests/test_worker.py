@@ -183,6 +183,29 @@ def test_downloads_use_the_speed_limit_set_in_the_app(settings, fake_pipeline):
     assert fake_pipeline["limit_mbps"] == 20
 
 
+def test_changing_the_speed_limit_mid_download_carries_on_at_the_new_speed(settings, fake_pipeline, monkeypatch):
+    from clipper.db import set_app_setting
+
+    finish = worker_module.download.fetch  # the fake from fake_pipeline
+    limits = []
+
+    def fetch(url, s, on_progress=None, limit_mbps=None):
+        limits.append(limit_mbps)
+        if len(limits) == 1:
+            with Session(get_engine(settings)) as session:  # changed in the app partway through
+                set_app_setting(session, "download_limit_mbps", "500")
+                session.commit()
+            on_progress(0.4)
+            raise AssertionError("the download should have stopped to pick up the new limit")
+        return finish(url, s, on_progress, limit_mbps)
+
+    monkeypatch.setattr(worker_module.download, "fetch", fetch)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    assert limits == [50, 500]
+    assert get(settings, Vod, vod_id).status == "ready"
+
+
 def test_whole_mode_posts_the_entire_video(settings, fake_pipeline):
     vod_id = add_vod(settings, url="https://x.com/a/status/1", mode="whole")
     worker_module.Worker(settings).process_vod(vod_id)
