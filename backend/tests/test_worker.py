@@ -238,7 +238,7 @@ def fake_render(monkeypatch):
         out.write_bytes(b"video")
         rendered.append(out.name)
 
-    def short(source, clip, words, out: Path, settings, on_progress=None):
+    def short(source, clip, words, out: Path, settings, on_progress=None, **layout):
         assert words, "Shorts need the transcript words for captions"
         out.write_bytes(b"short")
         rendered.append(out.name)
@@ -268,6 +268,25 @@ def test_approved_clips_are_rendered(settings, fake_pipeline, fake_render):
     assert Path(clip.video_path).name == "hl01-vertical.mp4"
     assert Path(clip.short_path).name == "hl01-vertical-short.mp4"
     assert w.render_next_clip() is False
+
+
+def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(settings, fake_pipeline, fake_render, monkeypatch):
+    show_id = add_show(settings, name="Kino", match="twitch.tv/videos", short_video_top=0.32, short_video_width=0.9)
+    layouts = []
+    monkeypatch.setattr(worker_module.render, "render_short",
+                        lambda *args, on_progress=None, **layout: (args[3].write_bytes(b"short"), layouts.append(layout)))
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    approve(settings, "hl01")
+    w.render_next_clip()
+    assert layouts == [{"background": None, "video_top": 0.32, "video_width": 0.9}]  # no image uploaded yet
+
+    background = settings.short_background(show_id)
+    background.parent.mkdir(parents=True)
+    background.write_bytes(b"png")
+    approve(settings, "hl01")
+    w.render_next_clip()
+    assert layouts[-1]["background"] == background
 
 
 def test_whole_videos_are_not_re_encoded(settings, fake_pipeline, fake_render):

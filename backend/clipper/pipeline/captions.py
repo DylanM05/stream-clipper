@@ -21,15 +21,18 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Caption,{font},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,2,2,60,60,520,1
+Style: Caption,{font},84,&H00FFFFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,7,2,2,60,60,{margin},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
 
-def build_ass(words: list[Word], start: float, end: float, *, font: str, max_words: int = 3, max_chars: int = 18) -> str:
-    """Captions for the part of the stream from `start` to `end`, with times relative to the clip."""
+def build_ass(
+    words: list[Word], start: float, end: float, *, font: str, max_words: int = 3, max_chars: int = 18, margin: int = 520
+) -> str:
+    """Captions for the part of the stream from `start` to `end`, with times relative to the clip, centred
+    across the Short with their bottom `margin` pixels above its bottom edge."""
     clip_words = [w for w in words if w.end > start and w.start < end and _clean(w.text)]
     groups = list(_groups(clip_words, max_words, max_chars))
     events = []
@@ -44,7 +47,7 @@ def build_ass(words: list[Word], start: float, end: float, *, font: str, max_wor
                 continue
             text = " ".join(f"{{\\c{HIGHLIGHT}}}{t}{{\\r}}" if i == k else t for i, t in enumerate(texts))
             events.append(f"Dialogue: 0,{_ass_time(t0)},{_ass_time(t1)},Caption,,0,0,0,,{text}")
-    return _HEADER.format(font=font) + "\n".join(events) + "\n"
+    return _HEADER.format(font=font, margin=margin) + "\n".join(events) + "\n"
 
 
 def _groups(words: list[Word], max_words: int, max_chars: int) -> Iterator[list[Word]]:

@@ -165,11 +165,14 @@ export interface Show {
   auto_chapters: Auto;
   auto_shorts: Auto;
   auto_visibility: Visibility; // for automatic uploads
+  short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
+  short_video_width: number; // fraction of the Short's width
+  short_background: string; // the background image's address, or "" for a blurred copy of the stream
   channels: Channel[];
   video_count: number;
 }
 
-export type ShowFields = Omit<Show, "id" | "channels" | "video_count">;
+export type ShowFields = Omit<Show, "id" | "channels" | "video_count" | "short_background">;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
 
 export interface ChannelVideo {
@@ -295,6 +298,14 @@ export const api = {
   addShow: (fields: ShowFields) => post<Show>("/api/shows", fields),
   updateShow: (id: number, fields: Partial<ShowFields>) => patch<Show>(`/api/shows/${id}`, fields),
   deleteShow: (id: number) => remove(`/api/shows/${id}`),
+  /** The image file itself is the body; the server makes it 1080×1920. */
+  uploadShortBackground: (id: number, image: File) =>
+    request<Show>(`/api/shows/${id}/short-background`, {
+      method: "PUT",
+      body: image,
+      headers: { "Content-Type": image.type || "application/octet-stream" },
+    }),
+  deleteShortBackground: (id: number) => request<Show>(`/api/shows/${id}/short-background`, { method: "DELETE" }),
 
   addChannel: (showId: number, body: { url: string } & ChannelFields) =>
     post<Channel>(`/api/shows/${showId}/channels`, body),

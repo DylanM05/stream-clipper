@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import {
   api,
   errorText,
@@ -362,7 +362,12 @@ export function ShowEditor({ id }: { id: number | null }) {
   return (
     <Screen title={show ? show.name : "New show"} onBack={() => go("shows")}>
       {/* Reloads when the links change on the server (adding a channel adds its link). */}
-      <ShowForm key={show ? `${show.id}:${show.match}` : "new"} show={show ?? null} destinations={destinations} />
+      <ShowForm
+        key={show ? `${show.id}:${show.match}` : "new"}
+        show={show ?? null}
+        destinations={destinations}
+        onChanged={refresh}
+      />
       {show && <Channels show={show} onChanged={refresh} />}
     </Screen>
   );
@@ -386,13 +391,16 @@ const BLANK: ShowFields = {
   auto_chapters: "review",
   auto_shorts: "review",
   auto_visibility: "public",
+  short_video_top: null,
+  short_video_width: 1,
 };
 
-function ShowForm({ show, destinations }: { show: Show | null; destinations: Destination[] | undefined }) {
+function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
+  const { show, destinations } = props;
   const toast = useToast();
   const [fields, setFields] = useState<ShowFields>(() => {
     if (!show) return BLANK;
-    const { id: _id, channels: _channels, video_count: _count, ...rest } = show;
+    const { id: _id, channels: _channels, video_count: _count, short_background: _background, ...rest } = show;
     return rest;
   });
   const [busy, setBusy] = useState(false);
@@ -559,6 +567,16 @@ function ShowForm({ show, destinations }: { show: Show | null; destinations: Des
         )}
       </Group>
 
+      {hasClips(fields.mode) && (
+        <ShortsLayout
+          show={show}
+          top={fields.short_video_top}
+          width={fields.short_video_width}
+          onChange={set}
+          onChanged={props.onChanged}
+        />
+      )}
+
       <Field label="About the show" hint="context for Claude">
         <textarea
           value={fields.notes}
@@ -635,6 +653,145 @@ function Segmented<T extends string>(props: { options: Record<T, string>; value:
         </button>
       ))}
     </div>
+  );
+}
+
+/**
+ * Where a show's Shorts put the video: over the show's background image, or over a blurred copy of the stream.
+ * The preview shows the Short at a small size, with the captions where they'll go, under the video.
+ */
+function ShortsLayout(props: {
+  show: Show | null;
+  top: number | null;
+  width: number;
+  onChange: (fields: Partial<ShowFields>) => void;
+  onChanged: () => void;
+}) {
+  const { show, top, width } = props;
+  const toast = useToast();
+  const file = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const height = (width * 1080 * 9) / 16 / 1920; // a 16:9 video, as a fraction of the Short's height
+  const videoTop = top ?? (1 - height) / 2;
+  const background = show?.short_background;
+
+  const run = async (work: () => Promise<unknown>, done: string) => {
+    setBusy(true);
+    try {
+      await work();
+      toast({ text: done });
+      props.onChanged();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Group label="Shorts" hint="the vertical videos made from highlights">
+      <div className="flex gap-4">
+        <div
+          className="relative aspect-[9/16] w-36 shrink-0 overflow-hidden rounded-xl bg-gradient-to-b from-zinc-600 to-zinc-800 bg-cover bg-center ring-1 ring-white/10"
+          style={background ? { backgroundImage: `url(${background})` } : undefined}
+        >
+          <div
+            className="absolute left-1/2 grid -translate-x-1/2 place-items-center bg-violet-500/60 text-[10px] font-semibold ring-1 ring-white/50"
+            style={{ top: `${videoTop * 100}%`, width: `${width * 100}%`, height: `${height * 100}%` }}
+          >
+            Video
+          </div>
+          <p
+            className="absolute inset-x-0 text-center text-[9px] font-extrabold text-white [text-shadow:0_0_2px_black,0_0_2px_black]"
+            style={{ top: `${(videoTop + height) * 100 + 1.9}%` }}
+          >
+            <span className="text-yellow-300">YOUR</span> CAPTIONS
+          </p>
+        </div>
+        <div className="min-w-0 flex-1 space-y-4">
+          <label className="block text-sm text-zinc-300">
+            <span className="flex justify-between">
+              Video position
+              <span className="text-xs text-zinc-500">{top === null ? "centred" : `${Math.round(top * 100)}% down`}</span>
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={Math.floor((1 - height) * 200) / 2}
+              step={0.5}
+              value={videoTop * 100}
+              onChange={(e) => props.onChange({ short_video_top: Number(e.target.value) / 100 })}
+              className="mt-1 w-full accent-violet-500"
+            />
+          </label>
+          {top !== null && (
+            <button type="button" onClick={() => props.onChange({ short_video_top: null })} className="-mt-2 text-xs font-semibold text-violet-300">
+              Centre it
+            </button>
+          )}
+          <label className="block text-sm text-zinc-300">
+            <span className="flex justify-between">
+              Video size <span className="text-xs text-zinc-500">{Math.round(width * 100)}% wide</span>
+            </span>
+            <input
+              type="range"
+              min={40}
+              max={100}
+              value={Math.round(width * 100)}
+              onChange={(e) => {
+                const short_video_width = Number(e.target.value) / 100;
+                const fits = 1 - (short_video_width * 1080 * 9) / 16 / 1920;
+                props.onChange({ short_video_width, ...(top !== null && top > fits ? { short_video_top: fits } : {}) });
+              }}
+              className="mt-1 w-full accent-violet-500"
+            />
+          </label>
+          {show ? (
+            <div className="flex flex-wrap gap-2">
+              <input
+                ref={file}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                className="hidden"
+                onChange={(e) => {
+                  const image = e.target.files?.[0];
+                  e.target.value = "";
+                  if (image) void run(() => api.uploadShortBackground(show.id, image), "Background saved");
+                }}
+              />
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => file.current?.click()}
+                className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700 disabled:opacity-40"
+              >
+                {busy ? "Saving…" : background ? "Change background" : "Add a background"}
+              </button>
+              {background && (
+                <button
+                  type="button"
+                  disabled={busy}
+                  onClick={() => run(() => api.deleteShortBackground(show.id), "Background removed")}
+                  className="rounded-lg px-3 py-1.5 text-xs font-semibold text-red-300 disabled:opacity-40"
+                >
+                  Remove
+                </button>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-zinc-500">Add the show first, then a background.</p>
+          )}
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-zinc-500">
+        {background
+          ? "The video sits on this image. "
+          : "Without a background image, the video sits on a dimmed, blurred copy of itself. "}
+        Backgrounds are 1080×1920 (9:16): keep the top ~30% for your header, and the middle clear for the video and its
+        captions. YouTube's own buttons and title cover the bottom and right edge. Position and size are saved with the
+        show.
+      </p>
+    </Group>
   );
 }
 

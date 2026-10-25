@@ -428,7 +428,14 @@ class Worker:
                 if clip.make_short:
                     words = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")).words()
                     short = ws.clips_dir / f"{stem}-short.mp4"
-                    render.render_short(source, pipeline_clip, words, short, settings, on_progress=check)
+                    show = self._get(Show, vod.show_id) if vod.show_id else None
+                    background = settings.short_background(show.id) if show else None
+                    render.render_short(
+                        source, pipeline_clip, words, short, settings, on_progress=check,
+                        background=background if background and background.exists() else None,
+                        video_top=show.short_video_top if show else None,
+                        video_width=show.short_video_width if show else 1.0,
+                    )
             rendered = self._finish_render(clip_id, status="rendered", video_path=str(video), short_path=str(short or ""), error="")
         except Paused:
             log.info("Stopped rendering clip %d", clip_id)

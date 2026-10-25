@@ -1,4 +1,7 @@
+import json
+import shutil
 import sqlite3
+import subprocess
 from urllib.parse import unquote
 
 import pytest
@@ -36,6 +39,32 @@ def test_shows_keep_how_many_clips_to_offer_and_what_goes_ahead_without_review(c
     assert client.patch(f"/api/shows/{show['id']}", json={"auto_shorts": "sometimes"}).status_code == 422
     assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": -1}).status_code == 422
     assert client.patch(f"/api/shows/{show['id']}", json={"max_shorts": 12}).json()["max_shorts"] == 12
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_a_shorts_background_is_saved_at_the_shorts_size_and_the_video_placed_on_it(client, settings, tmp_path):
+    show = client.post("/api/shows", json={"name": "Kino", "short_video_top": 0.32}).json()
+    assert (show["short_background"], show["short_video_top"], show["short_video_width"]) == ("", 0.32, 1.0)
+
+    art = tmp_path / "art.png"  # the size of an image as it came from the user, not quite 9:16
+    subprocess.run(["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=green:s=941x1700",
+                    "-frames:v", "1", str(art)], check=True)
+    show = client.put(f"/api/shows/{show['id']}/short-background", content=art.read_bytes()).json()
+    assert show["short_background"].startswith(f"/media/shows/{show['id']}/short-background.png?v=")
+    image = client.get(show["short_background"])
+    assert image.headers["content-type"] == "image/png"
+    saved = settings.short_background(show["id"])
+    probe = json.loads(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "stream=width,height", "-of", "json",
+                                       str(saved)], capture_output=True, text=True).stdout)
+    assert (probe["streams"][0]["width"], probe["streams"][0]["height"]) == (1080, 1920)
+
+    assert client.put(f"/api/shows/{show['id']}/short-background", content=b"not an image").status_code == 422
+    assert saved.exists()  # the one before stays
+
+    show = client.patch(f"/api/shows/{show['id']}", json={"short_video_top": None, "short_video_width": 0.9}).json()
+    assert (show["short_video_top"], show["short_video_width"]) == (None, 0.9)
+    assert client.delete(f"/api/shows/{show['id']}/short-background").json()["short_background"] == ""
+    assert not saved.exists()
 
 
 def test_a_watched_channel_can_move_to_its_own_show_with_its_link(client, settings):

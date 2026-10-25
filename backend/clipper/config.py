@@ -95,6 +95,10 @@ class Settings(BaseSettings):
     def vods_dir(self) -> Path:
         return self.data_dir / "vods"
 
+    def short_background(self, show_id: int) -> Path:
+        """A show's background image for its Shorts, uploaded in the app; 1080x1920 once saved."""
+        return self.data_dir / "backgrounds" / f"show-{show_id}.png"
+
     @property
     def db_path(self) -> Path:
         return self.data_dir / "clipper.db"

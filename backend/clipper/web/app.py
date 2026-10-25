@@ -18,8 +18,9 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlmodel import Session, col, select
+from starlette.concurrency import run_in_threadpool
 
-from .. import notify
+from .. import ffmpeg, notify
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
@@ -38,6 +39,7 @@ log = logging.getLogger(__name__)
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
 MAX_SHORT_S = 180  # YouTube's limit for Shorts
+MAX_BACKGROUND_BYTES = 30_000_000
 REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 # Google's sign-in returns to the callback in whatever browser it ran in, which on an iPhone isn't the
 # home-screen app and has no login cookie. The signed `state` it carries stands in for the login there.
@@ -140,6 +142,8 @@ class ShowIn(BaseModel):
     auto_chapters: Auto = "review"
     auto_shorts: Auto = "review"
     auto_visibility: Visibility = "public"
+    short_video_top: float | None = Field(default=None, ge=0, le=0.9)
+    short_video_width: float = Field(default=1.0, ge=0.4, le=1)
 
 
 class ShowPatch(BaseModel):
@@ -160,6 +164,8 @@ class ShowPatch(BaseModel):
     auto_chapters: Auto | None = None
     auto_shorts: Auto | None = None
     auto_visibility: Visibility | None = None
+    short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
+    short_video_width: float | None = Field(default=None, ge=0.4, le=1)
 
 
 class DestinationIn(BaseModel):
@@ -294,6 +300,9 @@ class ShowOut(BaseModel):
     auto_chapters: str
     auto_shorts: str
     auto_visibility: str
+    short_video_top: float | None
+    short_video_width: float
+    short_background: str  # the image's address in the app, or "" for none
     channels: list[ChannelOut]
     video_count: int
 
@@ -419,7 +428,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def show_out(s: Session, show: Show) -> ShowOut:
         channels = s.exec(select(Channel).where(Channel.show_id == show.id).order_by(col(Channel.id)))
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
-        return ShowOut(**show.model_dump(exclude={"created_at"}),
+        image = settings.short_background(show.id)
+        # The file's age in the address, so a new image isn't hidden by the browser's copy of the old one.
+        background = f"/media/shows/{show.id}/short-background.png?v={int(image.stat().st_mtime)}" if image.exists() else ""
+        return ShowOut(**show.model_dump(exclude={"created_at"}), short_background=background,
                        channels=[channel_out(s, c) for c in channels], video_count=videos)
 
     def channel_video_out(item: ChannelVideo) -> ChannelVideoOut:
@@ -744,6 +756,48 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.flush()
         s.delete(show)
         s.commit()
+        settings.short_background(show_id).unlink(missing_ok=True)
+
+    @app.put("/api/shows/{show_id}/short-background")
+    async def upload_short_background(show_id: int, request: Request) -> ShowOut:
+        """The request's body is the image. It's scaled to fill a Short (1080x1920) and cropped to fit."""
+        data = await request.body()
+        if len(data) > MAX_BACKGROUND_BYTES:
+            raise HTTPException(413, "That image is too big: 30 MB at most")
+        return await run_in_threadpool(save_short_background, show_id, data)
+
+    def save_short_background(show_id: int, data: bytes) -> ShowOut:
+        with Session(engine) as s:
+            show = found(s, Show, show_id, "show")
+            image = settings.short_background(show_id)
+            image.parent.mkdir(parents=True, exist_ok=True)
+            upload, tmp = image.with_suffix(".upload"), image.with_suffix(".tmp.png")
+            upload.write_bytes(data)
+            size = f"{render.SHORT_W}:{render.SHORT_H}"
+            try:
+                ffmpeg.run(["-i", str(upload), "-vf", f"scale={size}:force_original_aspect_ratio=increase,crop={size}",
+                            "-frames:v", "1", "-update", "1", str(tmp)])
+            except ffmpeg.FFmpegError:
+                raise HTTPException(422, "That file isn't an image the app can read. Use a PNG or JPG.") from None
+            finally:
+                upload.unlink(missing_ok=True)
+            tmp.replace(image)
+            return show_out(s, show)
+
+    @app.delete("/api/shows/{show_id}/short-background")
+    def delete_short_background(show_id: int, s: Session = Depends(db)) -> ShowOut:
+        """Its Shorts go back to a blurred copy of the stream behind the video."""
+        show = found(s, Show, show_id, "show")
+        settings.short_background(show_id).unlink(missing_ok=True)
+        return show_out(s, show)
+
+    @app.get("/media/shows/{show_id}/short-background.png")
+    def short_background_image(show_id: int) -> FileResponse:
+        image = settings.short_background(show_id)
+        if not image.exists():
+            raise HTTPException(404, "No background")
+        # Its address changes with the image (show_out), so it can be kept.
+        return FileResponse(image, media_type="image/png", headers={"Cache-Control": "max-age=31536000"})
 
     # --- YouTube channels to upload to ---
 

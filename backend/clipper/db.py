@@ -109,6 +109,10 @@ class Show(SQLModel, table=True):
     auto_chapters: str = "review"
     auto_shorts: str = "review"
     auto_visibility: str = "public"
+    # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
+    # of the Short: its top edge (None: centred) and its width.
+    short_video_top: float | None = None
+    short_video_width: float = 1.0
     created_at: datetime = Field(default_factory=utcnow)
 
     @property

@@ -57,6 +57,10 @@ def render_landscape(
     tmp.replace(out)
 
 
+SHORT_W, SHORT_H = 1080, 1920
+CAPTION_GAP = 136  # from the bottom of the video to the bottom of the captions under it
+
+
 def render_short(
     source: Path,
     clip: Clip,
@@ -64,20 +68,32 @@ def render_short(
     out: Path,
     settings: Settings,
     on_progress: Callable[[float], None] | None = None,
+    background: Path | None = None,
+    video_top: float | None = None,
+    video_width: float = 1.0,
 ) -> None:
+    """The whole frame over a blurred copy of itself, or over the show's `background` image. `video_top` and
+    `video_width` place the video on it as fractions of the Short (None centres it); the captions go just
+    under it. CLIPPER_SHORT_LAYOUT=crop instead fills the Short with the middle of the frame."""
+    crop = settings.short_layout == "crop" and not background
+    width = max(2, round(SHORT_W * video_width / 2) * 2)
+    height = round(width * 9 / 16)  # streams are 16:9
+    top = round((SHORT_H - height) / 2 if video_top is None else video_top * SHORT_H)
     captions = out.with_name(out.stem + ".ass")
-    write_text(captions, build_ass(words, clip.start, clip.end, font=settings.caption_font))
-    if settings.short_layout == "crop":
+    margin = 520 if crop else max(60, SHORT_H - top - height - CAPTION_GAP)  # 520 under a centred video
+    write_text(captions, build_ass(words, clip.start, clip.end, font=settings.caption_font, margin=margin))
+    if crop:
         video = "[0:v]crop=ih*9/16:ih,scale=1080:1920"
-    else:  # the whole frame in the middle, over a blurred, zoomed copy of itself
-        video = (
-            "[0:v]split=2[bg][fg];"
+    else:
+        blurred = (
             "[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
             # Muted and darkened, so a bright patch of the stream (a green screen, say) doesn't glare.
-            "boxblur=8:2,scale=1080:1920,eq=brightness=-0.15:saturation=0.4[bgb];"
-            "[fg]scale=1080:-2[fgs];"
-            "[bgb][fgs]overlay=(W-w)/2:(H-h)/2"
+            "boxblur=8:2,scale=1080:1920,eq=brightness=-0.15:saturation=0.4"
         )
+        # The image goes over the blur (which shows through any transparent parts) and stays for every frame.
+        back = f"{blurred}[blur];[1:v]scale=1080:1920,setsar=1[image];[blur][image]overlay=0:0[back]" if background else f"{blurred}[back]"
+        y = "(H-h)/2" if video_top is None else str(top)
+        video = f"[0:v]split=2[bg][fg];{back};[fg]scale={width}:-2[front];[back][front]overlay=(W-w)/2:{y}"
     graph = f"{video},subtitles=filename={captions.name},setsar=1[v]"
     tmp = out.with_name(out.stem + ".tmp.mp4")
     # Runs inside the clips folder so the subtitle file can be named without ffmpeg's filter-path escaping.
@@ -85,6 +101,7 @@ def render_short(
         settings,
         lambda hwaccel: [
             *_input_args(source, clip, hwaccel),
+            *(["-i", str(background.resolve())] if background else []),
             "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?",
             *_video_args(settings), *_audio_args(clip),
             "-movflags", "+faststart", tmp.name,
@@ -181,8 +198,9 @@ def _encode(
 
 def _input_args(source: Path, clip: Clip, hwaccel: str | None) -> list[str]:
     hw = ["-hwaccel", hwaccel] if hwaccel else []
-    # -ss before -i seeks quickly, and stays frame-accurate because the clip is re-encoded.
-    return [*hw, "-ss", f"{clip.start:.3f}", "-i", str(source), "-t", f"{clip.duration:.3f}"]
+    # -ss before -i seeks quickly, and stays frame-accurate because the clip is re-encoded. -t is before -i
+    # too, so it limits this input even when another (a Short's background) follows.
+    return [*hw, "-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}", "-i", str(source)]
 
 
 def _video_args(settings: Settings) -> list[str]:
