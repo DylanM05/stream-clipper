@@ -35,6 +35,7 @@ CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLISTS_URL = "https://www.googleapis.com/youtube/v3/playlists"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
 VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
+SEARCH_URL = "https://www.googleapis.com/youtube/v3/search"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
 THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CALLBACK_PATH = "/api/youtube/callback"
@@ -244,6 +245,20 @@ class Google:
                 counts = item.get("statistics") or {}
                 found[item["id"]] = Stats(*(_count(counts.get(k)) for k in ("viewCount", "likeCount", "commentCount")))
         return found
+
+    def channel_picture(self, query: str, refresh_token: str = "", api_key: str = "") -> tuple[str, str] | None:
+        """(name, profile picture link) of the channel YouTube's search finds first, or None. A search costs 100
+        units of the daily quota, a hundred times what reading view counts does."""
+        params = {"part": "snippet", "type": "channel", "q": query, "maxResults": 1}
+        body = (self._call("GET", SEARCH_URL, _Auth(self, refresh_token), params=params) if refresh_token
+                else self._get(SEARCH_URL, {**params, "key": api_key}))
+        items = body.get("items") or []
+        if not items:
+            return None
+        snippet = items[0].get("snippet") or {}
+        pictures = snippet.get("thumbnails") or {}
+        url = (pictures.get("high") or pictures.get("medium") or pictures.get("default") or {}).get("url", "")
+        return (snippet.get("channelTitle") or snippet.get("title") or "", url) if url else None
 
     def _get(self, url: str, params: dict) -> dict:
         """A request with an API key instead of a channel's sign-in."""

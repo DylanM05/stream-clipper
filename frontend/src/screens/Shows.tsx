@@ -622,9 +622,10 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           <span className="text-sm text-zinc-300">Make one for each chapter and full episode once it's rendered</span>
         </label>
         <p className="mt-1.5 text-xs text-zinc-500">
-          Claude comes up with a funny idea about what happens in the video, starring the people in it, and an image model on
-          OpenRouter draws it from frames of the video. Each costs a few cents. You can also make one for any video on its
-          Upload page. Say what the regulars look like under About the show.
+          Claude comes up with a funny idea about what happens in the video, starring the people in it and the people it's
+          about, and an image model on OpenRouter draws it from frames of the video and photos it looks up. Each costs a few
+          cents. You can also make one for any video on its Upload page. Say what the regulars look like under About the
+          show.
         </p>
         {thumbnailSetup && !thumbnailSetup.configured && (
           <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>

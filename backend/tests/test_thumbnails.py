@@ -15,7 +15,7 @@ from clipper import thumbnails
 from clipper import worker as worker_module
 from clipper.config import Settings
 from clipper.db import ClipRecord, Show, Vod, get_engine
-from clipper.thumbnails import Idea, ThumbnailError
+from clipper.thumbnails import Idea, Person, ThumbnailError
 from clipper.web import app as web_app
 from clipper.workspace import Workspace, write_json, write_text
 
@@ -110,12 +110,14 @@ def test_long_clips_are_thinned_out_evenly(settings, clip_id, monkeypatch):
 
 
 def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, clip_id, monkeypatch):
-    def make(settings_, clip, ws, notes=""):
+    def make(settings_, clip, ws, notes="", channel_picture=None):
         assert notes == "Don wears a red cap." and clip.thumbnail_hint == "Don as a judge"
+        assert channel_picture("Anyone") is None  # no API key or connected channel to search YouTube with
         out = ws.clips_dir / f"{clip.key}-thumbnail.jpg"
         out.parent.mkdir(exist_ok=True)
         out.write_bytes(b"jpeg")
-        return out, Idea(people=["Don"], concept="Don as a judge, gavel raised.", text="GUILTY", prompt="...")
+        idea = Idea(people=[don()], concept="Don as a judge, gavel raised.", text="GUILTY", prompt="...")
+        return out, idea, "Don (from the video)"
 
     monkeypatch.setattr(worker_module.thumbnails, "make", make)
     with Session(get_engine(settings)) as s:
@@ -126,8 +128,88 @@ def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, cli
     assert w.make_next_thumbnail() is True and w.make_next_thumbnail() is False
 
     clip = get_clip(settings, clip_id)
-    assert (clip.thumbnail_status, clip.thumbnail_idea) == ("done", 'Don as a judge, gavel raised. Text: "GUILTY"')
+    assert clip.thumbnail_status == "done"
+    assert clip.thumbnail_idea == 'Don as a judge, gavel raised. Text: "GUILTY". People: Don (from the video).'
     assert clip.thumbnail_path.endswith("ch01-thumbnail.jpg")
+
+
+def don() -> Person:
+    return Person(name="Don", full_name="Don", in_video=True, looks="")
+
+
+def talked_about(name: str, full_name: str = "", looks: str = "") -> Person:
+    return Person(name=name, full_name=full_name or name, in_video=False, looks=looks)
+
+
+class FakeWeb:
+    """Wikipedia's search, the pictures it links to, and OpenRouter, kept in memory."""
+
+    def __init__(self, articles: dict[str, str], png: bytes):
+        self.articles = articles  # search term → title of the article it finds
+        self.png = png  # every picture
+        self.drawn: list[dict] = []
+
+    def client(self) -> httpx.Client:
+        return httpx.Client(transport=httpx.MockTransport(self.handle))
+
+    def handle(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if url.startswith(thumbnails.WIKIPEDIA_URL):
+            assert request.headers["user-agent"].startswith("StreamClipper")
+            title = self.articles.get(request.url.params["gsrsearch"])
+            pages = [{"title": title, "thumbnail": {"source": f"https://upload.example/{title}.png"}}] if title else []
+            return httpx.Response(200, json={"query": {"pages": pages}} if pages else {"batchcomplete": True})
+        if url.startswith("https://upload.example/") or url.startswith("https://yt.example/"):
+            return httpx.Response(200, content=self.png, headers={"content-type": "image/png"})
+        self.drawn.append(json.loads(request.content))
+        return httpx.Response(200, json={"data": [{"b64_json": base64.b64encode(self.png).decode()}]})
+
+
+def test_only_a_page_or_channel_with_their_name_counts():
+    same = thumbnails._same_person
+    assert same(talked_about("TheQuartering", "Jeremy Hambly"), "Jeremy Hambly")
+    assert same(talked_about("TheQuartering"), "The Quartering")
+    assert same(talked_about("Ethan Klein"), "Ethan Klein TV")
+    assert not same(talked_about("Jer"), "Jeremy Hambly")  # short names must match exactly
+    assert not same(talked_about("Ethan Klein"), "H3 Podcast")
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="needs ffmpeg")
+def test_people_the_video_talks_about_are_looked_up_and_pointed_out_to_the_image_model(settings, clip_id, monkeypatch, tmp_path):
+    from clipper import ffmpeg
+
+    ws = Workspace(settings.vods_dir / "vod-1")
+    ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=320x180:rate=10", "-t", "4", "-pix_fmt", "yuv420p", str(ws.source)])
+    picture = tmp_path / "picture.png"
+    ffmpeg.run(["-f", "lavfi", "-i", "color=blue:size=64x64", "-frames:v", "1", str(picture)])
+    web = FakeWeb({"Ethan Klein": "Ethan Klein"}, picture.read_bytes())
+    idea = Idea(
+        people=[don(), talked_about("Ethan Klein", looks="beard, glasses"), talked_about("TheQuartering", "Jeremy Hambly"),
+                talked_about("Nobody Famous", looks="bald")],
+        concept="c", text="", prompt="Don laughs at Ethan Klein while TheQuartering sulks.",
+    )
+    monkeypatch.setattr(thumbnails, "write_idea", lambda *a, **k: idea)
+    searched = []
+
+    def channel_picture(name):
+        searched.append(name)
+        return ("The Quartering", "https://yt.example/q.jpg") if name == "TheQuartering" else ("Somebody Else", "https://yt.example/x.jpg")
+
+    clip = get_clip(settings, clip_id)
+    clip.start, clip.end = 0, 4  # the test video is 4 seconds long
+    path, _, cast = thumbnails.make(settings, clip, ws, http=web.client(), channel_picture=channel_picture)
+
+    assert path.exists()
+    assert searched == ["TheQuartering", "Nobody Famous"]  # Ethan Klein was on Wikipedia; nobody looks Don up
+    assert cast == ("Don (from the video), Ethan Klein (Wikipedia photo), TheQuartering (YouTube channel photo), "
+                    "Nobody Famous (from a description)")
+    [body] = web.drawn
+    assert len(body["input_references"]) == 4  # 2 frames, 2 photos
+    assert body["prompt"].startswith("Don laughs at Ethan Klein while TheQuartering sulks.\n\nReference images 1 to 2 are frames")
+    assert "Reference image 3 is a photo of Ethan Klein" in body["prompt"]
+    assert "Reference image 4 is a photo of TheQuartering" in body["prompt"]
+    assert "Nobody Famous looks like this: bald" in body["prompt"]
+    assert "beard, glasses" not in body["prompt"]  # the photo says it better
 
 
 def test_a_failed_thumbnail_says_why(settings, clip_id, monkeypatch):

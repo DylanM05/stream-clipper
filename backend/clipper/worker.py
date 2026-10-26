@@ -745,14 +745,32 @@ class Worker:
         try:
             if not vod.workspace:
                 raise ThumbnailError("This video hasn't been downloaded.")
-            path, idea = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes)
+            path, idea, cast = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes,
+                                               channel_picture=self._channel_picture)
         except Exception as e:
             log.warning("No thumbnail for clip %d: %s", clip_id, e)
             error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"
             self._update_clip(clip_id, thumbnail_status="failed", thumbnail_error=error[:1000])
             return
-        text = f' Text: "{idea.text}"' if idea.text.strip() else ""
-        self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path), thumbnail_idea=f"{idea.concept}{text}")
+        text = f' Text: "{idea.text}".' if idea.text.strip() else ""
+        people = f" People: {cast}." if cast else ""
+        self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path),
+                          thumbnail_idea=f"{idea.concept}{text}{people}")
+
+    def _channel_picture(self, name: str) -> tuple[str, str] | None:
+        """For thumbnails: the picture of the YouTube channel a search for someone finds first. Uses the API key,
+        else a connected channel's sign-in; None without either, or if the search fails."""
+        key = self.settings.youtube_api_key
+        with Session(self.engine) as s:
+            token = "" if key or not self.youtube else next(
+                (d.youtube_token for d in s.exec(select(Destination).where(Destination.youtube_token != ""))), "")
+        if not (key or token):
+            return None
+        try:
+            return (self.youtube or Google("", "")).channel_picture(name, refresh_token=token, api_key=key)
+        except YouTubeError as e:
+            log.info("Couldn't search YouTube for %s: %s", name, e)
+            return None
 
     def _update_clip(self, clip_id: int, **fields) -> None:
         """Change a clip without touching its updated_at, which marks changes to the clip itself."""

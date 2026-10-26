@@ -170,6 +170,19 @@ def test_view_counts_are_read_fifty_videos_at_a_time_with_a_sign_in_or_a_key():
     assert asked == [(1, "key123", None)]
 
 
+def test_a_channel_search_gives_its_name_and_biggest_picture():
+    def handle(request: httpx.Request) -> httpx.Response:
+        assert request.url.params["type"] == "channel" and request.url.params["key"] == "key123"
+        if request.url.params["q"] == "nobody":
+            return httpx.Response(200, json={"items": []})
+        thumbs = {"default": {"url": "https://yt.example/88.jpg"}, "high": {"url": "https://yt.example/800.jpg"}}
+        return httpx.Response(200, json={"items": [{"snippet": {"channelTitle": "The Quartering", "thumbnails": thumbs}}]})
+
+    g = Google("", "", http=httpx.Client(transport=httpx.MockTransport(handle)))
+    assert g.channel_picture("TheQuartering", api_key="key123") == ("The Quartering", "https://yt.example/800.jpg")
+    assert g.channel_picture("nobody", api_key="key123") is None
+
+
 def test_video_ids_come_out_of_every_kind_of_link():
     for url in ("https://youtu.be/abcDEF12345", "https://youtube.com/shorts/abcDEF12345",
                 "https://www.youtube.com/watch?v=abcDEF12345&t=3", "https://studio.youtube.com/video/abcDEF12345/edit"):
