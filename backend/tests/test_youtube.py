@@ -14,8 +14,8 @@ from clipper.config import Settings
 from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine
 from clipper.web import app as web_app
 from clipper.youtube import (
-    PLAYLIST_ITEMS_URL, PLAYLISTS_URL, TOKEN_URL, UPLOAD_URL, Google, Playlist, Uploaded, Video, YouTubeError,
-    clean_description, sign_in_url,
+    PLAYLIST_ITEMS_URL, PLAYLISTS_URL, TOKEN_URL, UPLOAD_URL, Google, Playlist, Stats, Uploaded, Video, YouTubeError,
+    clean_description, sign_in_url, video_id,
 )
 
 
@@ -128,6 +128,55 @@ def test_playlists_are_listed_created_and_added_to():
     assert fake.playlist_items == [{"playlistId": "PL3", "resourceId": {"kind": "youtube#video", "videoId": "vid123"}}]
 
 
+def test_thumbnails_are_sent_as_the_image_itself(tmp_path):
+    sent = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(TOKEN_URL):
+            return httpx.Response(200, json={"access_token": "access"})
+        sent.append((request.url.params["videoId"], request.headers["content-type"], request.content))
+        if request.url.params["videoId"] == "unverified":
+            message = "The authenticated user doesn't have permissions to upload and set custom video thumbnails."
+            return httpx.Response(403, json={"error": {"code": 403, "message": message, "errors": [{"reason": "forbidden"}]}})
+        return httpx.Response(200, json={"items": []})
+
+    image = tmp_path / "thumb.jpg"
+    image.write_bytes(b"jpeg")
+    g = Google("client", "secret", http=httpx.Client(transport=httpx.MockTransport(handle)))
+    g.set_thumbnail("refresh", "vid123", image)
+    assert sent == [("vid123", "image/jpeg", b"jpeg")]
+    with pytest.raises(YouTubeError, match="verify"):
+        g.set_thumbnail("refresh", "unverified", image)
+
+
+def test_view_counts_are_read_fifty_videos_at_a_time_with_a_sign_in_or_a_key():
+    asked = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith(TOKEN_URL):
+            return httpx.Response(200, json={"access_token": "access"})
+        ids = request.url.params["id"].split(",")
+        asked.append((len(ids), request.url.params.get("key"), request.headers.get("authorization")))
+        items = [{"id": i, "statistics": {"viewCount": "1200", "commentCount": "3"}} for i in ids if i != "gone"]
+        return httpx.Response(200, json={"items": items})
+
+    g = Google("client", "secret", http=httpx.Client(transport=httpx.MockTransport(handle)))
+    found = g.video_stats([f"v{i:010d}" for i in range(50)] + ["gone"], refresh_token="refresh")
+    assert asked == [(50, None, "Bearer access"), (1, None, "Bearer access")]
+    assert len(found) == 50 and found["v0000000000"] == Stats(views=1200, likes=None, comments=3)  # likes hidden
+
+    asked.clear()
+    g.video_stats(["v0000000001"], api_key="key123")
+    assert asked == [(1, "key123", None)]
+
+
+def test_video_ids_come_out_of_every_kind_of_link():
+    for url in ("https://youtu.be/abcDEF12345", "https://youtube.com/shorts/abcDEF12345",
+                "https://www.youtube.com/watch?v=abcDEF12345&t=3", "https://studio.youtube.com/video/abcDEF12345/edit"):
+        assert video_id(url) == "abcDEF12345"
+    assert video_id("https://kick.com/video/1") == ""
+
+
 def test_a_channel_connected_before_playlists_is_asked_to_reconnect():
     g = google(FakeYouTube(can_manage=False))
     assert len(g.playlists("refresh")) == 2  # reading them worked with the old sign-in
@@ -228,10 +277,12 @@ def clip_id(settings):
 
 
 class FakeGoogle:
-    def __init__(self, privacy: str | None = None, error: YouTubeError | None = None, playlist_error: YouTubeError | None = None):
-        self.privacy, self.error, self.playlist_error = privacy, error, playlist_error
+    def __init__(self, privacy: str | None = None, error: YouTubeError | None = None, playlist_error: YouTubeError | None = None,
+                 thumbnail_error: YouTubeError | None = None):
+        self.privacy, self.error, self.playlist_error, self.thumbnail_error = privacy, error, playlist_error, thumbnail_error
         self.calls = []
         self.added = []
+        self.thumbnails = []
 
     def upload(self, refresh_token, video, on_progress=lambda _: None, session_url="", on_session=lambda _: None):
         self.calls.append((refresh_token, video, session_url))
@@ -245,6 +296,11 @@ class FakeGoogle:
         if self.playlist_error:
             raise self.playlist_error
         self.added.append((refresh_token, playlist_id, video_id))
+
+    def set_thumbnail(self, refresh_token, video_id, image):
+        if self.thumbnail_error:
+            raise self.thumbnail_error
+        self.thumbnails.append((refresh_token, video_id, image.read_bytes()))
 
 
 def get(settings, model, id_):
@@ -311,6 +367,42 @@ def test_a_playlist_that_cant_take_it_leaves_the_upload_done_with_a_note(setting
     w.upload_next()
     job = get(settings, UploadJob, 1)
     assert job.status == "done" and job.error == "It isn't in the playlist: Tap Reconnect on it under Shows → YouTube channels."
+
+
+def set_thumbnail(settings, clip_id, which="video") -> bytes:
+    image = settings.data_dir / "thumb.jpg"
+    image.write_bytes(b"jpeg")
+    short = settings.data_dir / "clip-short.mp4"
+    short.write_bytes(b"short")
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.thumbnail_status, clip.thumbnail_path, clip.short_path = "done", str(image), str(short)
+        s.add_all([clip, UploadJob(clip_id=clip_id, which=which)])
+        s.commit()
+    return image.read_bytes()
+
+
+def test_videos_go_up_with_their_thumbnail_and_shorts_without(settings, clip_id):
+    set_thumbnail(settings, clip_id)
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    assert w.youtube.thumbnails == [("refresh", "vid123", b"jpeg")]
+    assert get(settings, UploadJob, 1).finished_at is not None
+
+    _requeue(settings, which="short")
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    assert w.youtube.thumbnails == []
+
+
+def test_a_thumbnail_youtube_turns_down_leaves_the_upload_done_with_a_note(settings, clip_id):
+    set_thumbnail(settings, clip_id)
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle(thumbnail_error=YouTubeError("YouTube doesn't let this channel use custom thumbnails yet."))
+    w.upload_next()
+    job = get(settings, UploadJob, 1)
+    assert job.status == "done" and job.error == "It doesn't have its thumbnail: YouTube doesn't let this channel use custom thumbnails yet."
 
 
 def test_a_video_youtube_kept_private_says_so(settings, clip_id):

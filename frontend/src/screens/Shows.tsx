@@ -392,6 +392,8 @@ const BLANK: ShowFields = {
   auto_shorts: "review",
   auto_upload_score: 0,
   auto_visibility: "public",
+  upload_gap_hours: 0,
+  auto_thumbnails: false,
   short_video_top: null,
   short_video_width: 1,
   overlay_episodes: false,
@@ -411,6 +413,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
     return rest;
   });
   const [busy, setBusy] = useState(false);
+  const { data: thumbnailSetup } = usePoll(api.thumbnails, 0);
   const set = (patch: Partial<ShowFields>) => setFields((f) => ({ ...f, ...patch }));
 
   const defaultPattern = fields.name ? `${fields.name.toUpperCase()} {date} - {title}` : "{title}";
@@ -594,6 +597,41 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       </Group>
 
       {hasClips(fields.mode) && (
+        <Group label="Space clips out" hint="per YouTube channel">
+          <Segmented
+            options={GAP_LABEL}
+            value={String(fields.upload_gap_hours)}
+            onChange={(v) => set({ upload_gap_hours: Number(v) })}
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            {fields.upload_gap_hours
+              ? `Each chapter or Short goes up at least ${fields.upload_gap_hours} hour${fields.upload_gap_hours === 1 ? "" : "s"} after the last clip on its channel, whether it uploads by itself or you tap Upload. Full episodes go straight away.`
+              : "Clips upload as soon as they're ready. Space them out so a stream's clips don't all land at once."}
+          </p>
+        </Group>
+      )}
+
+      <Group label="Thumbnails" hint="drawn with AI">
+        <label className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            checked={fields.auto_thumbnails}
+            onChange={(e) => set({ auto_thumbnails: e.target.checked })}
+            className="mt-0.5 size-5 shrink-0 accent-violet-500"
+          />
+          <span className="text-sm text-zinc-300">Make one for each chapter and full episode once it's rendered</span>
+        </label>
+        <p className="mt-1.5 text-xs text-zinc-500">
+          Claude comes up with a funny idea about what happens in the video, starring the people in it, and an image model on
+          OpenRouter draws it from frames of the video. Each costs a few cents. You can also make one for any video on its
+          Upload page. Say what the regulars look like under About the show.
+        </p>
+        {thumbnailSetup && !thumbnailSetup.configured && (
+          <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>
+        )}
+      </Group>
+
+      {hasClips(fields.mode) && (
         <ShortsLayout
           show={show}
           top={fields.short_video_top}
@@ -667,6 +705,8 @@ const AUTO_LABEL: Record<Auto, string> = { review: "Review", render: "Render", u
 const VISIBILITY_LABEL: Record<Visibility, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
 // Claude's score (0–1) from which a chapter or Short uploads without review.
 const SCORE_LABEL: Record<string, string> = { "0": "Off", "0.8": "0.8+", "0.85": "0.85+", "0.9": "0.9+", "0.95": "0.95+" };
+// Hours between a channel's clip uploads.
+const GAP_LABEL: Record<string, string> = { "0": "Off", "1": "1h", "2": "2h", "3": "3h", "6": "6h", "12": "12h" };
 
 /** Whether any video the show makes is uploaded without review. */
 const autoUploads = (f: ShowFields) =>

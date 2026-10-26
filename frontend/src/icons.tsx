@@ -120,6 +120,12 @@ export const TrashIcon = outline(
     <path d="M6 7l1 13h10l1-13M9 7V4h6v3" />
   </>,
 );
+export const ChartIcon = outline(
+  <>
+    <path d="M4 20h16" />
+    <path d="M7 16v-5M12 16V6M17 16v-8" />
+  </>,
+);
 export const LinkIcon = outline(
   <>
     <path d="M10 14a4 4 0 0 0 5.66 0l3-3a4 4 0 0 0-5.66-5.66l-1 1" />

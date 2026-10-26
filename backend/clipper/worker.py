@@ -1,5 +1,6 @@
 """Background worker: checks watched channels, processes queued videos, renders approved clips and
-uploads them, through the YouTube API or YouTube Studio. Run with `clipper worker`.
+uploads them when their turn comes, through the YouTube API or YouTube Studio. It also makes thumbnails
+and reads how uploads are doing. Run with `clipper worker`.
 
 Each job runs on its own thread, so approving a clip doesn't wait for an 8-hour video to finish
 transcribing. The heavy work happens in ffmpeg and Whisper, outside Python's GIL.
@@ -18,16 +19,17 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import notify, titles
+from . import notify, stats, thumbnails, titles
 from .config import Settings
 from .db import (
     CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine,
-    is_paused, utcnow,
+    is_paused, set_app_setting, utcnow,
 )
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
@@ -36,16 +38,20 @@ from .monitor import Monitor
 from .notify import Note
 from .overlay import Overlay
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
+from .schedule import upload_turns
 from .studio import Studio, StudioError, Upload, write_status
+from .thumbnails import ThumbnailError
 from .timecode import to_seconds
 from .workspace import Workspace, disk_free_gb
-from .youtube import Google, Video, YouTubeError
+from .youtube import Google, Video, YouTubeError, video_id
 
 log = logging.getLogger(__name__)
 
 USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when Claude doesn't say when the limit resets
 LOW_SPACE_RETRY = timedelta(minutes=30)
 CHECK_EVERY_S = 2  # how often running work records its progress and looks for a pause
+STATS_EVERY_S = 1800
+DIGEST_HOUR = 9  # Monday, in CLIPPER_TIMEZONE: the week's uploads and their views
 
 
 class Paused(Exception):
@@ -106,6 +112,8 @@ class Worker:
             threading.Thread(target=self._loop, args=(self.render_next_clip,), name="renders", daemon=True),
             threading.Thread(target=self._loop, args=(self.monitor.check_next, 15), name="channels", daemon=True),
             threading.Thread(target=self._loop, args=(self.upload_next, 10), name="uploads", daemon=True),
+            threading.Thread(target=self._loop, args=(self.make_next_thumbnail, 10), name="thumbnails", daemon=True),
+            threading.Thread(target=self._loop, args=(self.check_stats, STATS_EVERY_S), name="stats", daemon=True),
             threading.Thread(target=self._loop, args=(self.clean_up_next, 120), name="cleanup", daemon=True),
         ]
         for t in threads:
@@ -126,6 +134,9 @@ class Worker:
                 s.add(vod)
             for clip in s.exec(select(ClipRecord).where(ClipRecord.status == "rendering")):
                 clip.status = "approved"
+                s.add(clip)
+            for clip in s.exec(select(ClipRecord).where(ClipRecord.thumbnail_status == "making")):
+                clip.thumbnail_status = "queued"
                 s.add(clip)
             for job in s.exec(select(UploadJob).where(UploadJob.status == "uploading")):
                 if job.method == "api":
@@ -232,6 +243,7 @@ class Worker:
                     title_room=titles.room_for_title(clip_template, day),
                     title_prefixed=clip_template != "{title}",
                     episode_room=titles.room_for_title(episode_template, day),
+                    top_titles=self._top_titles(show),
                 )
                 clips = refine.run(ws, segmentation, transcript)
                 for c in clips:
@@ -329,6 +341,12 @@ class Worker:
             if show:
                 s.expunge(show)
             return show
+
+    def _top_titles(self, show: Show | None) -> list[str]:
+        if not show:
+            return []
+        with Session(self.engine) as s:
+            return stats.best_titles(s, show)
 
     def _preview_title(self, text: str, room: int, notes: str) -> str:
         """Claude's short title for a whole video; empty if Claude isn't available right now."""
@@ -474,6 +492,7 @@ class Worker:
                 self._notify(Note(f"Render failed: {clip.title}", error[:500], link=f"clip/{clip_id}", tone="bad"))
             return
         if rendered:
+            self._auto_thumbnail(clip_id)
             self._auto_upload(clip_id)
 
     def _render_check(self, clip_id: int) -> Callable[[float], None]:
@@ -505,6 +524,19 @@ class Worker:
             s.commit()
             return True
 
+    def _auto_thumbnail(self, clip_id: int) -> None:
+        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them, unless it has one."""
+        if not self.settings.openrouter_api_key:
+            return
+        with Session(self.engine) as s:
+            clip = s.get(ClipRecord, clip_id)
+            vod = s.get(Vod, clip.vod_id)
+            show = s.get(Show, vod.show_id) if vod.show_id else None
+            if show and show.auto_thumbnails and clip.kind in ("chapter", "whole") and not clip.thumbnail_status:
+                clip.thumbnail_status = "queued"
+                s.add(clip)
+                s.commit()
+
     def _auto_upload(self, clip_id: int) -> None:
         """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review:
         for a highlight its Short if it has one, else the video."""
@@ -531,15 +563,17 @@ class Worker:
     # --- Uploads: through the YouTube API for connected channels, else YouTube Studio ----------
 
     def upload_next(self) -> bool:
+        """Start the first queued upload whose turn has come (schedule.py)."""
         with Session(self.engine) as s:
-            job = None if is_paused(s, "uploads") else (
-                s.exec(select(UploadJob).where(UploadJob.status == "queued").order_by(col(UploadJob.created_at))).first()
-            )
+            job = None
+            if not is_paused(s, "uploads"):
+                now = utcnow()
+                job_id = next((jid for jid, turn in upload_turns(s, now).items() if turn.at <= now), None)
+                job = s.get(UploadJob, job_id) if job_id else None
             if job:
-                job.status, job.updated_at = "uploading", utcnow()
+                job.status, job.started_at, job.updated_at = "uploading", now, now
                 s.add(job)
                 s.commit()
-                job_id = job.id
         if not job:
             self.report_studio_status()
             return False
@@ -576,9 +610,14 @@ class Worker:
                 upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                                 channel_id=dest.channel_id if dest else "")
                 url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
-                if clip.playlist_id and job.which != "short":
-                    note = ("Playlists only work for channels connected to the YouTube API, so add it to the playlist "
-                            "in YouTube Studio.")
+                missing = [what for what, wanted in (("playlist", clip.playlist_id), ("thumbnail", clip.thumbnail_status == "done"))
+                           if wanted and job.which != "short"]
+                if len(missing) == 1:
+                    note = (f"The {missing[0]} only goes on by itself for channels connected to the YouTube API, so add "
+                            "it in YouTube Studio.")
+                elif missing:
+                    note = ("The playlist and thumbnail only go on by themselves for channels connected to the YouTube "
+                            "API, so add them in YouTube Studio.")
         except StudioError as e:
             log.warning("Upload %d failed: %s", job_id, e)
             self._upload_failed(job, clip, str(e), screenshot=e.screenshot, youtube_url=e.link)
@@ -589,7 +628,7 @@ class Worker:
                 self._update_destination(dest.id, youtube_error=str(e))
             self._upload_failed(job, clip, str(e))
             return
-        self._update_job(job_id, status="done", progress=1, youtube_url=url, error=note)
+        self._update_job(job_id, status="done", progress=1, youtube_url=url, error=note, finished_at=utcnow())
         if through_api and dest.youtube_error:
             self._update_destination(dest.id, youtube_error="")  # e.g. a cancelled reconnect: the sign-in works
         with Session(self.engine) as s:
@@ -619,9 +658,10 @@ class Worker:
             log.info("Deleted %s now that it's uploaded", Path(path).name)
 
     def _upload_through_api(self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path) -> tuple[str, str]:
-        """Upload with the channel's Google sign-in, then add it to the clip's playlist unless it's the Short (Shorts
-        never go in playlists). Returns the link, and a note if YouTube didn't use the visibility asked for (what
-        Google does to uploads from projects it hasn't audited) or the playlist couldn't take it."""
+        """Upload with the channel's Google sign-in, then, unless it's the Short (Shorts never go in playlists or
+        get thumbnails), add it to the clip's playlist and give it the clip's thumbnail. Returns the link, and a
+        note if YouTube didn't use the visibility asked for (what Google does to uploads from projects it hasn't
+        audited), or the playlist or thumbnail didn't work."""
         video = Video(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
                       category_id=self.settings.youtube_category_id, short=job.which == "short")
         # An earlier attempt's session only carries on if the same file is going to the same place, the same way.
@@ -645,6 +685,12 @@ class Worker:
             except YouTubeError as e:
                 log.warning("Couldn't add upload %d to its playlist: %s", job.id, e)
                 notes.append(f"It isn't in the playlist: {e}")
+        if job.which == "video" and clip.thumbnail_status == "done" and Path(clip.thumbnail_path).is_file():
+            try:
+                self.youtube.set_thumbnail(dest.youtube_token, result.video_id, Path(clip.thumbnail_path))
+            except YouTubeError as e:
+                log.warning("Couldn't set upload %d's thumbnail: %s", job.id, e)
+                notes.append(f"It doesn't have its thumbnail: {e}")
         return result.url, " ".join(notes)
 
     def _update_destination(self, dest_id: int, **fields) -> None:
@@ -673,6 +719,110 @@ class Worker:
             job.updated_at = utcnow()
             s.add(job)
             s.commit()
+
+    # --- Thumbnails (thumbnails.py) -------------------------------------------------
+
+    def make_next_thumbnail(self) -> bool:
+        with Session(self.engine) as s:
+            clip = s.exec(
+                select(ClipRecord).where(ClipRecord.thumbnail_status == "queued").order_by(col(ClipRecord.updated_at))
+            ).first()
+            if not clip:
+                return False
+            clip.thumbnail_status, clip.thumbnail_error = "making", ""
+            s.add(clip)
+            s.commit()
+            clip_id = clip.id
+        self.make_thumbnail(clip_id)
+        return True
+
+    def make_thumbnail(self, clip_id: int) -> None:
+        clip = self._get(ClipRecord, clip_id)
+        vod = self._get(Vod, clip.vod_id)
+        show = self._get(Show, vod.show_id) if vod.show_id else None
+        notes = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
+        log.info("Making a thumbnail for clip %d (%r)", clip_id, clip.title)
+        try:
+            if not vod.workspace:
+                raise ThumbnailError("This video hasn't been downloaded.")
+            path, idea = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes)
+        except Exception as e:
+            log.warning("No thumbnail for clip %d: %s", clip_id, e)
+            error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"
+            self._update_clip(clip_id, thumbnail_status="failed", thumbnail_error=error[:1000])
+            return
+        text = f' Text: "{idea.text}"' if idea.text.strip() else ""
+        self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path), thumbnail_idea=f"{idea.concept}{text}")
+
+    def _update_clip(self, clip_id: int, **fields) -> None:
+        """Change a clip without touching its updated_at, which marks changes to the clip itself."""
+        with Session(self.engine) as s:
+            clip = s.get(ClipRecord, clip_id)
+            if clip is None:
+                return
+            for k, v in fields.items():
+                setattr(clip, k, v)
+            s.add(clip)
+            s.commit()
+
+    # --- How uploads do on YouTube (stats.py) ------------------------------------------
+
+    def check_stats(self) -> bool:
+        """Read the numbers of the uploads that are due, then send the weekly summary if it's time."""
+        now = utcnow()
+        with Session(self.engine) as s:
+            dests = {d.id: d for d in s.exec(select(Destination))}
+            done = s.exec(select(UploadJob, ClipRecord).join(ClipRecord).where(
+                UploadJob.status == "done", UploadJob.youtube_url != "",
+            )).all()
+        any_token = next((d.youtube_token for d in dests.values() if d.youtube_token), "") if self.youtube else ""
+        # Read as the clip's own channel if it's connected, else with the API key, else as any connected channel.
+        groups: dict[tuple[str, str], dict[str, list[int]]] = {}
+        for job, clip in done:
+            vid = video_id(job.youtube_url)
+            if not vid or not stats.due(job, now):
+                continue
+            dest = dests.get(clip.destination_id)
+            own = dest.youtube_token if dest and self.youtube else ""
+            key = (own, "") if own else ("", self.settings.youtube_api_key) if self.settings.youtube_api_key else (any_token, "")
+            if any(key):
+                groups.setdefault(key, {}).setdefault(vid, []).append(job.id)
+        google = self.youtube or Google("", "")
+        for (token, api_key), by_video in groups.items():
+            try:
+                found = google.video_stats(list(by_video), refresh_token=token, api_key=api_key)
+            except YouTubeError as e:
+                log.warning("Couldn't read how uploads are doing: %s", e)
+                continue
+            with Session(self.engine) as s:
+                for vid, job_ids in by_video.items():
+                    for job_id in job_ids:
+                        job = s.get(UploadJob, job_id)
+                        if vid in found:
+                            stats.record(job, found[vid], now)
+                        else:
+                            job.stats_at = now  # deleted or made private: check less often
+                        s.add(job)
+                s.commit()
+        self.send_digest()
+        return False
+
+    def send_digest(self, local: datetime | None = None) -> None:
+        """On Monday mornings, a notification with the past week's uploads and how they're doing."""
+        local = local or datetime.now(ZoneInfo(self.settings.timezone))
+        if local.weekday() != 0 or local.hour < DIGEST_HOUR or not notify.configured(self.settings):
+            return
+        week = local.strftime("%G-W%V")
+        with Session(self.engine) as s:
+            if get_app_setting(s, "stats_digest_week") == week:
+                return
+            set_app_setting(s, "stats_digest_week", week)
+            s.commit()
+            rows = s.exec(select(UploadJob, ClipRecord).join(ClipRecord).where(
+                UploadJob.status == "done", col(UploadJob.finished_at) >= utcnow() - timedelta(days=7),
+            )).all()
+        if rows:
+            self._notify(Note("Last week on YouTube", stats.digest(rows), link="stats"))
 
     # --- Disk cleanup --------------------------------------------------------------
 

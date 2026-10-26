@@ -81,6 +81,20 @@ export function timeOfDay(iso: string): string {
   return new Date(iso).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
+/** A time coming up: "3:40 PM", "tomorrow 9:00 AM" or "Tue 3:40 PM". */
+export function upcoming(iso: string): string {
+  const day = new Date(iso);
+  const today = new Date();
+  const days = Math.round((new Date(day).setHours(0, 0, 0, 0) - new Date(today).setHours(0, 0, 0, 0)) / 86400000);
+  const prefix = days <= 0 ? "" : days === 1 ? "tomorrow " : `${day.toLocaleDateString([], { weekday: "short" })} `;
+  return prefix + timeOfDay(iso);
+}
+
+/** 1234 → "1.2K" */
+export function compact(n: number): string {
+  return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);
+}
+
 export function platformName(extractor: string): string {
   const key = extractor.toLowerCase();
   if (key.startsWith("twitch")) return "Twitch";

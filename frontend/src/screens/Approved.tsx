@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { api, errorText, type Clip } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
-import { cn, go, usePoll } from "../lib";
+import { cn, go, upcoming, usePoll } from "../lib";
 import { PauseBar } from "../PauseBar";
 import { ErrorNote, Screen, useToast } from "../ui";
 
@@ -79,6 +79,7 @@ function UploadFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }
     <div className="border-t border-white/5">
       <p className="truncate px-3 pt-2 text-xs text-zinc-500">
         {clip.destination_name ? `To ${clip.destination_name}` : "No channel chosen yet"}
+        {clip.next_upload && <span className="text-sky-300"> · goes up {upcoming(clip.next_upload)}</span>}
       </p>
       <div className="flex divide-x divide-white/5">
         <FooterButton onClick={() => act(() => api.restore(clip.id), "Back in the inbox. Its render was deleted.")}>

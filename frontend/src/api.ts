@@ -73,6 +73,12 @@ export interface Clip {
   destination_url: string;
   playlist_id: string; // a playlist on that channel, or ""
   youtube_url: string;
+  thumbnail_status: "" | "queued" | "making" | "done" | "failed";
+  thumbnail_url: string; // "" until there's one
+  thumbnail_hint: string; // your idea for it
+  thumbnail_idea: string; // what Claude came up with
+  thumbnail_error: string;
+  next_upload: string | null; // when its upload goes, if it's waiting for its turn
   updated_at: string;
 }
 
@@ -118,7 +124,41 @@ export interface UploadJob {
   youtube_url: string;
   error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;
+  rush: boolean; // sent with "Upload now"
+  starts_at: string | null; // when it goes, if it's waiting for its turn
+  wait_reason: "" | "gap" | "thumbnail";
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  views_day1: number | null;
+  views_week1: number | null;
   created_at: string;
+  finished_at: string | null;
+}
+
+/** How the app's uploads are doing on YouTube. */
+export interface Stats {
+  setup_needed: string; // why views can't be read, or ""
+  checked_at: string | null;
+  bands: { label: string; count: number; day1: number | null; week1: number | null; views: number | null }[];
+  uploads: StatsUpload[];
+}
+
+export interface StatsUpload {
+  job_id: number;
+  clip_id: number;
+  show_id: number | null;
+  title: string;
+  kind: Clip["kind"];
+  which: "video" | "short";
+  score: number;
+  youtube_url: string;
+  finished_at: string | null;
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  views_day1: number | null;
+  views_week1: number | null;
 }
 
 export type Visibility = "public" | "unlisted" | "private";
@@ -166,6 +206,8 @@ export interface Show {
   auto_shorts: Auto;
   auto_upload_score: number; // offered chapters and Shorts Claude scores at least this upload without review; 0 is off
   auto_visibility: Visibility; // for automatic uploads
+  upload_gap_hours: number; // clips go up at least this long after the channel's last one; 0 = right away
+  auto_thumbnails: boolean; // chapters and full episodes get a thumbnail once rendered
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
@@ -289,7 +331,13 @@ export const api = {
   startUpload: (clipId: number, which: UploadJob["which"], visibility: Visibility) =>
     post<UploadJob>(`/api/clips/${clipId}/uploads`, { which, visibility }),
   retryUpload: (jobId: number) => post<UploadJob>(`/api/upload-jobs/${jobId}/retry`),
+  uploadNow: (jobId: number) => post<UploadJob>(`/api/upload-jobs/${jobId}/now`),
   cancelUpload: (jobId: number) => remove(`/api/upload-jobs/${jobId}`),
+
+  thumbnails: () => request<{ configured: boolean; model: string }>("/api/thumbnails"),
+  makeThumbnail: (clipId: number, hint: string) => post<Clip>(`/api/clips/${clipId}/thumbnail`, { hint }),
+  applyThumbnail: (clipId: number) => post<{ applied: boolean }>(`/api/clips/${clipId}/thumbnail/apply`),
+  stats: (showId: number | null) => request<Stats>(`/api/stats${showId === null ? "" : `?show_id=${showId}`}`),
 
   destinations: () => request<Destination[]>("/api/destinations"),
   addDestination: (body: { name: string; url: string }) => post<Destination>("/api/destinations", body),
@@ -342,6 +390,7 @@ export const media = {
   file: (c: Clip, which: "video" | "short", download = false) =>
     `/media/clips/${c.id}/${which}.mp4?v=${encodeURIComponent(c.updated_at)}${download ? "&download=true" : ""}`,
   uploadScreenshot: (job: UploadJob) => `/media/upload-jobs/${job.id}/screenshot.png`,
+  thumbnailDownload: (c: Clip) => `/media/clips/${c.id}/thumbnail.jpg?download=true`,
 };
 
 export function errorText(e: unknown): string {

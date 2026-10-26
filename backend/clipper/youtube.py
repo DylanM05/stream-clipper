@@ -8,7 +8,9 @@ How it fits together:
   app keeps the refresh token that comes back (Destination.youtube_token) and the worker uploads with it.
 - Uploads use YouTube's resumable protocol in chunks, so progress shows in the app and a dropped
   connection or a worker restart carries on from the bytes YouTube already has.
-- An upload can then be added to one of the channel's playlists, picked (or created) in the app.
+- An upload can then be added to one of the channel's playlists, picked (or created) in the app, and get
+  its thumbnail (thumbnails.py).
+- Afterwards the worker reads each upload's views (stats.py).
 
 Google used to lock every upload from a project it hadn't audited to private. Its docs now say that no
 longer happens. If it does anyway, `Uploaded.privacy` shows what YouTube actually set.
@@ -32,7 +34,9 @@ REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 CHANNELS_URL = "https://www.googleapis.com/youtube/v3/channels"
 PLAYLISTS_URL = "https://www.googleapis.com/youtube/v3/playlists"
 PLAYLIST_ITEMS_URL = "https://www.googleapis.com/youtube/v3/playlistItems"
+VIDEOS_URL = "https://www.googleapis.com/youtube/v3/videos"
 UPLOAD_URL = "https://www.googleapis.com/upload/youtube/v3/videos"
+THUMBNAIL_URL = "https://www.googleapis.com/upload/youtube/v3/thumbnails/set"
 CALLBACK_PATH = "/api/youtube/callback"
 # Upload videos; see which channel a sign-in is for and manage its playlists, which only the broad
 # "youtube" scope allows. Channels connected before playlists existed only have youtube.readonly.
@@ -59,6 +63,9 @@ REASONS = {
 }
 SIGNED_OUT = ("This channel's YouTube sign-in has expired or was removed. Connect it again under "
               "Shows → YouTube channels, then retry.")
+NO_CUSTOM_THUMBNAILS = ("YouTube doesn't let this channel use custom thumbnails yet. Verify the channel with a phone "
+                        "number at youtube.com/verify, then tap Use on YouTube.")
+_VIDEO_ID = re.compile(r"(?:youtu\.be/|/shorts/|[?&]v=|/video/)([\w-]{11})")
 
 
 class YouTubeError(RuntimeError):
@@ -98,6 +105,19 @@ class Playlist:
     title: str
     privacy: str
     count: int  # videos in it
+
+
+@dataclass
+class Stats:
+    views: int | None
+    likes: int | None  # None when the channel hides them
+    comments: int | None
+
+
+def video_id(url: str) -> str:
+    """The 11-character id in a video's link (youtu.be, watch, Shorts or Studio), or ""."""
+    m = _VIDEO_ID.search(url or "")
+    return m[1] if m else ""
 
 
 def sign_in_url(client_id: str, redirect_uri: str, state: str) -> str:
@@ -197,6 +217,43 @@ class Google:
         resource = {"kind": "youtube#video", "videoId": video_id}
         self._call("POST", PLAYLIST_ITEMS_URL, _Auth(self, refresh_token), params={"part": "snippet"},
                    json={"snippet": {"playlistId": playlist_id, "resourceId": resource}})
+
+    # --- After uploading ---
+
+    def set_thumbnail(self, refresh_token: str, video_id: str, image: Path) -> None:
+        """Use a JPEG as the video's thumbnail. Only channels YouTube has verified by phone may."""
+        try:
+            self._request("POST", THUMBNAIL_URL, _Auth(self, refresh_token), headers={"Content-Type": "image/jpeg"},
+                          params={"videoId": video_id, "uploadType": "media"}, content=image.read_bytes())
+        except _Retry as e:
+            raise YouTubeError(f"Couldn't reach YouTube ({e}). Try again.") from e
+        except YouTubeError as e:
+            if "(403)" in str(e) and "thumbnail" in str(e).lower():
+                raise YouTubeError(NO_CUSTOM_THUMBNAILS) from e
+            raise
+
+    def video_stats(self, video_ids: list[str], refresh_token: str = "", api_key: str = "") -> dict[str, Stats]:
+        """View, like and comment counts by video id, read as the channel or with an API key. Videos YouTube
+        doesn't return (deleted, or private and not the channel's own) are left out."""
+        auth = _Auth(self, refresh_token) if refresh_token else None
+        found: dict[str, Stats] = {}
+        for i in range(0, len(video_ids), 50):
+            params = {"part": "statistics", "id": ",".join(video_ids[i:i + 50]), "maxResults": 50}
+            body = self._call("GET", VIDEOS_URL, auth, params=params) if auth else self._get(VIDEOS_URL, {**params, "key": api_key})
+            for item in body.get("items") or []:
+                counts = item.get("statistics") or {}
+                found[item["id"]] = Stats(*(_count(counts.get(k)) for k in ("viewCount", "likeCount", "commentCount")))
+        return found
+
+    def _get(self, url: str, params: dict) -> dict:
+        """A request with an API key instead of a channel's sign-in."""
+        try:
+            res = self.http.get(url, params=params)
+        except httpx.HTTPError as e:
+            raise YouTubeError(f"Couldn't reach YouTube ({e}). Try again.") from e
+        if res.status_code >= 400:
+            raise _api_error(res)
+        return _json(res)
 
     def _call(self, method: str, url: str, auth: "_Auth", **kwargs) -> dict:
         """A one-off request as the channel; a temporary failure is just an error to try again later."""
@@ -350,6 +407,13 @@ def _playlist(resource: dict) -> Playlist:
         privacy=(resource.get("status") or {}).get("privacyStatus") or "",
         count=(resource.get("contentDetails") or {}).get("itemCount") or 0,
     )
+
+
+def _count(value) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _next_byte(res: httpx.Response) -> int:

@@ -21,7 +21,7 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import ffmpeg, notify
+from .. import ffmpeg, notify, stats
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
@@ -30,10 +30,11 @@ from ..db import (
 from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
 from ..overlay import Overlay, save as save_overlay_image
+from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
 from ..pipeline import render
 from ..workspace import Workspace
-from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url
+from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
 from .auth import COOKIE, MAX_AGE_S, Auth
 
 log = logging.getLogger(__name__)
@@ -106,7 +107,17 @@ class ClipOut(BaseModel):
     destination_url: str
     playlist_id: str
     youtube_url: str
+    thumbnail_status: str  # "" (none), queued, making, done or failed
+    thumbnail_url: str  # "" until there's one
+    thumbnail_hint: str
+    thumbnail_idea: str
+    thumbnail_error: str
+    next_upload: str | None  # when its queued upload goes, if it's waiting for its turn (schedule.py)
     updated_at: str
+
+
+class ThumbnailRequest(BaseModel):
+    hint: str = Field(default="", max_length=1000)  # your idea for it
 
 
 class VodDetail(BaseModel):
@@ -145,6 +156,8 @@ class ShowIn(BaseModel):
     auto_shorts: Auto = "review"
     auto_upload_score: float = Field(default=0, ge=0, le=1)
     auto_visibility: Visibility = "public"
+    upload_gap_hours: float = Field(default=0, ge=0, le=168)
+    auto_thumbnails: bool = False
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
@@ -172,6 +185,8 @@ class ShowPatch(BaseModel):
     auto_shorts: Auto | None = None
     auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
     auto_visibility: Visibility | None = None
+    upload_gap_hours: float | None = Field(default=None, ge=0, le=168)  # 0 uploads clips as soon as they're ready
+    auto_thumbnails: bool | None = None
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
@@ -228,7 +243,50 @@ class UploadJobOut(BaseModel):
     youtube_url: str
     error: str
     has_screenshot: bool
+    rush: bool  # sent with "Upload now"
+    starts_at: str | None  # when it goes, if it's waiting for its turn
+    wait_reason: str  # why: "gap" (the show spaces its uploads) or "thumbnail"
+    views: int | None
+    likes: int | None
+    comments: int | None
+    views_day1: int | None
+    views_week1: int | None
     created_at: str
+    finished_at: str | None
+
+
+class StatsUpload(BaseModel):
+    """One finished upload and how it's doing."""
+
+    job_id: int
+    clip_id: int
+    show_id: int | None
+    title: str
+    kind: str
+    which: str
+    score: float
+    youtube_url: str
+    finished_at: str | None
+    views: int | None
+    likes: int | None
+    comments: int | None
+    views_day1: int | None
+    views_week1: int | None
+
+
+class StatsBand(BaseModel):
+    label: str
+    count: int
+    day1: float | None
+    week1: float | None
+    views: float | None
+
+
+class StatsOut(BaseModel):
+    setup_needed: str  # why the numbers can't be read, or "" when they can
+    checked_at: str | None  # the latest reading
+    bands: list[StatsBand]
+    uploads: list[StatsUpload]
 
 
 class Uploaded(BaseModel):
@@ -313,6 +371,8 @@ class ShowOut(BaseModel):
     auto_shorts: str
     auto_upload_score: float
     auto_visibility: str
+    upload_gap_hours: float
+    auto_thumbnails: bool
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none
@@ -483,12 +543,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.flush()
         s.delete(ch)
 
-    def clip_out(clip: ClipRecord, vod: Vod) -> ClipOut:
+    def clip_out(clip: ClipRecord, vod: Vod, next_upload: datetime | None = None) -> ClipOut:
         video_size, short_size = _size(clip.video_path), _size(clip.short_path)
         with Session(engine) as s:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
+        thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
-            **clip.model_dump(exclude={"video_path", "short_path", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+            **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "created_at", "updated_at",
+                                       "reviewed_at", "uploaded_at"}),
             vod_title=vod.title or vod.url,
             vod_duration=vod.duration,
             has_video=video_size > 0,
@@ -497,18 +559,34 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             short_size=short_size,
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
+            thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
+            next_upload=iso(next_upload),
             updated_at=iso(clip.updated_at),
         )
+
+    def next_uploads(s: Session) -> dict[int, datetime]:
+        """When each clip's next queued upload goes, for clips whose upload waits for its turn."""
+        turns = upload_turns(s)
+        waiting = {jid: t.at for jid, t in turns.items() if t.reason}
+        found: dict[int, datetime] = {}
+        if waiting:
+            for job in s.exec(select(UploadJob).where(col(UploadJob.id).in_(waiting))):
+                at = waiting[job.id]
+                found[job.clip_id] = min(at, found.get(job.clip_id, at))
+        return found
 
     def destination_out(d: Destination) -> DestinationOut:
         return DestinationOut(id=d.id, name=d.name, url=d.url, channel_id=d.channel_id,
                               studio_upload_url=studio_upload_url(d.channel_id),
                               api_connected=bool(d.youtube_token), api_account=d.youtube_account, api_error=d.youtube_error)
 
-    def job_out(job: UploadJob) -> UploadJobOut:
-        return UploadJobOut(**job.model_dump(exclude={"screenshot", "session_url", "session_key", "created_at", "updated_at"}),
+    def job_out(job: UploadJob, turn: Turn | None = None) -> UploadJobOut:
+        waits = turn is not None and bool(turn.reason)
+        return UploadJobOut(**job.model_dump(exclude={"screenshot", "session_url", "session_key", "created_at", "updated_at",
+                                                      "started_at", "finished_at", "stats_at"}),
                             has_screenshot=bool(job.screenshot) and Path(job.screenshot).exists(),
-                            created_at=iso(job.created_at))
+                            starts_at=iso(turn.at) if waits else None, wait_reason=turn.reason if waits else "",
+                            created_at=iso(job.created_at), finished_at=iso(job.finished_at))
 
     def google() -> Google:
         if not (settings.google_client_id and settings.google_client_secret):
@@ -1105,11 +1183,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .order_by(col(Vod.created_at).desc(), col(ClipRecord.kind), col(ClipRecord.start))
             .limit(500)
         )
-        return [clip_out(c, v) for c, v in rows]
+        waiting = next_uploads(s)
+        return [clip_out(c, v, waiting.get(c.id)) for c, v in rows]
 
     @app.get("/api/clips/{clip_id}")
     def get_clip_route(clip_id: int, s: Session = Depends(db)) -> ClipOut:
-        return clip_out(*get_clip(s, clip_id))
+        clip, vod = get_clip(s, clip_id)
+        return clip_out(clip, vod, next_uploads(s).get(clip.id))
 
     @app.patch("/api/clips/{clip_id}")
     def update_clip(clip_id: int, patch: ClipPatch, s: Session = Depends(db)) -> ClipOut:
@@ -1220,8 +1300,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/clips/{clip_id}/uploads")
     def clip_uploads(clip_id: int, s: Session = Depends(db)) -> list[UploadJobOut]:
         get_clip(s, clip_id)
-        jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id).order_by(col(UploadJob.created_at).desc()))
-        return [job_out(j) for j in jobs]
+        jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id).order_by(col(UploadJob.created_at).desc())).all()
+        turns = upload_turns(s) if any(j.status == "queued" for j in jobs) else {}
+        return [job_out(j, turns.get(j.id)) for j in jobs]
 
     @app.post("/api/clips/{clip_id}/uploads", status_code=201)
     def start_upload(clip_id: int, body: UploadRequest, s: Session = Depends(db)) -> UploadJobOut:
@@ -1238,7 +1319,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(job)
         s.commit()
         s.refresh(job)
-        return job_out(job)
+        return job_out(job, upload_turns(s).get(job.id))
 
     @app.post("/api/upload-jobs/{job_id}/retry")
     def retry_upload(job_id: int, s: Session = Depends(db)) -> UploadJobOut:
@@ -1249,7 +1330,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.add(job)
         s.commit()
         s.refresh(job)
-        return job_out(job)
+        return job_out(job, upload_turns(s).get(job.id))
+
+    @app.post("/api/upload-jobs/{job_id}/now")
+    def upload_now(job_id: int, s: Session = Depends(db)) -> UploadJobOut:
+        """Skip the wait for its turn (the show's spacing, or its thumbnail)."""
+        job = found(s, UploadJob, job_id, "upload")
+        if job.status != "queued":
+            raise HTTPException(409, "It isn't waiting")
+        job.rush, job.updated_at = True, utcnow()
+        s.add(job)
+        s.commit()
+        s.refresh(job)
+        return job_out(job, upload_turns(s).get(job.id))
 
     @app.delete("/api/upload-jobs/{job_id}", status_code=204)
     def cancel_upload(job_id: int, s: Session = Depends(db)) -> None:
@@ -1315,7 +1408,90 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if seg.text and seg.end > clip.start - 60 and seg.start < clip.end + 60
         ]
 
+    # --- Thumbnails (thumbnails.py), made by the worker, which has Claude ---
+
+    @app.get("/api/thumbnails")
+    def thumbnail_setup() -> dict:
+        return {"configured": bool(settings.openrouter_api_key), "model": settings.thumbnail_model}
+
+    @app.post("/api/clips/{clip_id}/thumbnail")
+    def request_thumbnail(clip_id: int, body: ThumbnailRequest, s: Session = Depends(db)) -> ClipOut:
+        """Have the worker make a thumbnail (a new one, if it has one), built on your idea if you give one."""
+        clip, vod = get_clip(s, clip_id)
+        if not settings.openrouter_api_key:
+            raise HTTPException(409, "Thumbnails need an OpenRouter key: set CLIPPER_OPENROUTER_API_KEY (see the README)")
+        if clip.thumbnail_status in ("queued", "making"):
+            raise HTTPException(409, "One is being made already")
+        if vod.cleaned_at or not vod.workspace:
+            raise HTTPException(409, "This stream's video files were deleted, so there are no frames to draw the people from")
+        clip.thumbnail_status, clip.thumbnail_hint, clip.thumbnail_error = "queued", body.hint.strip(), ""
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
+
+    @app.post("/api/clips/{clip_id}/thumbnail/apply")
+    def apply_thumbnail(clip_id: int, s: Session = Depends(db)) -> dict:
+        """Put the clip's thumbnail on its video that's already on YouTube, for channels connected to the API."""
+        clip, _ = get_clip(s, clip_id)
+        path = Path(clip.thumbnail_path) if clip.thumbnail_path else None
+        if clip.thumbnail_status != "done" or not path or not path.is_file():
+            raise HTTPException(409, "Make a thumbnail first")
+        job = s.exec(select(UploadJob).where(
+            UploadJob.clip_id == clip_id, UploadJob.which == "video", UploadJob.status == "done",
+        ).order_by(col(UploadJob.created_at).desc())).first()
+        vid = video_id(job.youtube_url) if job else ""
+        if not vid:
+            raise HTTPException(409, "Its video hasn't been uploaded by the app yet (Shorts don't use thumbnails)")
+        dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
+        if not (dest and dest.youtube_token):
+            raise HTTPException(409, "Only channels connected to the YouTube API take it from here. Download it and set it in YouTube Studio.")
+        try:
+            google().set_thumbnail(dest.youtube_token, vid, path)
+        except YouTubeError as e:
+            raise HTTPException(502, str(e)) from None
+        return {"applied": True}
+
+    # --- How uploads are doing on YouTube (stats.py) ---
+
+    @app.get("/api/stats")
+    def upload_stats(show_id: int | None = None, s: Session = Depends(db)) -> StatsOut:
+        query = (
+            select(UploadJob, ClipRecord, Vod)
+            .join(ClipRecord, UploadJob.clip_id == ClipRecord.id)
+            .join(Vod, ClipRecord.vod_id == Vod.id)
+            .where(UploadJob.status == "done", UploadJob.youtube_url != "")
+        )
+        if show_id is not None:
+            query = query.where(Vod.show_id == show_id)
+        rows = s.exec(query.order_by(col(UploadJob.finished_at).desc(), col(UploadJob.id).desc()).limit(500)).all()
+        connected = s.exec(select(Destination).where(Destination.youtube_token != "")).first() is not None
+        setup = "" if settings.youtube_api_key or (settings.google_client_id and connected) else (
+            "Views can't be read yet: connect a channel to the YouTube API under Shows → YouTube channels, or set "
+            "CLIPPER_YOUTUBE_API_KEY (see the README)."
+        )
+        checked = max((j.stats_at for j, _, _ in rows if j.stats_at), default=None)
+        return StatsOut(
+            setup_needed=setup,
+            checked_at=iso(checked),
+            bands=[StatsBand(**vars(b)) for b in stats.score_bands([(j, c) for j, c, _ in rows])],
+            uploads=[
+                StatsUpload(job_id=j.id, clip_id=c.id, show_id=v.show_id, title=c.title, kind=c.kind, which=j.which,
+                            score=c.score, youtube_url=j.youtube_url, finished_at=iso(j.finished_at), views=j.views,
+                            likes=j.likes, comments=j.comments, views_day1=j.views_day1, views_week1=j.views_week1)
+                for j, c, v in rows
+            ],
+        )
+
     # --- Media ---
+
+    @app.get("/media/clips/{clip_id}/thumbnail.jpg")
+    def clip_thumbnail(clip_id: int, download: bool = False, s: Session = Depends(db)) -> FileResponse:
+        clip, _ = get_clip(s, clip_id)
+        if not clip.thumbnail_path or not Path(clip.thumbnail_path).is_file():
+            raise HTTPException(404, "No thumbnail")
+        name = f"{file_name(clip.title)} (thumbnail).jpg"
+        return FileResponse(clip.thumbnail_path, media_type="image/jpeg", filename=name if download else None)
 
     @app.get("/media/vods/{vod_id}/proxy.mp4")
     def proxy(vod_id: int, s: Session = Depends(db)) -> FileResponse:

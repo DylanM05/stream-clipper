@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     google_client_id: str = ""
     google_client_secret: str = ""
     youtube_category_id: str = "24"  # Entertainment; the API doesn't use the channel's upload defaults
+    # Reads view counts (stats.py) of uploads to channels that aren't connected; connected ones use their sign-in.
+    youtube_api_key: str = ""
+
+    # Thumbnails (thumbnails.py): Claude writes the idea, an image model on OpenRouter draws it from frames of the video.
+    openrouter_api_key: str = ""
+    thumbnail_model: str = "google/gemini-2.5-flash-image"
 
     # Uploading through YouTube Studio in a signed-in browser (studio.py)
     studio_cdp_url: str = "http://127.0.0.1:9222"  # the browser's remote debugging address

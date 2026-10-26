@@ -1,12 +1,13 @@
 import { useEffect, useState, type ComponentType } from "react";
 import { api } from "./api";
-import { FilmIcon, InboxIcon, TvIcon, UploadIcon } from "./icons";
+import { ChartIcon, FilmIcon, InboxIcon, TvIcon, UploadIcon } from "./icons";
 import { cn, usePoll, useRoute } from "./lib";
 import { Approved } from "./screens/Approved";
 import { ClipEditor } from "./screens/ClipEditor";
 import { Inbox } from "./screens/Inbox";
 import { Login } from "./screens/Login";
 import { ShowEditor, Shows, UploadChannels } from "./screens/Shows";
+import { Stats } from "./screens/Stats";
 import { UploadKit } from "./screens/UploadKit";
 import { VideoDetail, Videos } from "./screens/Videos";
 import { ToastProvider } from "./ui";
@@ -54,6 +55,7 @@ function Shell() {
   let page;
   if (screen === "videos") page = param ? <VideoDetail key={param} id={Number(param)} /> : <Videos />;
   else if (screen === "approved") page = <Approved />;
+  else if (screen === "stats") page = <Stats />;
   else if (screen === "upload" && param) page = <UploadKit key={param} id={Number(param)} />;
   else if (screen === "shows" && param === "youtube") page = <UploadChannels />;
   else if (screen === "shows")
@@ -64,10 +66,11 @@ function Shell() {
     <>
       {page}
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-white/5 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur">
-        <div className="mx-auto grid max-w-2xl grid-cols-4">
+        <div className="mx-auto grid max-w-2xl grid-cols-5">
           <Tab to="inbox" label="Inbox" icon={InboxIcon} active={screen === "inbox"} badge={toReview} />
           <Tab to="videos" label="Videos" icon={FilmIcon} active={screen === "videos"} />
           <Tab to="approved" label="Upload" icon={UploadIcon} active={screen === "approved" || screen === "upload"} badge={toUpload} />
+          <Tab to="stats" label="Stats" icon={ChartIcon} active={screen === "stats"} />
           <Tab to="shows" label="Shows" icon={TvIcon} active={screen === "shows"} />
         </div>
       </nav>

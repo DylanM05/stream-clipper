@@ -3,6 +3,7 @@
 Claude writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
 """
 
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -56,6 +57,15 @@ def room_for_title(template: str, day: str) -> int:
 def build(template: str, title: str, day: str) -> str:
     """The full title, with the {title} part shortened at a word boundary if it doesn't fit."""
     return apply(template, fit(" ".join(title.split()), room_for_title(template, day)), day)
+
+
+def own_part(template: str, title: str) -> str:
+    """The {title} part of a full title made with `template`; the whole title if it doesn't match (e.g. edited)."""
+    template = " ".join((template or "{title}").split())
+    pattern = re.escape(template).replace(re.escape("{date}"), ".*?")
+    pattern = pattern.replace(re.escape("{title}"), "(.+?)", 1).replace(re.escape("{title}"), ".+?")
+    m = re.fullmatch(pattern, title)
+    return m[1].strip() if m and m.groups() else title
 
 
 def fit(text: str, limit: int) -> str:

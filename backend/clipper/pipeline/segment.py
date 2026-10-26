@@ -28,12 +28,13 @@ def run(
     title_room: int = 100,
     title_prefixed: bool = False,
     episode_room: int | None = None,
+    top_titles: list[str] | None = None,
 ) -> Segmentation:
     """Ask Claude for chapters, highlights and an episode title.
 
     `context` is about the show and `guidance` is what its chapters and highlights should be.
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
-    means the show name and date get added to them.
+    means the show name and date get added to them. `top_titles` are the show's most-viewed clip titles.
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
@@ -54,7 +55,7 @@ def run(
             f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to "
             f"{max_highlights} highlights. {title_rule}. The stream details, hints and transcript follow."
         ),
-        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance),
+        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, top_titles or []),
         schema=Segmentation,
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
@@ -63,7 +64,8 @@ def run(
     return result
 
 
-def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "") -> str:
+def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",
+                top_titles: list[str] = ()) -> str:
     tc = to_timecode
     lines = [
         "# Stream",
@@ -80,6 +82,9 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
         lines += ["", "# About the show", context.strip()]
     if guidance.strip():
         lines += ["", "# What the chapters and highlights should be", guidance.strip()]
+    if top_titles:
+        lines += ["", "# The channel's most-viewed clip titles, most viewed first"]
+        lines += [f"- {t}" for t in top_titles]
     if signals.platform_chapters:
         lines += ["", "# Platform chapters (game or category changes)"]
         lines += [f"[{tc(c.start)}] {c.title}" for c in signals.platform_chapters]

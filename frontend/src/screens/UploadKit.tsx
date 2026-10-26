@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type Destination, type UploadJob, type Visibility } from "../api";
-import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, UploadIcon } from "../icons";
-import { ago, cn, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, usePoll } from "../lib";
+import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
+import { ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, upcoming, usePoll } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, ProgressBar, Screen, useToast } from "../ui";
 
@@ -69,7 +69,11 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
         <p className="mt-1 text-xs text-zinc-500">Make sure YouTube is signed in to this channel before you upload.</p>
       </Step>
 
-      <Step n={2} title="Upload automatically">
+      <Step n={2} title="Thumbnail">
+        <ThumbnailMaker clip={clip} destination={destination} onChange={onChange} />
+      </Step>
+
+      <Step n={3} title="Upload automatically">
         <AutoUpload clip={clip} destination={destination} />
       </Step>
 
@@ -77,7 +81,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
         <span className="h-px flex-1 bg-white/10" /> Or upload by hand <span className="h-px flex-1 bg-white/10" />
       </div>
 
-      <Step n={3} title="Video file">
+      <Step n={4} title="Video file">
         {clip.has_short && (
           <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
             {(["video", "short"] as const).map((w) => (
@@ -123,12 +127,12 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
         </p>
       </Step>
 
-      <Step n={4} title="Title and description">
+      <Step n={5} title="Title and description">
         <CopyBox label="Title" text={clip.title} onCopy={() => copy(clip.title, "Title")} />
         <CopyBox label="Description" text={clip.description} onCopy={() => copy(clip.description, "Description")} long />
       </Step>
 
-      <Step n={5} title="Done?">
+      <Step n={6} title="Done?">
         {clip.status === "uploaded" ? (
           <div className="space-y-2">
             <p className="text-sm text-emerald-300">Marked as uploaded{clip.destination_name ? ` to ${clip.destination_name}` : ""}.</p>
@@ -272,6 +276,14 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
                   <LinkIcon className="size-4" /> {job.youtube_url}
                 </a>
               )}
+              {job.status === "done" && job.views !== null && (
+                <p className="text-xs text-zinc-400">
+                  {compact(job.views)} views
+                  {job.likes !== null && ` · ${compact(job.likes)} likes`}
+                  {job.comments !== null && ` · ${compact(job.comments)} comments`}
+                  {job.views_day1 !== null && ` · ${compact(job.views_day1)} on its first day`}
+                </p>
+              )}
               {job.status === "done" && job.error && <p className="break-words text-xs text-amber-300">{job.error}</p>}
               {job.status === "failed" && (
                 <>
@@ -291,15 +303,103 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
                   </div>
                 </>
               )}
+              {job.status === "queued" && job.starts_at && (
+                <p className="text-xs text-zinc-400">
+                  {job.wait_reason === "thumbnail"
+                    ? `Waiting for its thumbnail, until ${upcoming(job.starts_at)} at the latest`
+                    : `Goes up ${upcoming(job.starts_at)}, spaced out from the channel's last clip`}
+                </p>
+              )}
               {job.status === "queued" && (
-                <button onClick={() => run(() => api.cancelUpload(job.id), "Cancelled")} className="text-xs font-semibold text-zinc-400">
-                  Cancel
-                </button>
+                <div className="flex gap-4">
+                  {job.starts_at && (
+                    <button onClick={() => run(() => api.uploadNow(job.id), "Uploading it next")} className="text-xs font-semibold text-violet-300">
+                      Upload now
+                    </button>
+                  )}
+                  <button onClick={() => run(() => api.cancelUpload(job.id), "Cancelled")} className="text-xs font-semibold text-zinc-400">
+                    Cancel
+                  </button>
+                </div>
               )}
             </li>
           ))}
         </ul>
       )}
+    </div>
+  );
+}
+
+/**
+ * A thumbnail for the 16:9 video: Claude's idea, drawn by an image model on OpenRouter from frames of the video.
+ * It goes on with an upload through the YouTube API; for Studio uploads it's downloaded and added there.
+ */
+function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destination?: Destination; onChange: (c: Clip) => void }) {
+  const toast = useToast();
+  const { data: setup } = usePoll(api.thumbnails, 0);
+  const [hint, setHint] = useState(clip.thumbnail_hint);
+  const busy = clip.thumbnail_status === "queued" || clip.thumbnail_status === "making";
+  if (setup && !setup.configured) {
+    return (
+      <p className="text-xs text-zinc-500">To make thumbnails, add an OpenRouter key (CLIPPER_OPENROUTER_API_KEY) to .env. See the README.</p>
+    );
+  }
+
+  const run = async (work: () => Promise<unknown>, done: string) => {
+    try {
+      const result = await work();
+      if (result && typeof result === "object" && "thumbnail_status" in result) onChange(result as Clip);
+      toast({ text: done });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      {clip.thumbnail_url && (
+        <img src={clip.thumbnail_url} alt="Thumbnail" className="aspect-video w-full rounded-xl bg-black object-cover" />
+      )}
+      {clip.thumbnail_idea && !busy && <p className="text-xs text-zinc-400">{clip.thumbnail_idea}</p>}
+      {busy && (
+        <div className="space-y-2">
+          <p className="text-sm text-amber-300">
+            {clip.thumbnail_status === "queued" ? "Waiting its turn…" : "Claude is coming up with it, then the image model draws it…"}
+          </p>
+          <ProgressBar value={null} />
+        </div>
+      )}
+      {clip.thumbnail_status === "failed" && <p className="break-words text-xs text-red-300">{clip.thumbnail_error}</p>}
+      <textarea
+        value={hint}
+        onChange={(e) => setHint(e.target.value)}
+        rows={2}
+        maxLength={1000}
+        placeholder="Your idea (optional), e.g. Don as a judge banging a gavel"
+        className="w-full rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5 placeholder:text-zinc-500 focus:ring-2 focus:ring-violet-500"
+      />
+      <div className="grid gap-2">
+        <Button tone="primary" disabled={busy} onClick={() => run(() => api.makeThumbnail(clip.id, hint), "Making it. It takes a minute or two.")}>
+          <SparkIcon className="size-4" /> {clip.thumbnail_url ? "Make another" : "Make a thumbnail"}
+        </Button>
+        {clip.thumbnail_url && (
+          <a
+            href={media.thumbnailDownload(clip)}
+            className="inline-flex items-center justify-center gap-1.5 rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold active:bg-zinc-700"
+          >
+            <DownloadIcon className="size-4" /> Download
+          </a>
+        )}
+        {clip.thumbnail_url && clip.status === "uploaded" && destination?.api_connected && (
+          <Button onClick={() => run(() => api.applyThumbnail(clip.id), "It's on the video now")}>Use on YouTube</Button>
+        )}
+      </div>
+      <p className="text-xs text-zinc-500">
+        {destination?.api_connected
+          ? "It goes on the video when the app uploads it."
+          : "Channels uploading through YouTube Studio don't take it automatically: download it and add it in Studio."}
+        {clip.has_short && " Shorts don't use custom thumbnails, so it's only for the 16:9 video."}
+      </p>
     </div>
   );
 }

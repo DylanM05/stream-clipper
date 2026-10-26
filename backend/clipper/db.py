@@ -79,6 +79,16 @@ class UploadJob(SQLModel, table=True):
     # session_key fingerprints what was sent; anything changed since means a fresh upload.
     session_url: str = ""
     session_key: str = ""
+    rush: bool = False  # "Upload now": doesn't wait for its turn (schedule.py)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    # How it's doing on YouTube (stats.py): the latest counts, and the views a day and a week after it went up.
+    views: int | None = None
+    likes: int | None = None
+    comments: int | None = None
+    views_day1: int | None = None
+    views_week1: int | None = None
+    stats_at: datetime | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -112,6 +122,11 @@ class Show(SQLModel, table=True):
     # auto_chapters and auto_shorts say; 0 is off.
     auto_upload_score: float = 0
     auto_visibility: str = "public"
+    # The show's chapters and highlights go up at least this many hours after the last clip upload to the same
+    # channel (schedule.py); 0 uploads each as soon as it's ready. Full episodes never wait.
+    upload_gap_hours: float = 0
+    # Chapters and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
+    auto_thumbnails: bool = False
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
@@ -193,6 +208,13 @@ class ClipRecord(SQLModel, table=True):
     playlist_id: str = ""  # a playlist on that channel to add it to, through the YouTube API
     youtube_url: str = ""  # once uploaded
     uploaded_at: datetime | None = None
+    # A thumbnail for its landscape video (thumbnails.py), made by the worker: "" (none asked for), queued,
+    # making, done or failed. thumbnail_hint is your idea for it; thumbnail_idea is what Claude came up with.
+    thumbnail_status: str = ""
+    thumbnail_path: str = ""
+    thumbnail_hint: str = ""
+    thumbnail_idea: str = ""
+    thumbnail_error: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

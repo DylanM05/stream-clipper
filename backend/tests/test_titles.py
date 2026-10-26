@@ -46,6 +46,15 @@ def test_build_fills_in_the_pattern():
     assert titles.build("KINO CASINO {date} - {title}", "Topic", "") == "KINO CASINO - Topic"
 
 
+def test_the_part_claude_wrote_comes_back_out_of_a_full_title():
+    template = "{title} | Don Flurgundy & Channel 404 News Clips | {date}"
+    full = titles.build(template, "TheQuartering Segment: Lawsuit", "Oct 25, 2026")
+    assert titles.own_part(template, full) == "TheQuartering Segment: Lawsuit"
+    assert titles.own_part("KINO CASINO {date} - {title}", "KINO CASINO Oct 1, 2026 - Jer (Finally) Wins?") == "Jer (Finally) Wins?"
+    assert titles.own_part(template, "Edited by hand") == "Edited by hand"
+    assert titles.own_part("{title}", "Anything") == "Anything"
+
+
 def test_chapter_list_for_youtube():
     assert titles.chapter_list([(125, "Ethan Klein news"), (952, "Tonight's lineup"), (3725, "Late show")]) == (
         "Chapters\n0:00 Start\n2:05 Ethan Klein news\n15:52 Tonight's lineup\n1:02:05 Late show"
