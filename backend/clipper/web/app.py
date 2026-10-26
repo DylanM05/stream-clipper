@@ -164,6 +164,7 @@ class ShowIn(BaseModel):
     auto_visibility: Visibility = "public"
     upload_gap_hours: float = Field(default=0, ge=0, le=168)
     auto_thumbnails: bool = False
+    thumbnail_guidance: str = Field(default="", max_length=2000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
@@ -193,6 +194,7 @@ class ShowPatch(BaseModel):
     auto_visibility: Visibility | None = None
     upload_gap_hours: float | None = Field(default=None, ge=0, le=168)  # 0 uploads clips as soon as they're ready
     auto_thumbnails: bool | None = None
+    thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
@@ -385,6 +387,7 @@ class ShowOut(BaseModel):
     auto_visibility: str
     upload_gap_hours: float
     auto_thumbnails: bool
+    thumbnail_guidance: str
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none

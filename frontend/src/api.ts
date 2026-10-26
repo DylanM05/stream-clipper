@@ -215,6 +215,7 @@ export interface Show {
   auto_visibility: Visibility; // for automatic uploads
   upload_gap_hours: number; // clips go up at least this long after the channel's last one; 0 = right away
   auto_thumbnails: boolean; // chapters and full episodes get a thumbnail once rendered
+  thumbnail_guidance: string; // what every thumbnail of the show must have, e.g. words on it
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream

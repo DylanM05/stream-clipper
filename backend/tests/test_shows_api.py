@@ -202,6 +202,8 @@ def test_upload_channels_shows_and_the_upload_kit(client, settings, monkeypatch)
         "clip_destination_id": by_id["id"], "episode_destination_id": by_handle["id"],
     }).json()
     assert (show["mode"], show["clip_guidance"], show["episode_destination_id"]) == ("both", "Follow Jer.", by_handle["id"])
+    rules = client.patch(f"/api/shows/{show['id']}", json={"thumbnail_guidance": "Must have the words Kino Casino Preshow"})
+    assert rules.json()["thumbnail_guidance"] == "Must have the words Kino Casino Preshow"
 
     # A rendered clip headed for the clips channel.
     video = settings.data_dir / "rendered.mp4"

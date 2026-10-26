@@ -786,7 +786,8 @@ class Worker:
                         else thumbnails.Idea(people=[], concept="Drawn from your prompt.", text="", prompt=""))
                 plan.prompt = redraw
             path, idea, cast = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes,
-                                               channel_picture=self._channel_picture, idea=plan)
+                                               channel_picture=self._channel_picture, idea=plan,
+                                               rules=show.thumbnail_guidance if show else "")
         except Exception as e:
             log.warning("No thumbnail for clip %d: %s", clip_id, e)
             error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"

@@ -131,6 +131,7 @@ class Show(SQLModel, table=True):
     upload_gap_hours: float = 0
     # Chapters and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
     auto_thumbnails: bool = False
+    thumbnail_guidance: str = ""  # for Claude: what every thumbnail of the show must have, e.g. words on it
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None

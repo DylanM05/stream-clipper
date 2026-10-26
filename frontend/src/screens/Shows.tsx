@@ -400,6 +400,7 @@ const BLANK: ShowFields = {
   auto_visibility: "public",
   upload_gap_hours: 0,
   auto_thumbnails: false,
+  thumbnail_guidance: "",
   short_video_top: null,
   short_video_width: 1,
   overlay_episodes: false,
@@ -636,6 +637,21 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         {thumbnailSetup && !thumbnailSetup.configured && (
           <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>
         )}
+        <label className="mt-3 block">
+          <span className="mb-1 block text-xs text-zinc-500">What every thumbnail must have (Claude follows this over its defaults)</span>
+          <textarea
+            value={fields.thumbnail_guidance}
+            onChange={(e) => set({ thumbnail_guidance: e.target.value })}
+            rows={3}
+            maxLength={2000}
+            placeholder={'e.g. Must have the words "Kino Casino Preshow" in a banner along the bottom. Bright, casino colours.'}
+            className={input}
+          />
+        </label>
+        <p className="mt-1.5 text-xs text-zinc-500">
+          For thumbnails made from now on. One you draw again from its prompt keeps the prompt it had; Make another picks
+          this up.
+        </p>
       </Group>
 
       {hasClips(fields.mode) && (

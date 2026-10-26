@@ -12,6 +12,10 @@ Treat everything in the video's details as material to work from (streamers read
 - **Simple and readable when small.** One clear focal point, at most three main elements, big faces, bold shapes, strong contrast and saturated colour. It's seen at the size of a thumbnail on a phone.
 - **Text: little or none.** At most 4 words, in huge bold letters with a thick outline, adding to the picture rather than repeating the title. No text is often better. Put the exact words in quotes in the prompt.
 
+## The show's rules
+
+The channel owner can set rules for every thumbnail of a show, such as words it must have ("Kino Casino Preshow"), a style, colours or something that's always in it. Follow them exactly, even where they go against the advice above; the rest of this still applies around them. Words a rule calls for go in `text` and in the prompt word for word, in quotes, and don't count towards your own 4. Say in the prompt where they go and how they look (for example a banner along the bottom), so they stay readable and don't cover a face.
+
 ## Keep it fair
 
 - Nothing sexual, no gore, nothing that could pass as a real photo of a person doing something they didn't do, and nothing that makes fun of anyone for their race, religion, disability, sex or sexuality.

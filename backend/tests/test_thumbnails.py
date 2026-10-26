@@ -33,7 +33,8 @@ def clip_id(settings):
     write_json(ws.meta_json, {"title": "Stream", "source_path": str(source)})
     write_text(ws.transcript_json, transcript(*[line(i * 10.0, f"Line {i}.") for i in range(30)], duration=300).model_dump_json())
     with Session(get_engine(settings)) as s:
-        s.add(Show(name="Don", notes="Don wears a red cap.", auto_thumbnails=True))
+        s.add(Show(name="Don", notes="Don wears a red cap.", auto_thumbnails=True,
+                   thumbnail_guidance="Must have the words DON'S DEN"))
         s.commit()
         s.add(Vod(url="https://kick.com/don/videos/1", show_id=1, workspace="vod-1", status="ready", duration=300))
         s.commit()
@@ -101,6 +102,23 @@ def test_claude_reads_the_clips_lines_and_full_episodes_go_by_their_description(
     assert thumbnails.excerpt(ws, clip) == ""
 
 
+def test_claude_follows_the_shows_rules_for_its_thumbnails(settings, clip_id, monkeypatch):
+    sent = {}
+
+    def structured(self, system_prompt, task, stdin_text, schema):
+        sent.update(system=system_prompt, input=stdin_text)
+        return Idea(people=[], concept="c", text="KINO CASINO PRESHOW", prompt="p")
+
+    monkeypatch.setattr(thumbnails.ClaudeCode, "structured", structured)
+    thumbnails.write_idea(settings, get_clip(settings, clip_id), "", rules="Must have the words Kino Casino Preshow")
+    assert ("# The show's rules for every thumbnail (follow them, over your defaults)\n"
+            "Must have the words Kino Casino Preshow") in sent["input"]
+    assert "## The show's rules" in sent["system"]  # how to fit them in
+
+    thumbnails.write_idea(settings, get_clip(settings, clip_id), "")
+    assert "rules" not in sent["input"]
+
+
 def test_long_clips_are_thinned_out_evenly(settings, clip_id, monkeypatch):
     monkeypatch.setattr(thumbnails, "MAX_TRANSCRIPT_CHARS", 100)
     clip = get_clip(settings, clip_id)
@@ -112,8 +130,9 @@ def test_long_clips_are_thinned_out_evenly(settings, clip_id, monkeypatch):
 def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, clip_id, monkeypatch):
     given = []
 
-    def make(settings_, clip, ws, notes="", channel_picture=None, idea=None):
+    def make(settings_, clip, ws, notes="", channel_picture=None, idea=None, rules=""):
         assert notes == "Don wears a red cap." and clip.thumbnail_hint == "Don as a judge"
+        assert rules == "Must have the words DON'S DEN"  # the show's
         assert channel_picture("Anyone") is None  # no API key or connected channel to search YouTube with
         given.append(idea)
         out = ws.clips_dir / f"{clip.key}-thumbnail.jpg"

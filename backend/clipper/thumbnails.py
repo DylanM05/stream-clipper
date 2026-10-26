@@ -64,7 +64,8 @@ class Person(BaseModel):
 class Idea(BaseModel):
     people: list[Person] = Field(description="Everyone the thumbnail shows")
     concept: str = Field(description="The joke or idea, in one sentence")
-    text: str = Field(description="The words on the thumbnail (at most 4), or empty for none")
+    text: str = Field(description="The words on the thumbnail (at most 4 of your own, plus any the show's rules call for), "
+                                  "or empty for none")
     prompt: str = Field(description="The complete prompt for the image model, naming each person")
 
 
@@ -78,15 +79,16 @@ class Photo:
 
 
 def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", http: httpx.Client | None = None,
-         channel_picture: ChannelPicture | None = None, idea: Idea | None = None) -> tuple[Path, Idea, str]:
+         channel_picture: ChannelPicture | None = None, idea: Idea | None = None, rules: str = "") -> tuple[Path, Idea, str]:
     """Make the clip's thumbnail: a JPEG next to its renders, Claude's idea for it, and who's in it and where
-    their likeness came from. Given an `idea` (a saved one, perhaps with its prompt changed), Claude isn't asked
-    for a new one: it's drawn again, with fresh frames and photos of the same people."""
+    their likeness came from. `rules` are what the show wants on every thumbnail. Given an `idea` (a saved one,
+    perhaps with its prompt changed), Claude isn't asked for a new one: it's drawn again, with fresh frames and
+    photos of the same people."""
     if not settings.openrouter_api_key:
         raise ThumbnailError("Thumbnails need an OpenRouter key: set CLIPPER_OPENROUTER_API_KEY (see the README).")
     if not ws.meta_json.exists() or not ws.source.exists():
         raise ThumbnailError("The stream's video files were deleted, so there are no frames to draw the people from.")
-    idea = idea or write_idea(settings, clip, excerpt(ws, clip), notes)
+    idea = idea or write_idea(settings, clip, excerpt(ws, clip), notes, rules)
     http = http or httpx.Client(timeout=TIMEOUT_S, follow_redirects=True)
     with tempfile.TemporaryDirectory(prefix="clipper-thumb-") as tmp:
         outside = [p for p in idea.people if not p.in_video][:MAX_LOOKUPS]
@@ -181,13 +183,15 @@ def _download_image(url: str, out: Path, http: httpx.Client) -> bool:
     return out.exists()
 
 
-def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str = "") -> Idea:
+def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str = "", rules: str = "") -> Idea:
     kind = {"chapter": "chapter of a stream", "highlight": "short clip", "whole": "full episode"}[clip.kind]
     lines = ["# The video", f"Title: {clip.title}", f"What it is: {kind}, {to_timecode(clip.end - clip.start)} long"]
     if clip.description.strip():
         lines += ["", "# Its description", clip.description.strip()[:3000]]
     if notes.strip():
         lines += ["", "# About the show", notes.strip()]
+    if rules.strip():
+        lines += ["", "# The show's rules for every thumbnail (follow them, over your defaults)", rules.strip()]
     if clip.thumbnail_hint.strip():
         lines += ["", "# The channel owner's idea for this thumbnail (build on it)", clip.thumbnail_hint.strip()]
     if transcript:
