@@ -206,7 +206,10 @@ def channel_check(
 
 
 @app.command("rumble-upload-check")
-def rumble_upload_check() -> None:
+def rumble_upload_check(
+    html: Annotated[bool, typer.Option("--html", help="Instead, show the form's two steps and any channel picker as "
+                                                      "cut-down HTML.")] = False,
+) -> None:
     """Show what Rumble's upload page asks for, as the upload browser (signed in to Rumble) sees it. Nothing is
     uploaded or changed; the page and a screenshot of it are saved under the data folder's rumble/."""
     from . import rumble
@@ -214,12 +217,16 @@ def rumble_upload_check() -> None:
     settings = get_settings()
     save_dir = settings.data_dir / "rumble"
     try:
-        page = rumble.upload_page(settings.studio_cdp_url, save_dir)
+        page = rumble.upload_page(settings.studio_cdp_url, save_dir, sections=html)
     except rumble.RumbleError as e:
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(1)
-    for line in rumble.describe_form(page):
-        typer.echo(line)
+    if html:
+        for name, part in page["sections"].items():
+            typer.echo(f"=== {name} ===\n{part or '(not on the page)'}\n")
+    else:
+        for line in rumble.describe_form(page):
+            typer.echo(line)
     typer.echo(f"\nSaved the page and a screenshot of it in {save_dir}")
 
 

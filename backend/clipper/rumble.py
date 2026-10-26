@@ -190,9 +190,40 @@ _FORM_JS = r"""() => {
 }"""
 
 
-def upload_page(cdp_url: str, save_dir: Path) -> dict:
+# The parts of the upload page that aren't plain form controls, as cut-down HTML: elements with the attributes
+# that identify them, and their text. The licence choices are links, the terms boxes are drawn over hidden
+# checkboxes, and the categories and any channel picker are built by the page's scripts.
+_SECTIONS_JS = r"""() => {
+  const KEEP = /^(id|class|name|type|value|for|href|role|data-[\w-]+|aria-[\w-]+|placeholder|title|checked|selected)$/;
+  const SKIP = new Set(["script", "style", "svg", "noscript", "link", "meta", "iframe", "img"]);
+  const brief = node => {
+    if (node.nodeType === 3) return node.textContent.replace(/\s+/g, " ").trim().slice(0, 120);
+    if (node.nodeType !== 1 || SKIP.has(node.tagName.toLowerCase())) return "";
+    if (node.matches("input[type=hidden]")) return "";
+    const tag = node.tagName.toLowerCase();
+    const attrs = [...node.attributes].filter(a => KEEP.test(a.name))
+      .map(a => a.value === "" ? a.name : `${a.name}="${a.value.slice(0, 80)}"`).join(" ");
+    const inner = [...node.childNodes].map(brief).filter(Boolean).join("");
+    return `<${tag}${attrs ? " " + attrs : ""}>${inner}</${tag}>`;
+  };
+  const form = document.getElementById("form"), form2 = document.getElementById("form2");
+  const parts = {
+    "Step 1: video info, categories, visibility (#form)": form ? brief(form) : "",
+    "Step 2: licensing and terms (#form2)": form2 ? brief(form2) : "",
+  };
+  // A channel picker outside those two, if there's one (inside them, it's shown above).
+  const main = document.querySelector("main") || document.body;
+  const channel = [...main.querySelectorAll("*")].filter(e =>
+    !e.closest("#form, #form2") && /channel/i.test([e.id, e.getAttribute("class"), e.getAttribute("name")].join(" ")));
+  parts["Channel picker elsewhere"] = channel.slice(0, 5).map(e => brief(e.parentElement || e)).join("\n");
+  return parts;
+}"""
+
+
+def upload_page(cdp_url: str, save_dir: Path, sections: bool = False) -> dict:
     """What Rumble's upload page asks for, as the upload browser shows it: its forms and their controls (see
-    describe_form). The page and a screenshot of it are saved in `save_dir`, for building the uploader against."""
+    describe_form), and with `sections`, the parts that aren't plain controls as cut-down HTML. The page and a
+    screenshot of it are saved in `save_dir`, for building the uploader against."""
     try:
         with sync_playwright() as p:
             try:
@@ -207,7 +238,10 @@ def upload_page(cdp_url: str, save_dir: Path) -> dict:
                 save_dir.mkdir(parents=True, exist_ok=True)
                 (save_dir / "upload-page.html").write_text(page.content(), encoding="utf-8")
                 page.screenshot(path=str(save_dir / "upload-page.png"), full_page=True, timeout=15_000)
-                return page.evaluate(_FORM_JS)
+                found = page.evaluate(_FORM_JS)
+                if sections:
+                    found["sections"] = page.evaluate(_SECTIONS_JS)
+                return found
             finally:
                 page.close()
     except RumbleError:
