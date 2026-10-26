@@ -2,6 +2,8 @@
 
 import hashlib
 import logging
+import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 
@@ -72,8 +74,7 @@ def _download(url: str, settings: Settings, on_progress: Callable[[float], None]
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
-        "progress_hooks": [_ProgressLog(on_progress)],
-        **speed_limit(limit_mbps),
+        "progress_hooks": [_ProgressLog(on_progress), *([SpeedLimit(limit_mbps)] if limit_mbps and limit_mbps > 0 else [])],
         **rumble.ytdlp_options(url),
     }
     log.info("Downloading %r (%s)%s", info.get("title"), info.get("webpage_url") or url,
@@ -92,12 +93,35 @@ def _download(url: str, settings: Settings, on_progress: Callable[[float], None]
     return ws
 
 
-def speed_limit(mbps: float) -> dict:
-    """yt-dlp options capping the total download speed. Its limit applies to each piece of a stream
-    downloaded in parallel, so with a limit the pieces are fetched one at a time."""
-    if not mbps or mbps <= 0:
-        return {}
-    return {"ratelimit": int(mbps * 1_000_000 / 8), "concurrent_fragment_downloads": 1}
+class SpeedLimit:
+    """yt-dlp progress hook holding a download to `mbps` in total. yt-dlp's own limit applies to each piece
+    of a stream downloaded in parallel, and fetching the pieces one at a time instead falls far short of the
+    limit, so they still go in parallel and whichever piece reports progress while ahead waits."""
+
+    CATCH_UP_S = 1.0  # how far behind it may make up afterwards: a slow patch isn't followed by a burst
+
+    def __init__(self, mbps: float, clock: Callable[[], float] = time.monotonic,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
+        self._rate = mbps * 1_000_000 / 8  # bytes per second
+        self._clock, self._sleep = clock, sleep
+        self._lock = threading.Lock()
+        self._file: str | None = None
+        self._start, self._from = 0.0, 0
+
+    def __call__(self, d: dict) -> None:
+        if d.get("status") != "downloading":
+            return
+        done = d.get("downloaded_bytes") or 0
+        with self._lock:
+            now = self._clock()
+            if d.get("filename") != self._file:  # the video, then the audio; counts from what's already there
+                self._file, self._start, self._from = d.get("filename"), now, done
+                return
+            behind = (now - self._start) - (done - self._from) / self._rate
+            if behind > self.CATCH_UP_S:
+                self._start += behind - self.CATCH_UP_S
+        if behind < 0:
+            self._sleep(-behind)
 
 
 class _ProgressLog:

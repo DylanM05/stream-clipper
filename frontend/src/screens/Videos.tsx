@@ -162,7 +162,7 @@ function DownloadAndDisk() {
             : "Downloads use your full internet speed."
         }
         label="Download speed limit (Mbit/s)"
-        hint="Around half your internet speed keeps everything else usable. 0 means no limit, which is fastest: it downloads several pieces at once. A download that's running switches within a few seconds."
+        hint="Around half your internet speed keeps everything else usable. 0 means no limit. A download that's running switches within a few seconds."
         value={limit}
         onSave={async (v) => setData(await api.updateSettings({ download_limit_mbps: v }))}
       />
