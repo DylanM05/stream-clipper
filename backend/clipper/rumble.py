@@ -203,7 +203,11 @@ _SECTIONS_JS = r"""() => {
     const tag = node.tagName.toLowerCase();
     const attrs = [...node.attributes].filter(a => KEEP.test(a.name))
       .map(a => a.value === "" ? a.name : `${a.name}="${a.value.slice(0, 80)}"`).join(" ");
-    const inner = [...node.childNodes].map(brief).filter(Boolean).join("");
+    // A long list (the secondary categories run to thousands) is shown by its first few entries.
+    const children = [...node.childNodes];
+    const listed = children.length > 25 ? children.slice(0, 20) : children;
+    const more = children.length - listed.length;
+    const inner = listed.map(brief).filter(Boolean).join("") + (more ? `[…and ${more} more]` : "");
     return `<${tag}${attrs ? " " + attrs : ""}>${inner}</${tag}>`;
   };
   const form = document.getElementById("form"), form2 = document.getElementById("form2");
