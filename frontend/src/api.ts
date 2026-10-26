@@ -73,6 +73,7 @@ export interface Clip {
   destination_url: string;
   playlist_id: string; // a playlist on that channel, or ""
   youtube_url: string;
+  rumble_url: string; // once it's up on Rumble too
   thumbnail_status: "" | "queued" | "making" | "done" | "failed";
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
@@ -116,18 +117,23 @@ export interface Destination {
   api_connected: boolean; // uploads go through the YouTube API; otherwise through YouTube Studio
   api_account: string; // the channel name Google reported when it was connected
   api_error: string; // why connecting failed, or why its sign-in stopped working
+  rumble: boolean; // its uploads can also go to Rumble, through the upload browser
+  rumble_category: string; // Rumble's primary category for them
 }
 
-/** One file of a clip being uploaded by the worker, through the YouTube API or YouTube Studio. */
+export type Site = "youtube" | "rumble";
+
+/** One file of a clip being uploaded by the worker: to YouTube through its API or Studio, or to Rumble. */
 export interface UploadJob {
   id: number;
   clip_id: number;
   which: "video" | "short";
+  site: Site;
   visibility: Visibility;
   status: "queued" | "uploading" | "done" | "failed";
-  method: "api" | "studio" | "";
+  method: "api" | "studio" | "browser" | "";
   progress: number;
-  youtube_url: string;
+  youtube_url: string; // its link once it's up, on whichever site
   error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;
   rush: boolean; // sent with "Upload now"
@@ -341,8 +347,8 @@ export const api = {
   openStudioBrowser: () => post<{ opened: boolean }>("/api/studio/open"),
   checkStudio: () => post<StudioStatus>("/api/studio/check"),
   uploads: (clipId: number) => request<UploadJob[]>(`/api/clips/${clipId}/uploads`),
-  startUpload: (clipId: number, which: UploadJob["which"], visibility: Visibility) =>
-    post<UploadJob>(`/api/clips/${clipId}/uploads`, { which, visibility }),
+  startUpload: (clipId: number, which: UploadJob["which"], visibility: Visibility, site: Site) =>
+    post<UploadJob>(`/api/clips/${clipId}/uploads`, { which, visibility, site }),
   retryUpload: (jobId: number) => post<UploadJob>(`/api/upload-jobs/${jobId}/retry`),
   uploadNow: (jobId: number) => post<UploadJob>(`/api/upload-jobs/${jobId}/now`),
   cancelUpload: (jobId: number) => remove(`/api/upload-jobs/${jobId}`),
@@ -355,7 +361,9 @@ export const api = {
 
   destinations: () => request<Destination[]>("/api/destinations"),
   addDestination: (body: { name: string; url: string }) => post<Destination>("/api/destinations", body),
-  updateDestination: (id: number, body: { name: string; url: string }) => patch<Destination>(`/api/destinations/${id}`, body),
+  updateDestination: (id: number, body: { name: string; url: string; rumble?: boolean; rumble_category?: string }) =>
+    patch<Destination>(`/api/destinations/${id}`, body),
+  rumble: () => request<{ categories: string[]; licence: string }>("/api/rumble"),
   deleteDestination: (id: number) => remove(`/api/destinations/${id}`),
   youtube: () => request<{ configured: boolean; callback_path: string }>("/api/youtube"),
   /** Google's sign-in page for the channel; it comes back to the app at this same address. */

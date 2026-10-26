@@ -1,0 +1,130 @@
+<!doctype html>
+<!-- A stand-in for rumble.com/upload.php, built from its markup as read with `clipper rumble-upload-check --html`
+     (Oct 26, 2026), with a script that behaves like the page's: the upload's percentage climbs once a file is
+     chosen, the category list opens and fills its hidden value, and the three steps follow each other. What the
+     form was given is left in window.sent for the test. ?fail=<message> makes Submit show that error instead. -->
+<html><head><meta charset="utf-8"><title>Upload videos at Rumble</title>
+<style>
+  .hidden-upload, .form-radio input, .form-checkbox input { display: none; }
+  .select-options-container { display: none; }
+  .select-container.open .select-options-container { display: block; }
+  #form2, #form3 { display: none; }
+  .wight-box { border: 1px solid #ccc; margin: 4px; padding: 4px; }
+  .active-wight-box { border-color: green; }
+</style></head>
+<body><main>
+<form id="form"><div class="upload-video-wrap">
+  <div class="upload-video-placeholder">
+    <div class="upload-percent"><h2 class="num_percent"></h2><p class="uploading_text">Uploading...</p></div>
+    <div class="error" id="error_video"></div>
+    <input class="hidden-upload" type="file" name="Filedata" id="Filedata">
+  </div>
+  <div class="video-details form-wrap"><h2>Video info</h2>
+    <input class="input" id="title" type="text" name="title" placeholder="Video Title">
+    <div class="error error__required" id="error_title"></div>
+    <textarea name="description" id="description" placeholder="Video Description"></textarea>
+    <h4>Categories *</h4>
+    <div class="form-wrap"><div><div class="select-container">
+      <input value="0" id="category_primary" class="select-search-value" type="hidden">
+      <input value="" class="select-search-input" name="primary-category" placeholder="- Primary category -">
+      <div class="select-options-container" role="listbox">
+        <div class="select-option" data-value="9" data-label="Automotive" role="option">Automotive</div>
+        <div class="select-option" data-value="15" data-label="Entertainment" role="option">Entertainment</div>
+        <div class="select-option" data-value="16" data-label="Finance &amp; Crypto" role="option">Finance &amp; Crypto</div>
+        <div class="select-option" data-value="5" data-label="News" role="option">News</div>
+        <div class="select-option" data-value="14" data-label="Podcasts" role="option">Podcasts</div>
+      </div>
+    </div></div><div><div class="select-container">
+      <input value="0" id="category_secondary" class="select-search-value" type="hidden">
+      <input value="" class="select-search-input" name="secondary-category" placeholder="- Secondary category -">
+      <div class="select-options-container" role="listbox">
+        <div class="select-option" data-value="1354" data-label="Comedy" role="option">Comedy</div>
+      </div>
+    </div></div></div>
+    <div class="error error__required" id="error_categories"></div>
+    <h4>Video thumbnails</h4>
+    <div class="thumbContainers"><a href="#"></a><a href="#"></a><a href="#"></a>
+      <a class="choose-your-own" href="#"><span id="choose_own">or choose your own</span>
+        <input name="customThumb" id="customThumb" class="hidden-upload" type="file"></a></div>
+    <input class="input" id="tags" type="text" name="tags" placeholder="Tags (optional, comma separated)">
+    <h4>Visibility</h4>
+    <fieldset id="visibility-options" class="video-option-wrap">
+      <div class="form-radio"><input type="radio" name="visibility" id="visibility_public" value="public" checked><label for="visibility_public">Public</label></div>
+      <div class="form-radio"><input type="radio" name="visibility" id="visibility_unlisted" value="unlisted"><label for="visibility_unlisted">Unlisted</label></div>
+      <div class="form-radio"><input type="radio" name="visibility" id="visibility_private" value="private"><label for="visibility_private">Private</label></div>
+      <div class="form-radio"><input type="radio" name="visibility" id="scheduler" value="private"><label for="scheduler">Scheduled</label></div>
+      <div id="push_settings" class="form-checkbox"><input type="checkbox" name="sendPush" id="sendPush"><label for="sendPush"><span></span>Send mobile push notification to followers</label></div>
+    </fieldset>
+    <div class="video-more button-wrap"><input type="button" id="submitForm" value="Upload"></div>
+    <div class="error" id="error_form"></div>
+  </div>
+</div></form>
+
+<form id="form2"><div class="upload-video-wrap upload-form-step2">
+  <div class="video-more form-wrap progress-wrap"><div class="loader_basic loader-initial"><span class="green_percent"></span><span class="top_percent">0%</span></div></div>
+  <div class="video-more form-wrap licensingOptions quarters-wrap"><h2>Your licensing options</h2>
+    <div class="quarter"><div class="wight-box profit"><a href="#" class="greenLink mRight">Video Management<sub>(exclusive)</sub></a><p>You are selecting Rumble to be your exclusive agent. <a href="/s/terms">Read the full terms here</a>.</p></div></div>
+    <div class="quarter"><div class="wight-box nonExclusive"><a href="#" class="greenLink mRight">Video Management<sub>(excluding YouTube)</sub></a><p>With the exception of YouTube.com, exclusive. <a href="/s/terms">Read the full terms here</a>.</p></div></div>
+    <div class="quarter"><div class="wight-box nfs active-wight-box"><a href="#" class="greenLink mRight last">Rumble Only<sub>(non-exclusive, similar to YouTube)</sub></a><p>Net earnings on the Rumble Player. <a href="/s/terms">Read the full terms here</a>.</p></div></div>
+    <div class="quarter"><div class="wight-box nfs"><a href="#" class="greenLink mRight last">Personal Use<sub>(not monetized, not searchable)</sub></a><p>You retain full control. <a href="/s/terms">Read the full terms here</a>.</p></div></div>
+  </div>
+  <div class="video-more form-wrap terms-options"><h2>Terms and conditions</h2>
+    <div class="form-checkbox video-option-wrap notifications"><input type="checkbox" name="crights" id="crights"><label for="crights"><span></span>You have not signed an exclusive agreement with any other parties.</label><div class="error" id="error_rights"></div></div>
+    <div class="form-checkbox video-option-wrap notifications"><input type="checkbox" name="crights" id="cterms"><label for="cterms"><span>Check here if you agree to our<a href="/s/terms">terms of service</a>.</span></label><div class="error" id="error_terms"></div></div>
+  </div>
+  <div class="error" id="error_form_2"></div>
+  <div class="video-more button-wrap"><input type="button" id="submitForm2" value="Submit"><input type="button" id="backForm2" value="Back"></div>
+</div></form>
+
+<form id="form3"><h2>Direct Link</h2><textarea id="direct"></textarea></form>
+</main>
+<script>
+  const $ = s => document.querySelector(s);
+  window.sent = null;
+  let percent = 0;
+  $("#Filedata").addEventListener("change", e => {
+    window.chosen = e.target.files[0].name;
+    const timer = setInterval(() => {
+      percent = Math.min(100, percent + 20);
+      $(".num_percent").textContent = $(".top_percent").textContent = percent + "%";
+      if (percent >= 100) clearInterval(timer);
+    }, 200);
+  });
+  document.querySelectorAll(".select-container").forEach(box => {
+    box.querySelector(".select-search-input").addEventListener("click", () => box.classList.add("open"));
+    box.querySelectorAll(".select-option").forEach(option => option.addEventListener("click", () => {
+      box.querySelector(".select-search-value").value = option.dataset.value;
+      box.querySelector(".select-search-input").value = option.dataset.label;
+      box.classList.remove("open");
+    }));
+  });
+  document.querySelectorAll(".wight-box a.greenLink").forEach(link => link.addEventListener("click", e => {
+    e.preventDefault();
+    document.querySelectorAll(".wight-box").forEach(b => b.classList.remove("active-wight-box"));
+    link.closest(".wight-box").classList.add("active-wight-box");
+  }));
+  $("#submitForm").addEventListener("click", () => {
+    if (!$("#title").value) return void ($("#error_title").textContent = "Please enter a title");
+    if ($("#category_primary").value === "0") return void ($("#error_categories").textContent = "Please choose a category");
+    $("#form").style.display = "none";
+    $("#form2").style.display = "block";
+  });
+  $("#submitForm2").addEventListener("click", () => {
+    const fail = new URLSearchParams(location.search).get("fail");
+    if (fail) return void ($("#error_form_2").textContent = fail);
+    if (!$("#crights").checked) return void ($("#error_rights").textContent = "Please confirm");
+    if (!$("#cterms").checked) return void ($("#error_terms").textContent = "Please agree to the terms");
+    if (percent < 100) return void ($("#error_form_2").textContent = "Please wait for the upload to finish");
+    window.sent = {
+      file: window.chosen, title: $("#title").value, description: $("#description").value,
+      category: $("#category_primary").value, thumbnail: $("#customThumb").files[0]?.name || "",
+      visibility: document.querySelector("input[name=visibility]:checked").id,
+      licence: document.querySelector(".active-wight-box a.greenLink").firstChild.textContent,
+      push: $("#sendPush").checked,
+    };
+    $("#form2").style.display = "none";
+    $("#form3").style.display = "block";
+    $("#direct").value = "https://rumble.com/v6test1-a-moment.html";
+  });
+</script>
+</body></html>

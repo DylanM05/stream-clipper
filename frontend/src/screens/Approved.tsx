@@ -154,11 +154,16 @@ function UploadedFooter({ clip }: { clip: Clip }) {
   return (
     <div className="flex items-center gap-2 border-t border-white/5 px-3 py-2.5 text-sm">
       <span className="min-w-0 flex-1 truncate text-zinc-500">{clip.destination_name || "Uploaded"}</span>
+      {clip.rumble_url && (
+        <a href={clip.rumble_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold text-emerald-300">
+          <LinkIcon className="size-4" /> On Rumble
+        </a>
+      )}
       {clip.youtube_url ? (
         <a href={clip.youtube_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold text-emerald-300">
           <LinkIcon className="size-4" /> On YouTube
         </a>
-      ) : (
+      ) : !clip.rumble_url && (
         <button onClick={() => go(`upload/${clip.id}`)} className="font-semibold text-zinc-300">
           Details
         </button>

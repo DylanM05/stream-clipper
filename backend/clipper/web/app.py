@@ -33,6 +33,7 @@ from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
 from ..pipeline import render
+from ..rumble_upload import CATEGORIES as RUMBLE_CATEGORIES, LICENCE as RUMBLE_LICENCE
 from ..workspace import Workspace, remove
 from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
 from .auth import COOKIE, MAX_AGE_S, Auth
@@ -107,6 +108,7 @@ class ClipOut(BaseModel):
     destination_url: str
     playlist_id: str
     youtube_url: str
+    rumble_url: str
     thumbnail_status: str  # "" (none), queued, making, done or failed
     thumbnail_url: str  # "" until there's one
     thumbnail_hint: str
@@ -206,6 +208,8 @@ class ShowPatch(BaseModel):
 class DestinationIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(default="", max_length=500)
+    rumble: bool | None = None  # its uploads can go to Rumble too; unchanged if left out
+    rumble_category: str | None = None  # one of rumble_upload.CATEGORIES
 
 
 class DestinationOut(BaseModel):
@@ -217,6 +221,8 @@ class DestinationOut(BaseModel):
     api_connected: bool  # uploads go through the YouTube API
     api_account: str  # the channel name Google reported when it was connected
     api_error: str  # why connecting failed, or why the sign-in stopped working
+    rumble: bool  # its uploads can also go to Rumble, through the upload browser
+    rumble_category: str
 
 
 class ConnectRequest(BaseModel):
@@ -238,17 +244,19 @@ class NewPlaylist(BaseModel):
 class UploadRequest(BaseModel):
     which: Literal["video", "short"] = "video"
     visibility: Literal["public", "unlisted", "private"] = "public"
+    site: Literal["youtube", "rumble"] = "youtube"
 
 
 class UploadJobOut(BaseModel):
     id: int
     clip_id: int
     which: str
+    site: str  # "youtube" or "rumble"
     visibility: str
     status: str
-    method: str  # "api" or "studio"; empty until it starts
+    method: str  # "api", "studio" or (Rumble) "browser"; empty until it starts
     progress: float
-    youtube_url: str
+    youtube_url: str  # the link once it's up, on whichever site
     error: str
     has_screenshot: bool
     rush: bool  # sent with "Upload now"
@@ -596,9 +604,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Where each clip's uploads stand, by the latest of each of its files, with a time for some: "uploading",
         "queued" (goes once the upload running is done), "scheduled" (waits for its turn until then), "retrying"
         (failed, and tries again by itself then) or "failed". Clips with none of those aren't listed."""
-        latest: dict[tuple[int, str], UploadJob] = {}
+        latest: dict[tuple[int, str, str], UploadJob] = {}
         for job in s.exec(select(UploadJob).order_by(col(UploadJob.id))):
-            latest[job.clip_id, job.which] = job
+            latest[job.clip_id, job.which, job.site] = job
         turns = upload_turns(s) if any(j.status == "queued" for j in latest.values()) else {}
         rank = ["uploading", "queued", "scheduled", "retrying", "failed"]  # what a clip with two files shows
         found: dict[int, tuple[str, datetime | None]] = {}
@@ -619,7 +627,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def destination_out(d: Destination) -> DestinationOut:
         return DestinationOut(id=d.id, name=d.name, url=d.url, channel_id=d.channel_id,
                               studio_upload_url=studio_upload_url(d.channel_id),
-                              api_connected=bool(d.youtube_token), api_account=d.youtube_account, api_error=d.youtube_error)
+                              api_connected=bool(d.youtube_token), api_account=d.youtube_account, api_error=d.youtube_error,
+                              rumble=d.rumble, rumble_category=d.rumble_category)
+
+    def set_rumble(dest: Destination, body: DestinationIn) -> None:
+        if body.rumble_category is not None and body.rumble_category not in RUMBLE_CATEGORIES:
+            raise HTTPException(422, f"Rumble's categories are {', '.join(RUMBLE_CATEGORIES)}")
+        if body.rumble is not None:
+            dest.rumble = body.rumble
+        if body.rumble_category is not None:
+            dest.rumble_category = body.rumble_category
 
     def job_out(job: UploadJob, turn: Turn | None = None) -> UploadJobOut:
         waits = turn is not None and bool(turn.reason)
@@ -1035,10 +1052,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def list_destinations(s: Session = Depends(db)) -> list[DestinationOut]:
         return [destination_out(d) for d in s.exec(select(Destination).order_by(col(Destination.name)))]
 
+    @app.get("/api/rumble")
+    def rumble_setup() -> dict:
+        """What Rumble uploads use: the primary categories to pick from, and the licence they go up under."""
+        return {"categories": list(RUMBLE_CATEGORIES), "licence": RUMBLE_LICENCE}
+
     @app.post("/api/destinations", status_code=201)
     def add_destination(body: DestinationIn, s: Session = Depends(db)) -> DestinationOut:
         url = body.url.strip()
         dest = Destination(name=body.name.strip(), url=url, channel_id=resolve_channel_id(url) if url else "")
+        set_rumble(dest, body)
         s.add(dest)
         s.commit()
         s.refresh(dest)
@@ -1054,6 +1077,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 forget_sign_in(s, dest)  # it's for the old channel
             dest.channel_id = channel_id
         dest.name, dest.url = body.name.strip(), url
+        set_rumble(dest, body)
         s.add(dest)
         s.commit()
         s.refresh(dest)
@@ -1388,12 +1412,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         path = clip.short_path if body.which == "short" else clip.video_path
         if clip.status not in ("rendered", "uploaded") or not path or not Path(path).exists():
             raise HTTPException(409, "Render the clip before uploading it")
+        if body.site == "rumble":
+            dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
+            if not (dest and dest.rumble):
+                raise HTTPException(409, "Switch on Rumble for its channel under Shows → YouTube channels first")
         busy = s.exec(select(UploadJob).where(
-            UploadJob.clip_id == clip_id, UploadJob.which == body.which, col(UploadJob.status).in_(("queued", "uploading")),
+            UploadJob.clip_id == clip_id, UploadJob.which == body.which, UploadJob.site == body.site,
+            col(UploadJob.status).in_(("queued", "uploading")),
         )).first()
         if busy:
-            raise HTTPException(409, "That file is already being uploaded")
-        job = UploadJob(clip_id=clip_id, which=body.which, visibility=body.visibility)
+            raise HTTPException(409, f"That file is already being uploaded to {'Rumble' if body.site == 'rumble' else 'YouTube'}")
+        job = UploadJob(clip_id=clip_id, which=body.which, site=body.site, visibility=body.visibility)
         s.add(job)
         s.commit()
         s.refresh(job)
@@ -1522,7 +1551,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if clip.thumbnail_status != "done" or not path or not path.is_file():
             raise HTTPException(409, "Make a thumbnail first")
         job = s.exec(select(UploadJob).where(
-            UploadJob.clip_id == clip_id, UploadJob.which == "video", UploadJob.status == "done",
+            UploadJob.clip_id == clip_id, UploadJob.which == "video", UploadJob.site == "youtube", UploadJob.status == "done",
         ).order_by(col(UploadJob.created_at).desc())).first()
         link = job.youtube_url if job else clip.youtube_url
         if not job and "/shorts/" in link.lower():
@@ -1551,7 +1580,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             select(UploadJob, ClipRecord, Vod)
             .join(ClipRecord, UploadJob.clip_id == ClipRecord.id)
             .join(Vod, ClipRecord.vod_id == Vod.id)
-            .where(UploadJob.status == "done", UploadJob.youtube_url != "")
+            .where(UploadJob.status == "done", UploadJob.youtube_url != "", UploadJob.site == "youtube")
         )
         if show_id is not None:
             query = query.where(Vod.show_id == show_id)

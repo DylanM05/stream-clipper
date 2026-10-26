@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import notify, stats, thumbnails, titles
+from . import ffmpeg, notify, rumble_upload, stats, thumbnails, titles
 from .config import Settings
 from .db import (
     CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine,
@@ -38,6 +38,7 @@ from .monitor import Monitor
 from .notify import Note
 from .overlay import Overlay
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
+from .rumble_upload import RumbleUpload, RumbleUploadError
 from .schedule import upload_turns
 from .studio import Studio, StudioError, Upload, write_status
 from .thumbnails import ThumbnailError
@@ -550,7 +551,7 @@ class Worker:
 
     def _auto_upload(self, clip_id: int) -> None:
         """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review:
-        for a highlight its Short if it has one, else the video."""
+        for a highlight its Short if it has one, else the video. It goes to Rumble too if its channel does."""
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
@@ -561,7 +562,9 @@ class Worker:
             if s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id, UploadJob.which == which)).first():
                 return  # uploaded or tried before: what happens next is up to you
             if clip.destination_id:
-                s.add(UploadJob(clip_id=clip_id, which=which, visibility=show.auto_visibility))
+                dest = s.get(Destination, clip.destination_id)
+                for site in ("youtube", "rumble") if dest and dest.rumble else ("youtube",):
+                    s.add(UploadJob(clip_id=clip_id, which=which, site=site, visibility=show.auto_visibility))
                 s.commit()
                 return
             title, show_name = clip.title, show.name
@@ -582,8 +585,8 @@ class Worker:
                 clip = s.get(ClipRecord, failed.clip_id)
                 # Not if that file went up (or is going up) another way since, or the clip was taken back.
                 another = s.exec(select(UploadJob).where(
-                    UploadJob.clip_id == failed.clip_id, UploadJob.which == failed.which, UploadJob.id != failed.id,
-                    col(UploadJob.status).in_(("queued", "uploading", "done")),
+                    UploadJob.clip_id == failed.clip_id, UploadJob.which == failed.which, UploadJob.site == failed.site,
+                    UploadJob.id != failed.id, col(UploadJob.status).in_(("queued", "uploading", "done")),
                 )).first()
                 if clip and clip.status in ("rendered", "uploaded") and not another:
                     log.info("Trying upload %d again by itself", failed.id)
@@ -621,16 +624,20 @@ class Worker:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
             path = clip.short_path if job.which == "short" else clip.video_path
         file = Path(path).resolve() if path else None
-        through_api = bool(self.youtube and dest and dest.youtube_token)
-        self._update_job(job_id, method="api" if through_api else "studio")
-        log.info("Uploading clip %d (%s) as %s through %s", job.clip_id, job.which, job.visibility,
-                 "the YouTube API" if through_api else "YouTube Studio")
+        on_rumble = job.site == "rumble"
+        through_api = not on_rumble and bool(self.youtube and dest and dest.youtube_token)
+        method = "browser" if on_rumble else "api" if through_api else "studio"
+        self._update_job(job_id, method=method)
+        log.info("Uploading clip %d (%s) as %s %s", job.clip_id, job.which, job.visibility,
+                 {"browser": "to Rumble", "api": "through the YouTube API", "studio": "through YouTube Studio"}[method])
         if not file or not file.exists():
             self._upload_failed(job, clip, "The file isn't rendered (any more)")
             return
         note = ""
         try:
-            if through_api:
+            if on_rumble:
+                url = self._upload_to_rumble(job, clip, dest, file)
+            elif through_api:
                 url, note = self._upload_through_api(job, clip, dest, file)
             else:
                 upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
@@ -649,6 +656,10 @@ class Worker:
             self._upload_failed(job, clip, str(e), retry="tomorrow" if e.retry else "", screenshot=e.screenshot,
                                 youtube_url=e.link)
             return
+        except RumbleUploadError as e:
+            log.warning("Upload %d failed: %s", job_id, e)
+            self._upload_failed(job, clip, str(e), retry="tomorrow" if e.retry else "", screenshot=e.screenshot)
+            return
         except YouTubeError as e:
             log.warning("Upload %d failed: %s", job_id, e)
             if e.signed_out:
@@ -660,14 +671,18 @@ class Worker:
             self._update_destination(dest.id, youtube_error="")  # e.g. a cancelled reconnect: the sign-in works
         with Session(self.engine) as s:
             row = s.get(ClipRecord, job.clip_id)
-            if job.which == "video" or not row.youtube_url:
-                row.youtube_url = url
+            field = "rumble_url" if on_rumble else "youtube_url"
+            if job.which == "video" or not getattr(row, field):
+                setattr(row, field, url)
             row.status, row.uploaded_at, row.updated_at = "uploaded", utcnow(), utcnow()
-            self._delete_render(row, s.get(Vod, row.vod_id), job.which)
+            # The file goes once it's up everywhere it was asked to go: the other site's upload may still need it.
+            if not s.exec(select(UploadJob).where(UploadJob.clip_id == row.id, UploadJob.which == job.which,
+                                                  UploadJob.status != "done")).first():
+                self._delete_render(row, s.get(Vod, row.vod_id), job.which)
             s.add(row)
             s.commit()
         what = "Short" if job.which == "short" else "Full episode" if clip.kind == "whole" else "Video"
-        where = f" on {dest.name}" if dest else ""
+        where = " on Rumble" if on_rumble else f" on {dest.name}" if dest else ""
         self._notify(Note(f"Uploaded: {clip.title}", f"{what}, {job.visibility}{where}. {note}".strip(), link=url, tone="good"))
 
     def _upload_failed(self, job: UploadJob, clip: ClipRecord, error: str, retry: str = "", **fields) -> None:
@@ -726,6 +741,30 @@ class Worker:
                 log.warning("Couldn't set upload %d's thumbnail: %s", job.id, e)
                 notes.append(f"It doesn't have its thumbnail: {e}")
         return result.url, " ".join(notes)
+
+    def _upload_to_rumble(self, job: UploadJob, clip: ClipRecord, dest: Destination | None, file: Path) -> str:
+        """Upload through Rumble's upload page, to the channel the upload browser is signed in to. Its video gets the
+        clip's thumbnail if it has one, else a frame from a third of the way in, as does a Short."""
+        own = Path(clip.thumbnail_path) if (job.which == "video" and clip.thumbnail_status == "done"
+                                            and clip.thumbnail_path and Path(clip.thumbnail_path).is_file()) else None
+        frame = None if own else file.with_name(f"{file.stem}.rumble-thumbnail.jpg")
+        try:
+            if frame:
+                try:
+                    ffmpeg.run(["-ss", f"{probe_duration(file) / 3:.3f}", "-i", str(file), "-frames:v", "1", "-q:v", "2",
+                                str(frame)])
+                except ffmpeg.FFmpegError as e:
+                    raise RumbleUploadError(f"Couldn't take a frame of the video for its thumbnail: {e}"[:500], retry=True) from e
+            return rumble_upload.upload(
+                self.settings.studio_cdp_url,
+                RumbleUpload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+                             category=dest.rumble_category if dest else "Entertainment", thumbnail=own or frame),
+                self.settings.studio_dir,
+                on_progress=self._upload_progress(job.id),
+            )
+        finally:
+            if frame:
+                frame.unlink(missing_ok=True)
 
     def _update_destination(self, dest_id: int, **fields) -> None:
         with Session(self.engine) as s:
@@ -836,7 +875,7 @@ class Worker:
         with Session(self.engine) as s:
             dests = {d.id: d for d in s.exec(select(Destination))}
             done = s.exec(select(UploadJob, ClipRecord).join(ClipRecord).where(
-                UploadJob.status == "done", UploadJob.youtube_url != "",
+                UploadJob.status == "done", UploadJob.youtube_url != "", UploadJob.site == "youtube",
             )).all()
         any_token = next((d.youtube_token for d in dests.values() if d.youtube_token), "") if self.youtube else ""
         # Read as the clip's own channel if it's connected, else with the API key, else as any connected channel.
@@ -882,7 +921,8 @@ class Worker:
             set_app_setting(s, "stats_digest_week", week)
             s.commit()
             rows = s.exec(select(UploadJob, ClipRecord).join(ClipRecord).where(
-                UploadJob.status == "done", col(UploadJob.finished_at) >= utcnow() - timedelta(days=7),
+                UploadJob.status == "done", UploadJob.site == "youtube",
+                col(UploadJob.finished_at) >= utcnow() - timedelta(days=7),
             )).all()
         if rows:
             self._notify(Note("Last week on YouTube", stats.digest(rows), link="stats"))

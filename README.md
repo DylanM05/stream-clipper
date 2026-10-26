@@ -180,6 +180,16 @@ For channels not connected to the API, the worker drives YouTube Studio in the s
 
 The manual steps (share to the YouTube app, or download and drag into Studio) stay on the same page as a fallback.
 
+### Posting to Rumble too
+
+A YouTube channel's uploads can also go to Rumble. Rumble's upload API needs an access key from its business team, so the worker fills in Rumble's upload page (rumble.com/upload.php) in the upload browser, the way it does YouTube Studio:
+- **Set up:** open the upload browser and sign in at rumble.com with the account whose channel the videos go to (an account has one channel there). Then under **Shows → YouTube channels**, switch on **Also post to Rumble** for a channel and pick the Rumble category its uploads go under.
+- **Uploading:** a clip's **Upload** page then has **YouTube**, **Rumble** and **Both**. Each site gets its own upload, with its own progress, spacing (**Space clips out** counts each site separately) and retries. A show that uploads by itself posts to both.
+- **What goes up:** the title, description, visibility and category, and as its thumbnail the clip's own (for the 16:9 video), else a frame from a third of the way in. A Short (vertical, 3 minutes or less) becomes a Rumble Short by itself. The rendered file is kept until it's up on every site it was asked to go to.
+- **Licence:** every upload goes up under Rumble's **Rumble Only** licence: non-exclusive, like YouTube, and what Rumble picks by default. The two **Video Management** licences make Rumble the exclusive agent for the video, which only the creators could agree to. The uploader also confirms there's no exclusive agreement with anyone else and agrees to Rumble's terms, as the page asks; make sure both are true of the creators' permission.
+- **When it fails:** a failed upload saves a screenshot (**What Rumble showed**). One that fails before it's submitted is tried again by itself the next night. One that fails after it's submitted isn't, because it may be on Rumble already: check the channel there before retrying. When Rumble changes its page, `clipper rumble-upload-check` (and `--html`) shows what it now asks for, and `backend/clipper/rumble_upload.py` needs updating to match.
+- **Not yet:** Rumble videos have no view counts in **Stats**, and **Use on YouTube** is for YouTube only.
+
 ## Thumbnails
 
 A clip's Upload page can make a thumbnail for its 16:9 video, and a show can make one for every chapter and full episode once it's rendered (**Thumbnails** under the show). Claude reads what's said in the video and comes up with a funny idea that's about what actually happens, starring the people in it, plus a few words of text if they help. An image model on [OpenRouter](https://openrouter.ai) draws it, with frames of the video as references so the hosts and guests look like themselves. Type your own idea in the box to steer it, and tap **Make another** until you like one. Under the picture, **People** says who's in it and where each likeness came from.
@@ -239,6 +249,7 @@ Everything the app does is also available from the command line, e.g. `docker co
 | `add "<url>" [--whole/--segment] [--notes "..."]` | Queue a video for the worker, same as the app's **Add video**. |
 | `process "<url>" [--notes "..."] [--no-render] [--redo STEP] [--only ID]` | Run the whole pipeline in the foreground without the app; handy for testing prompts. |
 | `doctor`, `llm-check` | Check the setup and the Claude Code login. |
+| `rumble-upload-check [--html]` | Show what Rumble's upload page asks for, as the upload browser sees it, for when Rumble changes it (see [Posting to Rumble too](#posting-to-rumble-too)). Nothing is uploaded. |
 | `timing-check [ID...] [--fix]` | Check that finished videos' transcripts (the 5 newest, or these ids) line up with the video. Videos transcribed before the sound kept the video's timing have their words, and so their Shorts' captions, timed early after any point where the stream dropped and came back; `--fix` puts the transcript right, moves the clips you haven't trimmed by hand to where Claude meant them, and renders again the affected ones that were rendered or approved (taking their queued uploads out of the queue). |
 | `browser` | On a desktop: open the upload browser (Chrome or Edge with its own profile) to sign in to YouTube or X. |
 | `serve`, `worker` | The two services `docker compose up` runs. |

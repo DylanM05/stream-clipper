@@ -58,7 +58,8 @@ const VOD_STATUS: Record<VodStatus, [string, string]> = {
 
 const PAUSED = "bg-amber-500/15 text-amber-300";
 
-// A rendered clip whose upload has been started says where that stands instead of "Ready to upload".
+// A rendered clip whose upload has been started says where that stands instead of "Ready to upload", and so does
+// one that's up on one site while another is still to come (or failed).
 const UPLOAD_STATUS: Record<Exclude<UploadState, "">, [string, string]> = {
   uploading: ["Uploading", "bg-sky-500/15 text-sky-300"],
   queued: ["Uploads next", "bg-indigo-500/15 text-indigo-300"],
@@ -68,7 +69,7 @@ const UPLOAD_STATUS: Record<Exclude<UploadState, "">, [string, string]> = {
 };
 
 export function ClipStatusChip({ status, paused, upload }: { status: ClipStatus; paused?: boolean; upload?: UploadState }) {
-  const [label, tone] = status === "rendered" && upload ? UPLOAD_STATUS[upload] : CLIP_STATUS[status];
+  const [label, tone] = (status === "rendered" || status === "uploaded") && upload ? UPLOAD_STATUS[upload] : CLIP_STATUS[status];
   if (paused && status === "approved") return <Chip tone={PAUSED}>Render paused</Chip>;
   if (paused && status === "rendering") return <Chip tone={PAUSED}>Pausing…</Chip>;
   return <Chip tone={tone}>{label}</Chip>;

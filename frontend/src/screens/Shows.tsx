@@ -355,6 +355,53 @@ function DestinationRow(props: { destination: Destination; apiReady: boolean; on
         </div>
       )}
       {destination.api_error && <p className="mt-2 text-xs text-red-300">{destination.api_error}</p>}
+      <RumbleOption destination={destination} onChanged={onChanged} />
+    </div>
+  );
+}
+
+/** Whether a channel's uploads can also go to Rumble, and under which of Rumble's categories. */
+function RumbleOption({ destination, onChanged }: { destination: Destination; onChanged: () => void }) {
+  const toast = useToast();
+  const { data: rumble } = usePoll(api.rumble, 0);
+  const save = async (fields: { rumble?: boolean; rumble_category?: string }) => {
+    try {
+      await api.updateDestination(destination.id, { name: destination.name, url: destination.url, ...fields });
+      onChanged();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+  return (
+    <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
+      <label className="flex items-center gap-3">
+        <input
+          type="checkbox"
+          checked={destination.rumble}
+          onChange={(e) => save({ rumble: e.target.checked })}
+          className="size-5 shrink-0 accent-violet-500"
+        />
+        <span className="text-sm text-zinc-300">Also post to Rumble</span>
+      </label>
+      {destination.rumble && (
+        <>
+          <select
+            value={destination.rumble_category}
+            onChange={(e) => save({ rumble_category: e.target.value })}
+            className={cn(input, "bg-zinc-800 ring-0")}
+            aria-label="Rumble category"
+          >
+            {(rumble?.categories ?? [destination.rumble_category]).map((c) => (
+              <option key={c}>{c}</option>
+            ))}
+          </select>
+          <p className="text-xs text-zinc-500">
+            Rumble category for its uploads. They go to the channel of the Rumble account the upload browser is signed in
+            to, under Rumble's “{rumble?.licence ?? "Rumble Only"}” licence (non-exclusive). Pick YouTube, Rumble or both on
+            a clip's Upload page; a show that uploads by itself posts to both.
+          </p>
+        </>
+      )}
     </div>
   );
 }

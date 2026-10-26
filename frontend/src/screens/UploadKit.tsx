@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { api, errorText, media, type Clip, type Destination, type UploadJob, type Visibility } from "../api";
+import { api, errorText, media, type Clip, type Destination, type Site, type UploadJob, type Visibility } from "../api";
 import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
 import { ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, upcoming, usePoll } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
@@ -136,11 +136,11 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
         {clip.status === "uploaded" ? (
           <div className="space-y-2">
             <p className="text-sm text-emerald-300">Marked as uploaded{clip.destination_name ? ` to ${clip.destination_name}` : ""}.</p>
-            {clip.youtube_url && (
-              <a href={clip.youtube_url} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300">
-                {clip.youtube_url}
+            {[clip.youtube_url, clip.rumble_url].filter(Boolean).map((link) => (
+              <a key={link} href={link} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300">
+                {link}
               </a>
-            )}
+            ))}
             <Button
               onClick={() =>
                 act(
@@ -179,15 +179,29 @@ const JOB_STATUS: Record<UploadJob["status"], string> = {
   done: "Uploaded",
   failed: "Failed",
 };
-const METHOD_LABEL: Record<UploadJob["method"], string> = { api: " · YouTube API", studio: " · Studio", "": "" };
+const METHOD_LABEL: Record<UploadJob["method"], string> = { api: " · YouTube API", studio: " · Studio", browser: "", "": "" };
+const SITE_LABEL: Record<Site, string> = { youtube: "YouTube", rumble: "Rumble" };
+const WHERE_LABEL = { youtube: "YouTube", rumble: "Rumble", both: "Both" } as const;
+type Where = keyof typeof WHERE_LABEL;
 
-/** The worker uploads through the YouTube API if the channel is connected, else through YouTube Studio. */
+/**
+ * The worker uploads to YouTube through its API if the channel is connected, else through YouTube Studio; and to
+ * Rumble, if the channel posts there too, through Rumble's upload page.
+ */
 function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destination }) {
   const toast = useToast();
   const { data: jobs, refresh } = usePoll(() => api.uploads(clip.id), 4000, clip.id);
   const [visibility, setVisibility] = useState<Visibility>(() => loadSetting("clipper.uploadVisibility", "public"));
-  const busy = (which: UploadJob["which"]) => jobs?.some((j) => j.which === which && ["queued", "uploading"].includes(j.status));
+  const [where, setWhere] = useState<Where>(() => loadSetting("clipper.uploadWhere", "both"));
+  const sites: Site[] = !destination?.rumble ? ["youtube"] : where === "both" ? ["youtube", "rumble"] : [where];
+  // The sites a file can start going to: not ones it's already queued for or uploading to.
+  const startable = (which: UploadJob["which"]) =>
+    sites.filter((site) => !jobs?.some((j) => j.which === which && j.site === site && ["queued", "uploading"].includes(j.status)));
   const ready = clip.status === "rendered" || clip.status === "uploaded";
+  const toText = (which: UploadJob["which"]) => {
+    const to = startable(which);
+    return destination?.rumble && to.length ? ` to ${to.map((s) => SITE_LABEL[s]).join(" and ")}` : "";
+  };
 
   const run = async (work: () => Promise<unknown>, done?: string) => {
     try {
@@ -200,7 +214,11 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   };
   const start = (which: UploadJob["which"]) => {
     saveSetting("clipper.uploadVisibility", visibility);
-    return run(() => api.startUpload(clip.id, which, visibility), "Queued. The worker uploads it next.");
+    saveSetting("clipper.uploadWhere", where);
+    const to = startable(which);
+    return run(async () => {
+      for (const site of to) await api.startUpload(clip.id, which, visibility, site);
+    }, `Queued${toText(which)}. The worker uploads it next.`);
   };
 
   return (
@@ -227,6 +245,19 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
         </>
       )}
       {destination?.api_error && <p className="text-xs text-red-300">{destination.api_error}</p>}
+      {destination?.rumble && (
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
+          {(Object.keys(WHERE_LABEL) as Where[]).map((w) => (
+            <button
+              key={w}
+              onClick={() => setWhere(w)}
+              className={cn("rounded-lg py-2 text-sm font-semibold", where === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            >
+              {WHERE_LABEL[w]}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
         {(Object.keys(VISIBILITY_LABEL) as Visibility[]).map((v) => (
           <button
@@ -239,12 +270,13 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
         ))}
       </div>
       <div className="grid gap-2">
-        <Button tone="primary" disabled={!ready || busy("video") || !clip.destination_id} onClick={() => start("video")}>
-          <UploadIcon className="size-4" /> Upload {clip.kind === "whole" ? "the full episode" : "the video"} ({VISIBILITY_LABEL[visibility]})
+        <Button tone="primary" disabled={!ready || !startable("video").length || !clip.destination_id} onClick={() => start("video")}>
+          <UploadIcon className="size-4" /> Upload {clip.kind === "whole" ? "the full episode" : "the video"}
+          {toText("video")} ({VISIBILITY_LABEL[visibility]})
         </Button>
         {clip.has_short && (
-          <Button disabled={!ready || busy("short") || !clip.destination_id} onClick={() => start("short")}>
-            <PhoneIcon className="size-4" /> Upload the Short ({VISIBILITY_LABEL[visibility]})
+          <Button disabled={!ready || !startable("short").length || !clip.destination_id} onClick={() => start("short")}>
+            <PhoneIcon className="size-4" /> Upload the Short{toText("short")} ({VISIBILITY_LABEL[visibility]})
           </Button>
         )}
         {!clip.destination_id && <p className="text-xs text-zinc-500">Pick a channel above first.</p>}
@@ -255,7 +287,9 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
           {jobs.map((job) => (
             <li key={job.id} className="space-y-2 p-3 text-sm">
               <div className="flex items-center gap-2">
-                <span className="font-semibold">{job.which === "short" ? "Short" : "Video"}</span>
+                <span className="font-semibold">
+                  {SITE_LABEL[job.site]} {job.which === "short" ? "Short" : "video"}
+                </span>
                 <span className="text-zinc-500">
                   · {VISIBILITY_LABEL[job.visibility]}
                   {METHOD_LABEL[job.method]}
@@ -297,7 +331,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
                     </button>
                     {job.has_screenshot && (
                       <a href={media.uploadScreenshot(job)} target="_blank" rel="noreferrer" className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700">
-                        What Studio showed
+                        What {job.site === "rumble" ? "Rumble" : "Studio"} showed
                       </a>
                     )}
                     <button onClick={() => run(() => api.cancelUpload(job.id))} className="rounded-lg px-3 py-1.5 text-xs font-semibold text-zinc-400">

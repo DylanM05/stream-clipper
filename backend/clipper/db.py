@@ -57,6 +57,10 @@ class Destination(SQLModel, table=True):
     youtube_token: str = ""  # Google refresh token for the channel
     youtube_account: str = ""  # the channel's name as Google reported it when connecting
     youtube_error: str = ""  # why connecting failed, or why the sign-in stopped working
+    # Its uploads can also go to Rumble (rumble_upload.py): to the channel of the Rumble account the upload browser
+    # is signed in to, under this primary category.
+    rumble: bool = False
+    rumble_category: str = "Entertainment"
     created_at: datetime = Field(default_factory=utcnow)
 
 
@@ -68,11 +72,12 @@ class UploadJob(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     clip_id: int = Field(foreign_key="clip.id", index=True)
     which: str = "video"  # "video" or "short"
+    site: str = "youtube"  # "youtube" or "rumble"
     visibility: str = "public"  # public, unlisted, private
     status: str = Field(default="queued", index=True)  # queued, uploading, done, failed
-    method: str = ""  # "api" or "studio", set when it starts
+    method: str = ""  # "api", "studio" or (on Rumble) "browser", set when it starts
     progress: float = 0
-    youtube_url: str = ""
+    youtube_url: str = ""  # the video's link once it's up, on whichever site it went to
     error: str = ""  # why it failed; on a finished upload, a note (e.g. YouTube changed the visibility)
     screenshot: str = ""  # of Studio when it failed
     # The API's resumable upload session, so a retry carries on from the bytes YouTube already has.
@@ -212,6 +217,7 @@ class ClipRecord(SQLModel, table=True):
     destination_id: int | None = Field(default=None, foreign_key="destination.id")  # where it gets uploaded
     playlist_id: str = ""  # a playlist on that channel to add it to, through the YouTube API
     youtube_url: str = ""  # once uploaded
+    rumble_url: str = ""  # once uploaded to Rumble too
     uploaded_at: datetime | None = None
     # A thumbnail for its landscape video (thumbnails.py), made by the worker: "" (none asked for), queued,
     # making, done or failed. thumbnail_hint is your idea for it; thumbnail_idea is what Claude came up with.
