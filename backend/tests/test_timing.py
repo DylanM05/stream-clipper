@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from clipper import cli, timing
 from clipper.config import Settings
-from clipper.db import ClipRecord, Vod, get_engine
+from clipper.db import ClipRecord, UploadJob, Vod, get_engine
 from clipper.models import Transcript, TranscriptSegment, Word
 from clipper.pipeline import audio
 from clipper.timing import Jump, Timing
@@ -61,7 +61,7 @@ def test_a_transcript_from_the_old_soundtrack_goes_on_the_videos_timing():
     assert Timing([Jump(10.0, 2.0), Jump(20.0, 0.0)], length=100.0).made_the_old_way(old) is None  # jumps that cancel out
 
 
-def test_timing_check_fixes_a_transcript_and_moves_only_the_clips_not_yet_approved(tmp_path, monkeypatch):
+def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_path, monkeypatch):
     settings = Settings(data_dir=tmp_path)
     ws = Workspace.open(settings.vods_dir, "kick-1")
     (ws.root / "source.mp4").write_bytes(b"video")
@@ -71,15 +71,25 @@ def test_timing_check_fixes_a_transcript_and_moves_only_the_clips_not_yet_approv
         words=[Word(start=10.0, end=10.5, text="hi"), Word(start=70.0, end=70.5, text="there")],
     )]).model_dump_json(), encoding="utf-8")
     ws.audio_wav.write_bytes(b"the old soundtrack")
+    # Where Claude picked them; hl03 has since been trimmed by hand.
+    write_json(ws.segments_json, [{"id": key, "start": 65, "end": 80} for key in ("hl01", "hl02", "hl03")]
+               + [{"id": "hl04", "start": 20, "end": 40}])
     with Session(get_engine(settings)) as s:
         vod = Vod(url="https://kick.com/q/videos/1", workspace="kick-1", status="ready", title="Q After Dark")
         s.add(vod)
         s.commit()
-        s.add_all([
+        clips = [
             ClipRecord(vod_id=vod.id, key="hl01", kind="highlight", start=65, end=80, title="In the inbox"),
-            ClipRecord(vod_id=vod.id, key="hl02", kind="highlight", start=65, end=80, title="Rendered", status="rendered",
+            ClipRecord(vod_id=vod.id, key="hl02", kind="highlight", start=65, end=80, title="Ready to go", status="rendered",
                        make_short=True, short_path="/data/hl02-short.mp4"),
-        ])
+            ClipRecord(vod_id=vod.id, key="hl03", kind="highlight", start=67, end=84, title="Trimmed", status="rendered",
+                       make_short=True, short_path="/data/hl03-short.mp4"),
+            ClipRecord(vod_id=vod.id, key="hl04", kind="highlight", start=20, end=40, title="Before the jump", status="rendered",
+                       make_short=True, short_path="/data/hl04-short.mp4"),
+        ]
+        s.add_all(clips)
+        s.commit()
+        s.add(UploadJob(clip_id=clips[1].id, which="short"))
         s.commit()
         vod_id = vod.id
     monkeypatch.setattr(cli, "get_settings", lambda: settings)
@@ -95,9 +105,15 @@ def test_timing_check_fixes_a_transcript_and_moves_only_the_clips_not_yet_approv
     assert [(w.start, w.end) for w in fixed.words()] == [(10.0, 10.5), (73.0, 73.5)]
     assert not ws.audio_wav.exists()
     with Session(get_engine(settings)) as s:
-        clips = {c.key: (c.start, c.end) for c in s.exec(select(ClipRecord))}
-    assert clips == {"hl01": (68.0, 83.0), "hl02": (65, 80)}  # an approved clip may have been trimmed by hand
-    assert "hl02  Rendered" in out.split("rendering again")[1]
+        clips = {c.key: (c.start, c.end, c.status) for c in s.exec(select(ClipRecord))}
+        assert not s.exec(select(UploadJob)).all()  # taken out of the queue while it renders again
+    assert clips == {
+        "hl01": (68.0, 83.0, "proposed"),
+        "hl02": (68.0, 83.0, "approved"),  # moved, and rendering again
+        "hl03": (67, 84, "approved"),  # trimmed by hand: kept, but its Short's captions render again
+        "hl04": (20, 40, "rendered"),  # before the sound jumped: right as it was
+    }
+    assert "hl02  Ready to go" in out.split("upload them again")[1]
 
     out = CliRunner().invoke(cli.app, ["timing-check", "--fix"]).output
     assert "Lines up with the video" in out

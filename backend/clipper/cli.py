@@ -207,15 +207,15 @@ def channel_check(
 @app.command("timing-check")
 def timing_check(
     vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: the 5 newest finished videos.")] = None,
-    fix: Annotated[bool, typer.Option("--fix", help="Put their transcripts on the video's timing, and move the clips still in the inbox to match.")] = False,
+    fix: Annotated[bool, typer.Option("--fix", help="Put their transcripts on the video's timing, move the clips not trimmed by hand to match, and render again the ones affected.")] = False,
 ) -> None:
     """Check that videos' transcripts, which time the Shorts' captions, line up with the video (see timing.py)."""
     from sqlmodel import Session, col, select
 
     from . import timing
-    from .db import ClipRecord, Vod, get_engine, utcnow
+    from .db import Vod, get_engine
     from .models import Transcript
-    from .workspace import Workspace, write_text
+    from .workspace import Workspace, read_json, write_text
 
     settings = get_settings()
     with Session(get_engine(settings)) as s:
@@ -253,21 +253,19 @@ def timing_check(
 
             write_text(ws.transcript_json, found.fix(transcript).model_dump_json())
             ws.audio_wav.unlink(missing_ok=True)  # the old soundtrack; made again with the right timing if needed
-            moved, redo = 0, []
-            for clip in s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id, ClipRecord.kind != "whole")):
-                if clip.status in ("proposed", "extra"):
-                    clip.start, clip.end, clip.updated_at = found.video_time(clip.start), found.video_time(clip.end), utcnow()
-                    s.add(clip)
-                    moved += 1
-                elif clip.status == "rendered" and clip.short_path:
-                    redo.append(clip)
-            s.commit()
-            typer.secho(f"    Fixed its transcript, and moved its {moved} clips in the inbox and extras to match. Clips "
-                        "already approved keep their start and end, in case you trimmed them.", fg="green")
-            if redo:
-                typer.echo("    These Shorts need rendering again for their captions (Upload tab: To inbox, then approve it):")
-                for clip in redo:
-                    typer.echo(f"      {clip.key}  {clip.title[:70]}")
+            picked = {c["id"]: (c["start"], c["end"]) for c in read_json(ws.segments_json)} if ws.segments_json.exists() else {}
+            clips = timing.fix_clips(s, vod.id, found, picked)
+            typer.secho("    Fixed its transcript. Clips you trimmed by hand keep their cut points.", fg="green")
+            for heading, listed in (
+                ("Moved to where Claude meant them", clips.moved),
+                ("Rendering again, with captions in time", clips.rendering),
+                ("Their queued uploads were taken out of the queue; upload them again once they're rendered", clips.unqueued),
+                ("Uploading right now, so left as they are", clips.uploading),
+            ):
+                if listed:
+                    typer.echo(f"    {heading}:")
+                    for clip in listed:
+                        typer.echo(f"      {clip.key}  {clip.title[:70]}")
         if not vods:
             typer.echo("No finished videos" + (" with those ids." if vod_ids else "."))
 

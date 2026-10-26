@@ -8,13 +8,17 @@ timestamps shows where it jumped. `clipper timing-check` uses this.
 """
 
 import bisect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+from sqlmodel import Session, col, select
+
 from . import ffmpeg
+from .db import ClipRecord, UploadJob, utcnow
 from .models import Transcript, TranscriptSegment, Word
 
 MIN_JUMP_S = 0.1  # less doesn't show in captions
+RENDERED = ("approved", "rendering", "rendered", "failed")  # a render queued, running or done
 
 
 @dataclass(frozen=True)
@@ -47,6 +51,50 @@ class Timing:
                               words=[Word(start=t(w.start), end=t(w.end), text=w.text) for w in s.words])
             for s in transcript.segments
         ])
+
+
+@dataclass
+class ClipsFixed:
+    moved: list[ClipRecord] = field(default_factory=list)  # to where Claude meant them
+    rendering: list[ClipRecord] = field(default_factory=list)  # again, for their cut points or Short's captions
+    unqueued: list[ClipRecord] = field(default_factory=list)  # their queued uploads were taken out of the queue
+    uploading: list[ClipRecord] = field(default_factory=list)  # right now, so left as they were
+
+
+def fix_clips(s: Session, vod_id: int, found: Timing, picked: dict[str, tuple[float, float]]) -> ClipsFixed:
+    """Move a video's clips, which Claude cut early by as much as its transcript was, unless they've been
+    trimmed by hand (they're no longer where Claude `picked` them, by key) or uploaded. The ones rendered, or
+    queued to be, render again, and so do trimmed ones with a Short, for its captions. As with the app's To
+    inbox, that takes their queued uploads out of the queue, so none starts on a file being rendered."""
+    fixed = ClipsFixed()
+    clips = s.exec(select(ClipRecord).where(
+        ClipRecord.vod_id == vod_id, ClipRecord.kind != "whole", ClipRecord.status != "uploaded",
+        ClipRecord.end > found.jumps[0].at,  # before the sound first jumped, the timing was right
+    ))
+    for clip in clips:
+        was = picked.get(clip.key)
+        untouched = bool(was) and abs(was[0] - clip.start) < 0.01 and abs(was[1] - clip.end) < 0.01
+        if not untouched and not (clip.make_short and clip.status in RENDERED):
+            continue
+        jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id,
+                                              col(UploadJob.status).in_(("queued", "uploading")))).all()
+        if any(job.status == "uploading" for job in jobs):
+            fixed.uploading.append(clip)
+            continue
+        if untouched:
+            clip.start, clip.end = found.video_time(clip.start), found.video_time(clip.end)
+            fixed.moved.append(clip)
+        if clip.status in RENDERED:
+            for job in jobs:
+                s.delete(job)
+            if jobs:
+                fixed.unqueued.append(clip)
+            clip.status, clip.error = "approved", ""
+            fixed.rendering.append(clip)
+        clip.updated_at = utcnow()
+        s.add(clip)
+    s.commit()
+    return fixed
 
 
 def measure(source: Path) -> Timing:
