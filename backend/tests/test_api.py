@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from clipper.config import Settings
-from clipper.db import ClipRecord, UploadJob, Vod, get_engine
+from clipper.db import Channel, ChannelVideo, ClipRecord, Show, UploadJob, Vod, get_engine, utcnow
 from clipper.web import app as web_app
 
 
@@ -170,6 +171,89 @@ def test_deleting_a_streams_files_rejects_the_clips_that_arent_uploaded(client, 
     assert not any(p.exists() for p in (root / "source.mp4", root / "proxy.mp4", video))
     assert client.get(f"/api/clips/{clip_id}").json()["status"] == "rejected"
     assert client.post(f"/api/clips/{clip_id}/approve").status_code == 409  # nothing left to cut it from
+
+
+def test_a_video_can_be_deleted_with_its_clips_and_files_and_its_channel_doesnt_queue_it_again(client, settings):
+    clip_id, video = rendered_clip(settings)
+    add_job(settings, clip_id)
+    with Session(get_engine(settings)) as s:
+        show = Show(name="TheQuartering")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url="https://rumble.com/c/TheQuartering", platform="rumble")
+        s.add(channel)
+        s.commit()
+        s.add(ChannelVideo(channel_id=channel.id, video_id="v6a", url="https://www.twitch.tv/videos/1", status="queued", vod_id=1))
+        vod = s.get(Vod, 1)
+        vod.status = "downloading"
+        s.add(vod)
+        s.commit()
+    assert client.delete("/api/vods/1").status_code == 409  # pause it first
+
+    with Session(get_engine(settings)) as s:
+        vod = s.get(Vod, 1)
+        vod.status = "queued"
+        s.add(vod)
+        s.commit()
+    assert client.delete("/api/vods/1").status_code == 204
+    assert client.get("/api/vods").json() == []
+    assert not (settings.vods_dir / "twitchvod-1").exists()
+    with Session(get_engine(settings)) as s:
+        assert not s.exec(select(ClipRecord)).all() and not s.exec(select(UploadJob)).all()
+        seen = s.exec(select(ChannelVideo)).one()
+        assert (seen.status, seen.vod_id) == ("skipped", None)  # the monitor leaves it alone from now on
+
+
+def test_a_video_with_clips_on_youtube_stays(client, settings):
+    clip_id = add_clip(settings, status="uploaded")
+    assert client.delete("/api/vods/1").status_code == 409
+    assert client.get(f"/api/clips/{clip_id}").status_code == 200
+
+
+def test_clips_say_where_their_upload_stands(client, settings):
+    clip_id, _ = rendered_clip(settings)
+
+    def state():
+        clip = client.get(f"/api/clips/{clip_id}").json()
+        return clip["upload_state"], clip["next_upload"]
+
+    assert state() == ("", None)  # nothing asked for yet
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Spaced out", upload_gap_hours=2)
+        s.add(show)
+        s.commit()
+        vod = s.get(Vod, 1)
+        vod.show_id = show.id
+        earlier = ClipRecord(vod_id=1, key="hl02", kind="highlight", start=0, end=5, title="Earlier", status="uploaded")
+        s.add_all([vod, earlier])
+        s.commit()
+        s.add(UploadJob(clip_id=earlier.id, status="done", started_at=utcnow() - timedelta(hours=1)))
+        job = UploadJob(clip_id=clip_id)
+        s.add(job)
+        s.commit()
+        job_id = job.id
+    upload, at = state()
+    assert upload == "scheduled" and abs(datetime.fromisoformat(at) - (utcnow() + timedelta(hours=1))) < timedelta(minutes=1)
+
+    client.post(f"/api/upload-jobs/{job_id}/now")
+    assert state() == ("queued", None)  # its turn has come: it goes once the upload running is done
+
+    def set_job(**fields):
+        with Session(get_engine(settings)) as s:
+            job = s.get(UploadJob, job_id)
+            for k, v in fields.items():
+                setattr(job, k, v)
+            s.add(job)
+            s.commit()
+
+    set_job(status="uploading")
+    assert state() == ("uploading", None)
+    set_job(status="failed", retry_at=utcnow() + timedelta(hours=3))
+    assert state()[0] == "retrying" and state()[1]
+    set_job(retry_at=None)
+    assert state() == ("failed", None)
+    add_job(settings, clip_id)  # started again as a new upload: the latest counts, and it waits its turn
+    assert state()[0] == "scheduled"
 
 
 def test_serves_the_phone_app_with_fallback_to_index(tmp_path):

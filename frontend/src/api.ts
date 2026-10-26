@@ -78,9 +78,13 @@ export interface Clip {
   thumbnail_hint: string; // your idea for it
   thumbnail_idea: string; // what Claude came up with
   thumbnail_error: string;
-  next_upload: string | null; // when its upload goes, if it's waiting for its turn
+  upload_state: UploadState;
+  next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself
   updated_at: string;
 }
+
+/** Where a clip's uploads stand: "queued" goes once the upload running is done; "scheduled" waits for its turn. */
+export type UploadState = "" | "uploading" | "queued" | "scheduled" | "retrying" | "failed";
 
 export interface Line {
   start: number;
@@ -314,6 +318,7 @@ export const api = {
   pauseVod: (id: number) => post<Vod>(`/api/vods/${id}/pause`),
   resumeVod: (id: number) => post<Vod>(`/api/vods/${id}/resume`),
   deleteVodFiles: (id: number) => changed(post<Vod>(`/api/vods/${id}/delete-files`)),
+  deleteVod: (id: number) => changed(remove(`/api/vods/${id}`)),
 
   clips: (statuses: ClipStatus[]) =>
     request<Clip[]>(`/api/clips?${statuses.map((s) => `status=${s}`).join("&")}`),

@@ -7,8 +7,30 @@ import { PauseBar } from "../PauseBar";
 import { Button, ErrorNote, MODE_LABEL, ProgressBar, Screen, VodStatusChip, useToast } from "../ui";
 
 const WITH_PROGRESS = ["downloading", "preparing", "transcribing"];
-const ACTIVE = [...WITH_PROGRESS, "queued", "analysing", "segmenting"];
+const RUNNING = [...WITH_PROGRESS, "analysing", "segmenting"]; // being worked on right now
+const ACTIVE = [...RUNNING, "queued"];
 const PAUSABLE = [...ACTIVE, "waiting"];
+
+/** A video can be deleted unless it's being worked on (pause it first) or has clips on YouTube. */
+const deletable = (vod: Vod) => !RUNNING.includes(vod.status) && !vod.counts.uploaded;
+
+/** Deletes a video from the app after asking; resolves to whether it did. */
+function useDeleteVod() {
+  const toast = useToast();
+  return async (vod: Vod): Promise<boolean> => {
+    if (!confirm(`Delete “${vod.title || vod.url}”? Its clips and files go too, and a channel you watch won't queue it again.`)) {
+      return false;
+    }
+    try {
+      await api.deleteVod(vod.id);
+      toast({ text: "Video deleted." });
+      return true;
+    } catch (e) {
+      toast({ text: errorText(e) });
+      return false;
+    }
+  };
+}
 
 export function Videos() {
   const { data: vods, error, refresh } = usePoll(api.vods, 4000);
@@ -363,7 +385,19 @@ function heldBy(vod: Vod, pauses?: Pauses): string {
 
 function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChanged: () => void }) {
   const toast = useToast();
+  const deleteVod = useDeleteVod();
   const held = heldBy(vod, pauses);
+  const deleteButton = deletable(vod) && (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        void deleteVod(vod).then((deleted) => deleted && onChanged());
+      }}
+      className="flex shrink-0 items-center gap-1.5 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-semibold text-red-300 active:bg-zinc-700"
+    >
+      <TrashIcon className="size-3.5" /> Delete
+    </button>
+  );
   const togglePause = async () => {
     try {
       await (vod.paused ? api.resumeVod(vod.id) : api.pauseVod(vod.id));
@@ -430,6 +464,7 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
             {vod.paused ? <PlayIcon className="size-3.5" /> : <PauseIcon className="size-3.5" />}
             {vod.paused ? "Resume" : "Pause"}
           </button>
+          {deleteButton}
         </div>
       )}
       {vod.status === "waiting" && (
@@ -449,6 +484,7 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
           >
             Retry
           </button>
+          {deleteButton}
         </div>
       )}
       {vod.status === "ready" && counts.length > 0 && <p className="mt-2 text-sm text-zinc-400">{counts.join(" · ")}</p>}
@@ -459,8 +495,10 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
 
 export function VideoDetail({ id }: { id: number }) {
   const toast = useToast();
+  const deleteVod = useDeleteVod();
   const { data, error, refresh } = usePoll(() => api.vod(id), 5000, id);
   const vod = data?.vod;
+  const canDeleteFiles = vod && ["ready", "failed"].includes(vod.status) && !vod.cleaned;
   const offered = data?.clips.filter((c) => c.status !== "extra") ?? [];
   const extras = data?.clips.filter((c) => c.status === "extra") ?? [];
 
@@ -497,9 +535,18 @@ export function VideoDetail({ id }: { id: number }) {
         {data && data.clips.length === 0 && <p className="text-sm text-zinc-500">No clips yet.</p>}
       </div>
       {extras.length > 0 && <Extras clips={extras} />}
-      {vod && ["ready", "failed"].includes(vod.status) && !vod.cleaned && (
+      {canDeleteFiles && (
         <Button tone="danger" onClick={deleteFiles} className="mt-8 w-full">
           <TrashIcon className="size-4" /> Delete this stream's video files
+        </Button>
+      )}
+      {vod && deletable(vod) && (
+        <Button
+          tone="danger"
+          onClick={() => void deleteVod(vod).then((deleted) => deleted && go("videos"))}
+          className={cn("w-full", canDeleteFiles ? "mt-3" : "mt-8")}
+        >
+          <TrashIcon className="size-4" /> Delete this video
         </Button>
       )}
       {vod?.cleaned && <p className="mt-8 text-center text-xs text-zinc-500">Video files deleted to free space.</p>}

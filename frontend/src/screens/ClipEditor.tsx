@@ -192,7 +192,7 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
               {KIND_LABEL[clip.kind]} · {length(duration)}
             </p>
           </div>
-          <ClipStatusChip status={clip.status} paused={clip.paused} />
+          <ClipStatusChip status={clip.status} paused={clip.paused} upload={clip.upload_state} />
         </div>
         <div className="relative aspect-video bg-black" onClick={togglePlay}>
           <video

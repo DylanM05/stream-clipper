@@ -62,7 +62,7 @@ export function ClipCard(props: {
             </p>
             {props.showStatus && (
               <div className="mt-2">
-                <ClipStatusChip status={clip.status} paused={clip.paused} />
+                <ClipStatusChip status={clip.status} paused={clip.paused} upload={clip.upload_state} />
               </div>
             )}
           </div>

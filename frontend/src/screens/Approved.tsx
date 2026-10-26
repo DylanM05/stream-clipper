@@ -1,19 +1,27 @@
 import type { ReactNode } from "react";
-import { api, errorText, type Clip } from "../api";
+import { api, errorText, type Clip, type UploadState } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
 import { cn, go, upcoming, usePoll } from "../lib";
 import { PauseBar } from "../PauseBar";
 import { ErrorNote, Screen, useToast } from "../ui";
 
-/** Approved clips: being rendered, ready to upload, and uploaded. */
+// Rendered clips whose upload has been started, in the order they go up; a failed one is back to ready.
+const GOING_UP: UploadState[] = ["uploading", "queued", "scheduled", "retrying"];
+
+/** Approved clips: being rendered, ready to upload, scheduled, and uploaded. */
 export function Approved() {
   const { data: clips, error, refresh } = usePoll(
     () => api.clips(["approved", "rendering", "failed", "rendered", "uploaded"]),
     5000,
   );
   const { data: pauses, setData: setPauses } = usePoll(api.pauses, 10000);
-  const ready = clips?.filter((c) => c.status === "rendered") ?? [];
+  const rendered = clips?.filter((c) => c.status === "rendered") ?? [];
+  const ready = rendered.filter((c) => !GOING_UP.includes(c.upload_state));
+  const scheduled = rendered
+    .filter((c) => GOING_UP.includes(c.upload_state))
+    .sort((a, b) => GOING_UP.indexOf(a.upload_state) - GOING_UP.indexOf(b.upload_state)
+      || (a.next_upload ?? "").localeCompare(b.next_upload ?? ""));
   const working = clips?.filter((c) => ["approved", "rendering", "failed"].includes(c.status)) ?? [];
   const uploaded = clips?.filter((c) => c.status === "uploaded") ?? [];
 
@@ -23,6 +31,7 @@ export function Approved() {
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && <p className="mt-10 text-center text-sm text-zinc-500">Nothing approved yet.</p>}
       <Section title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
+      <Section title="Scheduled" clips={scheduled} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
       <Section title="Rendering" clips={working} footer={(c) => <RenderFooter clip={c} onChanged={refresh} />} />
       <Section title="Uploaded" clips={uploaded} footer={(c) => <UploadedFooter clip={c} />} />
     </Screen>
@@ -73,13 +82,27 @@ function FooterButton(props: { onClick: () => void; tone?: "danger" | "accent"; 
   );
 }
 
+/** What's happening with a clip's upload, after the channel it goes to. */
+function uploadLine(clip: Clip): string {
+  const at = clip.next_upload ? upcoming(clip.next_upload) : "";
+  return {
+    "": "",
+    uploading: "uploading now",
+    queued: "goes up as soon as the upload running is done",
+    scheduled: `goes up ${at}`,
+    retrying: `upload failed; tries again ${at}`,
+    failed: "upload failed: open it to try again",
+  }[clip.upload_state];
+}
+
 function UploadFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }) {
   const act = useClipAction(onChanged);
+  const line = uploadLine(clip);
   return (
     <div className="border-t border-white/5">
       <p className="truncate px-3 pt-2 text-xs text-zinc-500">
         {clip.destination_name ? `To ${clip.destination_name}` : "No channel chosen yet"}
-        {clip.next_upload && <span className="text-sky-300"> · goes up {upcoming(clip.next_upload)}</span>}
+        {line && <span className={clip.upload_state === "failed" ? "text-red-300" : "text-sky-300"}> · {line}</span>}
       </p>
       <div className="flex divide-x divide-white/5">
         <FooterButton onClick={() => act(() => api.restore(clip.id), "Back in the inbox. Its render was deleted.")}>
@@ -92,7 +115,7 @@ function UploadFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }
           <TrashIcon className="size-4" /> Delete
         </FooterButton>
         <FooterButton tone="accent" onClick={() => go(`upload/${clip.id}`)}>
-          <UploadIcon className="size-4" /> Upload
+          <UploadIcon className="size-4" /> {clip.upload_state ? "Details" : "Upload"}
         </FooterButton>
       </div>
     </div>

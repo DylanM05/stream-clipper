@@ -24,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 from .. import ffmpeg, notify, stats
 from ..config import Settings, get_settings
 from ..db import (
-    PAUSABLE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
+    PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
     get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, utcnow,
 )
 from ..models import Transcript
@@ -33,7 +33,7 @@ from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
 from ..pipeline import render
-from ..workspace import Workspace
+from ..workspace import Workspace, remove
 from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
 from .auth import COOKIE, MAX_AGE_S, Auth
 
@@ -112,7 +112,10 @@ class ClipOut(BaseModel):
     thumbnail_hint: str
     thumbnail_idea: str
     thumbnail_error: str
-    next_upload: str | None  # when its queued upload goes, if it's waiting for its turn (schedule.py)
+    # Where its uploads stand (upload_states): "", uploading, queued, scheduled, retrying or failed; and when
+    # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself.
+    upload_state: str
+    next_upload: str | None
     updated_at: str
 
 
@@ -549,7 +552,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.flush()
         s.delete(ch)
 
-    def clip_out(clip: ClipRecord, vod: Vod, next_upload: datetime | None = None) -> ClipOut:
+    def clip_out(clip: ClipRecord, vod: Vod, upload: tuple[str, datetime | None] | None = None) -> ClipOut:
+        upload_state, next_upload = upload or ("", None)
         video_size, short_size = _size(clip.video_path), _size(clip.short_path)
         with Session(engine) as s:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
@@ -566,19 +570,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
+            upload_state=upload_state,
             next_upload=iso(next_upload),
             updated_at=iso(clip.updated_at),
         )
 
-    def next_uploads(s: Session) -> dict[int, datetime]:
-        """When each clip's next queued upload goes, for clips whose upload waits for its turn."""
-        turns = upload_turns(s)
-        waiting = {jid: t.at for jid, t in turns.items() if t.reason}
-        found: dict[int, datetime] = {}
-        if waiting:
-            for job in s.exec(select(UploadJob).where(col(UploadJob.id).in_(waiting))):
-                at = waiting[job.id]
-                found[job.clip_id] = min(at, found.get(job.clip_id, at))
+    def upload_states(s: Session) -> dict[int, tuple[str, datetime | None]]:
+        """Where each clip's uploads stand, by the latest of each of its files, with a time for some: "uploading",
+        "queued" (goes once the upload running is done), "scheduled" (waits for its turn until then), "retrying"
+        (failed, and tries again by itself then) or "failed". Clips with none of those aren't listed."""
+        latest: dict[tuple[int, str], UploadJob] = {}
+        for job in s.exec(select(UploadJob).order_by(col(UploadJob.id))):
+            latest[job.clip_id, job.which] = job
+        turns = upload_turns(s) if any(j.status == "queued" for j in latest.values()) else {}
+        rank = ["uploading", "queued", "scheduled", "retrying", "failed"]  # what a clip with two files shows
+        found: dict[int, tuple[str, datetime | None]] = {}
+        for job in latest.values():
+            if job.status in ("uploading", "failed"):
+                state = (job.status, None) if job.status == "uploading" or not job.retry_at else ("retrying", job.retry_at)
+            elif job.status == "queued":
+                turn = turns.get(job.id)
+                state = ("scheduled", turn.at) if turn and turn.reason else ("queued", None)
+            else:
+                continue
+            have = found.get(job.clip_id)
+            if not have or rank.index(state[0]) < rank.index(have[0]) or (
+                    state[0] == have[0] and state[1] and have[1] and state[1] < have[1]):
+                found[job.clip_id] = state
         return found
 
     def destination_out(d: Destination) -> DestinationOut:
@@ -822,6 +840,33 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.refresh(vod)
         log.info("Deleted the files of video %d (%s) from the app: freed %.1f GB", vod_id, vod.title, freed / 1e9)
         return vod_out(s, vod)
+
+    @app.delete("/api/vods/{vod_id}", status_code=204)
+    def delete_vod(vod_id: int, s: Session = Depends(db)) -> None:
+        """Remove a video from the app, with its clips and files. A channel that's watched doesn't queue it again."""
+        vod = found(s, Vod, vod_id, "video")
+        if vod.status in VOD_ACTIVE:
+            raise HTTPException(409, "It's being worked on right now. Pause it, then delete it once it has stopped.")
+        clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod_id)).all()
+        if any(c.status == "uploaded" for c in clips):
+            raise HTTPException(409, "Some of its clips are on YouTube, so it stays for their history. "
+                                     "Delete its video files instead to free the space.")
+        if any(c.status == "rendering" or c.thumbnail_status == "making" for c in clips):
+            raise HTTPException(409, "One of its clips is rendering or getting a thumbnail right now. Try again in a minute.")
+        for clip in clips:
+            discard_render(s, clip, vod)  # refuses while one is uploading
+            for job in s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id)):
+                s.delete(job)
+            s.delete(clip)
+        for seen in s.exec(select(ChannelVideo).where(ChannelVideo.vod_id == vod_id)):
+            seen.vod_id, seen.status, seen.reason, seen.updated_at = None, "skipped", "Deleted in the app", utcnow()
+            s.add(seen)
+        shared = vod.workspace and s.exec(select(Vod).where(Vod.workspace == vod.workspace, Vod.id != vod_id)).first()
+        if vod.workspace and not shared:  # the same link added again after it failed has the same folder
+            remove(settings.vods_dir / vod.workspace)
+        s.delete(vod)
+        s.commit()
+        log.info("Deleted video %d (%s) from the app", vod_id, vod.title or vod.url)
 
     # --- Shows and the channels they watch ---
 
@@ -1197,13 +1242,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             .order_by(col(Vod.created_at).desc(), col(ClipRecord.kind), col(ClipRecord.start))
             .limit(500)
         )
-        waiting = next_uploads(s)
-        return [clip_out(c, v, waiting.get(c.id)) for c, v in rows]
+        uploads = upload_states(s)
+        return [clip_out(c, v, uploads.get(c.id)) for c, v in rows]
 
     @app.get("/api/clips/{clip_id}")
     def get_clip_route(clip_id: int, s: Session = Depends(db)) -> ClipOut:
         clip, vod = get_clip(s, clip_id)
-        return clip_out(clip, vod, next_uploads(s).get(clip.id))
+        return clip_out(clip, vod, upload_states(s).get(clip.id))
 
     @app.patch("/api/clips/{clip_id}")
     def update_clip(clip_id: int, patch: ClipPatch, s: Session = Depends(db)) -> ClipOut:
