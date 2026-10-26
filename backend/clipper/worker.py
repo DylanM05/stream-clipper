@@ -52,6 +52,8 @@ LOW_SPACE_RETRY = timedelta(minutes=30)
 CHECK_EVERY_S = 2  # how often running work records its progress and looks for a pause
 STATS_EVERY_S = 1800
 DIGEST_HOUR = 9  # Monday, in CLIPPER_TIMEZONE: the week's uploads and their views
+MAX_AUTO_RETRIES = 3  # nights a failed upload is tried again by itself
+QUOTA_TIMEZONE = "America/Los_Angeles"  # the YouTube API quota resets at midnight here
 
 
 class Paused(Exception):
@@ -572,8 +574,23 @@ class Worker:
     # --- Uploads: through the YouTube API for connected channels, else YouTube Studio ----------
 
     def upload_next(self) -> bool:
-        """Start the first queued upload whose turn has come (schedule.py)."""
+        """Start the first queued upload whose turn has come (schedule.py), after queueing failed uploads whose
+        automatic retry is due."""
         with Session(self.engine) as s:
+            for failed in s.exec(select(UploadJob).where(UploadJob.status == "failed", col(UploadJob.retry_at) <= utcnow())):
+                failed.retry_at, failed.updated_at = None, utcnow()
+                clip = s.get(ClipRecord, failed.clip_id)
+                # Not if that file went up (or is going up) another way since, or the clip was taken back.
+                another = s.exec(select(UploadJob).where(
+                    UploadJob.clip_id == failed.clip_id, UploadJob.which == failed.which, UploadJob.id != failed.id,
+                    col(UploadJob.status).in_(("queued", "uploading", "done")),
+                )).first()
+                if clip and clip.status in ("rendered", "uploaded") and not another:
+                    log.info("Trying upload %d again by itself", failed.id)
+                    failed.status, failed.error, failed.progress = "queued", "", 0
+                    failed.auto_retries += 1
+                s.add(failed)
+            s.commit()
             job = None
             if not is_paused(s, "uploads"):
                 now = utcnow()
@@ -629,13 +646,14 @@ class Worker:
                             "API, so add them in YouTube Studio.")
         except StudioError as e:
             log.warning("Upload %d failed: %s", job_id, e)
-            self._upload_failed(job, clip, str(e), screenshot=e.screenshot, youtube_url=e.link)
+            self._upload_failed(job, clip, str(e), retry="tomorrow" if e.retry else "", screenshot=e.screenshot,
+                                youtube_url=e.link)
             return
         except YouTubeError as e:
             log.warning("Upload %d failed: %s", job_id, e)
             if e.signed_out:
                 self._update_destination(dest.id, youtube_error=str(e))
-            self._upload_failed(job, clip, str(e))
+            self._upload_failed(job, clip, str(e), retry=e.retry)
             return
         self._update_job(job_id, status="done", progress=1, youtube_url=url, error=note, finished_at=utcnow())
         if through_api and dest.youtube_error:
@@ -652,8 +670,15 @@ class Worker:
         where = f" on {dest.name}" if dest else ""
         self._notify(Note(f"Uploaded: {clip.title}", f"{what}, {job.visibility}{where}. {note}".strip(), link=url, tone="good"))
 
-    def _upload_failed(self, job: UploadJob, clip: ClipRecord, error: str, **fields) -> None:
-        self._update_job(job.id, status="failed", error=error, **fields)
+    def _upload_failed(self, job: UploadJob, clip: ClipRecord, error: str, retry: str = "", **fields) -> None:
+        """Record a failed upload. One that could work later (`retry`, see youtube.RETRY_LATER) is tried again by
+        itself at the next 12:01 AM, a few nights at most."""
+        retry_at = retry_time(self.settings.timezone if retry != "quota" else QUOTA_TIMEZONE) if (
+            retry and job.auto_retries < MAX_AUTO_RETRIES) else None
+        self._update_job(job.id, status="failed", error=error, retry_at=retry_at, **fields)
+        if retry_at:
+            local = retry_at.astimezone(ZoneInfo(self.settings.timezone))
+            error += f" It tries again by itself at {local.strftime('%I:%M %p').lstrip('0')} {local.tzname()}."
         self._notify(Note(f"Upload failed: {clip.title}", error, link=f"upload/{clip.id}", tone="bad"))
 
     def _delete_render(self, clip: ClipRecord, vod: Vod, which: str) -> None:
@@ -870,7 +895,8 @@ class Worker:
                     continue
                 pending = s.exec(
                     select(UploadJob).join(ClipRecord)
-                    .where(ClipRecord.vod_id == vod.id, col(UploadJob.status).in_(("queued", "uploading")))
+                    .where(ClipRecord.vod_id == vod.id, or_(col(UploadJob.status).in_(("queued", "uploading")),
+                                                            col(UploadJob.retry_at).is_not(None)))
                 ).first()
                 if pending or max([vod.updated_at, *(c.updated_at for c in clips)]) > cutoff:
                     continue
@@ -907,6 +933,15 @@ class Worker:
             vod.updated_at = utcnow()
             s.add(vod)
             s.commit()
+
+
+def retry_time(timezone: str, now: datetime | None = None) -> datetime:
+    """The next 12:01 AM in `timezone`."""
+    local = (now or utcnow()).astimezone(ZoneInfo(timezone))
+    at = local.replace(hour=0, minute=1, second=0, microsecond=0)
+    if at <= local:
+        at += timedelta(days=1)  # by the clock on the wall, so a change to or from daylight saving time is allowed for
+    return at.astimezone(ZoneInfo("UTC"))
 
 
 def in_hours(hour: float, start: float, end: float) -> bool:

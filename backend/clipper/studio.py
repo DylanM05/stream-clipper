@@ -36,10 +36,11 @@ X_SIGNED_IN_COOKIES = {"auth_token"}  # the same browser reads X posts (xposts.p
 
 
 class StudioError(RuntimeError):
-    def __init__(self, message: str, screenshot: str = "", link: str = ""):
+    def __init__(self, message: str, screenshot: str = "", link: str = "", retry: bool = False):
         super().__init__(message)
         self.screenshot = screenshot
         self.link = link  # set when the video already exists in Studio
+        self.retry = retry  # it failed before the file reached Studio, so trying again later can't post it twice
 
 
 @dataclass
@@ -100,7 +101,7 @@ class Studio:
                     shot = self._screenshot(page)
                     if not progress.attached:
                         page.close()
-                        raise StudioError(message, shot) from e
+                        raise StudioError(message, shot, retry=True) from e
                     # The file is already in Studio as a private draft. Leave the dialog open so it can be
                     # finished by hand; retrying would upload a second copy.
                     raise StudioError(
@@ -121,12 +122,12 @@ class Studio:
             return p.chromium.connect_over_cdp(self.cdp_url, timeout=15_000)
         except Exception as e:
             if not self.desktop_profile or urlparse(self.cdp_url).hostname not in ("127.0.0.1", "localhost"):
-                raise StudioError(NOT_RUNNING) from e
+                raise StudioError(NOT_RUNNING, retry=True) from e
         # On a desktop: open it (the YouTube sign-in is kept in its profile) and wait for it to listen.
         try:
             launch_desktop_browser(self.desktop_profile, urlparse(self.cdp_url).port or 9222)
         except FileNotFoundError as e:
-            raise StudioError(NOT_RUNNING) from e
+            raise StudioError(NOT_RUNNING, retry=True) from e
         log.info("Opened the upload browser")
         deadline = time.monotonic() + 30
         while True:
@@ -134,7 +135,7 @@ class Studio:
                 return p.chromium.connect_over_cdp(self.cdp_url, timeout=5_000)
             except Exception as e:
                 if time.monotonic() > deadline:
-                    raise StudioError(NOT_RUNNING) from e
+                    raise StudioError(NOT_RUNNING, retry=True) from e
                 time.sleep(1)
 
     def _upload(self, page: Page, job: Upload, on_progress: Callable[[float], None], progress: "_Progress") -> str:

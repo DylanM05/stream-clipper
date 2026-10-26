@@ -125,6 +125,7 @@ export interface UploadJob {
   error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;
   rush: boolean; // sent with "Upload now"
+  retry_at: string | null; // a failed upload that's tried again by itself then
   starts_at: string | null; // when it goes, if it's waiting for its turn
   wait_reason: "" | "gap" | "thumbnail";
   views: number | null;

@@ -288,6 +288,9 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
               {job.status === "failed" && (
                 <>
                   <p className="break-words text-xs text-red-300">{job.error}</p>
+                  {job.retry_at && (
+                    <p className="text-xs text-zinc-400">Tries again by itself {upcoming(job.retry_at)}, or tap Retry now.</p>
+                  )}
                   <div className="flex gap-2">
                     <button onClick={() => run(() => api.retryUpload(job.id), "Queued again")} className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700">
                       Retry

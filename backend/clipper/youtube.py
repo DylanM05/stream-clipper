@@ -69,10 +69,21 @@ NO_CUSTOM_THUMBNAILS = ("YouTube doesn't let this channel use custom thumbnails 
 _VIDEO_ID = re.compile(r"(?:youtu\.be/|/shorts/|[?&]v=|/video/)([\w-]{11})")
 
 
+# Error reasons that clear up by themselves, and when: "quota" when the API quota resets at midnight Pacific,
+# "tomorrow" for the channel's upload limit and rate limits.
+RETRY_LATER = {
+    "quotaExceeded": "quota", "uploadLimitExceeded": "tomorrow", "rateLimitExceeded": "tomorrow",
+    "userRateLimitExceeded": "tomorrow",
+}
+
+
 class YouTubeError(RuntimeError):
-    def __init__(self, message: str, signed_out: bool = False):
+    def __init__(self, message: str, signed_out: bool = False, retry: str = ""):
         super().__init__(message)
         self.signed_out = signed_out  # the channel's sign-in no longer works: it needs connecting again
+        # Whether the same upload could work later (see RETRY_LATER), when nothing was posted; "" if it would fail
+        # the same way again.
+        self.retry = retry
 
 
 class _Retry(Exception):
@@ -306,7 +317,8 @@ class Google:
                     session_url = ""
                 retries += 1
                 if retries > MAX_RETRIES:
-                    raise YouTubeError(f"YouTube kept failing ({e}). Retry later; it carries on where it stopped.") from e
+                    raise YouTubeError(f"YouTube kept failing ({e}). Retry later; it carries on where it stopped.",
+                                       retry="tomorrow") from e
                 wait = min(2 ** retries, 120)
                 log.warning("YouTube upload: %s; trying again in %ds", e, wait)
                 self.sleep(wait)
@@ -449,10 +461,12 @@ def _api_error(res: httpx.Response) -> YouTubeError:
     error = _json(res).get("error") or {}
     if not isinstance(error, dict):
         error = {"message": str(error)}
-    for item in error.get("errors") or []:
-        if message := REASONS.get(item.get("reason", "")):
-            return YouTubeError(message)
+    reasons = [item.get("reason", "") for item in error.get("errors") or [] if isinstance(item, dict)]
+    retry = next((RETRY_LATER[r] for r in reasons if r in RETRY_LATER), "")
+    for reason in reasons:
+        if message := REASONS.get(reason):
+            return YouTubeError(message, retry=retry)
     if res.status_code == 401:
         return YouTubeError(SIGNED_OUT, signed_out=True)
     message = error.get("message") or res.reason_phrase
-    return YouTubeError(f"YouTube refused it ({res.status_code}): {message}"[:500])
+    return YouTubeError(f"YouTube refused it ({res.status_code}): {message}"[:500], retry=retry)

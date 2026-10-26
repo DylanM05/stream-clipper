@@ -244,6 +244,7 @@ class UploadJobOut(BaseModel):
     error: str
     has_screenshot: bool
     rush: bool  # sent with "Upload now"
+    retry_at: str | None  # a failed upload that's tried again by itself then
     starts_at: str | None  # when it goes, if it's waiting for its turn
     wait_reason: str  # why: "gap" (the show spaces its uploads) or "thumbnail"
     views: int | None
@@ -588,8 +589,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def job_out(job: UploadJob, turn: Turn | None = None) -> UploadJobOut:
         waits = turn is not None and bool(turn.reason)
         return UploadJobOut(**job.model_dump(exclude={"screenshot", "session_url", "session_key", "created_at", "updated_at",
-                                                      "started_at", "finished_at", "stats_at"}),
+                                                      "started_at", "finished_at", "stats_at", "retry_at"}),
                             has_screenshot=bool(job.screenshot) and Path(job.screenshot).exists(),
+                            retry_at=iso(job.retry_at),
                             starts_at=iso(turn.at) if waits else None, wait_reason=turn.reason if waits else "",
                             created_at=iso(job.created_at), finished_at=iso(job.finished_at))
 
@@ -629,6 +631,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.refresh(clip)
         return clip_out(clip, vod)
 
+    def cancel_retries(s: Session, clip: ClipRecord) -> None:
+        """Stop the clip's failed uploads from trying again by themselves."""
+        for job in s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id, col(UploadJob.retry_at).is_not(None))):
+            job.retry_at = None
+            s.add(job)
+
     def discard_render(s: Session, clip: ClipRecord, vod: Vod) -> None:
         """Take a clip out of the render and upload queues and delete its rendered files. A full episode's
         file is the stream itself and stays. A render that's running stops on its own (it sees the change)."""
@@ -636,6 +644,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "It's uploading right now. Wait for that to finish.")
         for job in s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id, UploadJob.status == "queued")):
             s.delete(job)
+        cancel_retries(s, clip)
         clips_dir = (settings.vods_dir / vod.workspace / "clips").resolve() if vod.workspace else None
         for path in (clip.video_path, clip.short_path):
             if path and clips_dir and Path(path).parent.resolve() == clips_dir:
@@ -1263,6 +1272,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "Only rendered clips can be marked as uploaded")
         clip.status, clip.youtube_url = "uploaded", body.youtube_url.strip()
         clip.uploaded_at = clip.updated_at = utcnow()
+        cancel_retries(s, clip)  # it's on YouTube: a failed upload trying again would post it twice
         s.add(clip)
         s.commit()
         s.refresh(clip)
@@ -1331,7 +1341,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = found(s, UploadJob, job_id, "upload")
         if job.status != "failed":
             raise HTTPException(409, "Only failed uploads can be retried")
-        job.status, job.progress, job.error, job.updated_at = "queued", 0, "", utcnow()
+        job.status, job.progress, job.error, job.retry_at, job.updated_at = "queued", 0, "", None, utcnow()
         s.add(job)
         s.commit()
         s.refresh(job)

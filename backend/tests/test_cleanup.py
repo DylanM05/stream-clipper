@@ -55,6 +55,19 @@ def test_a_finished_stream_loses_its_big_files_and_keeps_the_rest(settings):
     assert w.clean_up_next() is False  # nothing left to do
 
 
+def test_a_failed_upload_that_tries_again_tonight_keeps_the_streams_files(settings):
+    finished_stream(settings, ("uploaded",), days_ago=0)  # the video went up; its Short failed and waits to retry
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=1, which="short", status="failed", retry_at=utcnow() + timedelta(hours=5)))
+        s.commit()
+    w = worker_module.Worker(settings)
+    assert w.clean_up_next() is False
+    with Session(get_engine(settings)) as s:
+        s.get(UploadJob, 1).retry_at = None  # dismissed, or given up on
+        s.commit()
+    assert w.clean_up_next() is True
+
+
 def test_by_default_a_stream_is_cleaned_up_as_soon_as_its_clips_are_done_and_extras_count_as_done(settings):
     finished_stream(settings, ("uploaded", "extra", "rejected"), days_ago=0)
     assert worker_module.Worker(settings).clean_up_next() is True

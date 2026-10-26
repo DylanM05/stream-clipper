@@ -80,6 +80,10 @@ class UploadJob(SQLModel, table=True):
     session_url: str = ""
     session_key: str = ""
     rush: bool = False  # "Upload now": doesn't wait for its turn (schedule.py)
+    # A failure that could clear up by itself (a daily limit, YouTube having trouble) is queued again at 12:01 AM,
+    # up to Worker.MAX_AUTO_RETRIES times.
+    retry_at: datetime | None = None
+    auto_retries: int = 0
     started_at: datetime | None = None
     finished_at: datetime | None = None
     # How it's doing on YouTube (stats.py): the latest counts, and the views a day and a week after it went up.

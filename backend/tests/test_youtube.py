@@ -2,7 +2,9 @@
 
 import json
 import re
+from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
+from zoneinfo import ZoneInfo
 
 import httpx
 import pytest
@@ -11,11 +13,11 @@ from sqlmodel import Session
 
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine
+from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine, utcnow
 from clipper.web import app as web_app
 from clipper.youtube import (
     PLAYLIST_ITEMS_URL, PLAYLISTS_URL, TOKEN_URL, UPLOAD_URL, Google, Playlist, Stats, Uploaded, Video, YouTubeError,
-    clean_description, sign_in_url, video_id,
+    _api_error, clean_description, sign_in_url, video_id,
 )
 
 
@@ -476,6 +478,122 @@ def test_a_signed_out_channel_is_flagged_and_restarts_resume_api_uploads(setting
     w.recover()
     assert get(settings, UploadJob, 2).status == "queued"  # carries on where it stopped
     assert get(settings, UploadJob, 3).status == "failed"  # Studio: can't tell whether it finished
+
+
+LIMIT = YouTubeError("YouTube says this channel has uploaded as many videos as it can for now.", retry="tomorrow")
+
+
+def fail_once(settings, clip_id, monkeypatch, error=LIMIT, **job_fields):
+    """Queue an upload that fails with `error`; returns the notifications sent."""
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, **job_fields))
+        s.commit()
+    w = worker_module.Worker(settings)
+    w.youtube = FakeGoogle(error=error)
+    w.upload_next()
+    return w, sent
+
+
+def test_an_upload_over_the_daily_limit_tries_again_at_12_01_am(settings, clip_id, monkeypatch):
+    w, sent = fail_once(settings, clip_id, monkeypatch)
+    job = get(settings, UploadJob, 1)
+    local = job.retry_at.astimezone(ZoneInfo(settings.timezone))
+    assert job.status == "failed" and (local.hour, local.minute) == (0, 1)
+    assert timedelta(0) < job.retry_at - utcnow() <= timedelta(days=1)
+    assert re.search(r"It tries again by itself at 12:01 AM E[SD]T\.$", sent[0].message)
+
+    _due(settings)
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    job = get(settings, UploadJob, 1)
+    assert (job.status, job.auto_retries, job.retry_at) == ("done", 1, None)
+
+
+def _due(settings, job_id=1):
+    with Session(get_engine(settings)) as s:
+        job = s.get(UploadJob, job_id)
+        job.retry_at = utcnow() - timedelta(minutes=1)
+        s.commit()
+
+
+def test_failures_that_would_fail_again_arent_retried(settings, clip_id, monkeypatch):
+    fail_once(settings, clip_id, monkeypatch, error=YouTubeError("This channel's YouTube sign-in has expired", signed_out=True))
+    assert get(settings, UploadJob, 1).retry_at is None
+
+
+def test_retrying_by_itself_stops_after_a_few_nights(settings, clip_id, monkeypatch):
+    fail_once(settings, clip_id, monkeypatch, auto_retries=worker_module.MAX_AUTO_RETRIES)
+    assert get(settings, UploadJob, 1).retry_at is None
+
+
+def test_the_api_quota_is_retried_when_it_resets_in_california(settings, clip_id, monkeypatch):
+    fail_once(settings, clip_id, monkeypatch, error=YouTubeError("The quota is used up.", retry="quota"))
+    local = get(settings, UploadJob, 1).retry_at.astimezone(ZoneInfo("America/Los_Angeles"))
+    assert (local.hour, local.minute) == (0, 1)
+
+
+def test_a_file_that_went_up_another_way_isnt_retried(settings, clip_id, monkeypatch):
+    w, _ = fail_once(settings, clip_id, monkeypatch)
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, status="done", youtube_url="https://youtu.be/abcDEF12345"))  # a new upload
+        s.commit()
+    _due(settings)
+    w.youtube = FakeGoogle()
+    w.upload_next()
+    job = get(settings, UploadJob, 1)
+    assert (job.status, job.retry_at) == ("failed", None) and w.youtube.calls == []
+
+
+def test_marking_a_clip_uploaded_by_hand_stops_its_retries(settings, clip_id, monkeypatch):
+    fail_once(settings, clip_id, monkeypatch)
+    client = TestClient(web_app.create_app(settings))
+    client.post("/api/login", json={"password": "pw"})
+    [job] = client.get(f"/api/clips/{clip_id}/uploads").json()
+    assert job["retry_at"]
+    client.post(f"/api/clips/{clip_id}/uploaded", json={"youtube_url": "https://youtu.be/abcDEF12345"})
+    assert get(settings, UploadJob, 1).retry_at is None
+
+
+def test_studio_retries_only_what_never_reached_studio(settings, clip_id, monkeypatch):
+    from clipper.studio import StudioError
+    from test_uploads import FakeStudio
+
+    with Session(get_engine(settings)) as s:
+        dest = s.get(Destination, 1)
+        dest.youtube_token = ""
+        s.add_all([dest, UploadJob(clip_id=clip_id), UploadJob(clip_id=clip_id)])
+        s.commit()
+    w = worker_module.Worker(settings)
+    w.youtube, w.studio = FakeGoogle(), FakeStudio()
+    errors = [StudioError("The upload browser isn't running.", retry=True),
+              StudioError("Timed out. The video is already in YouTube Studio as a private draft")]
+    monkeypatch.setattr(w.studio, "upload", lambda upload, on_progress=None: (_ for _ in ()).throw(errors.pop(0)))
+    monkeypatch.setattr(worker_module.notify, "send", lambda *a: None)
+    w.upload_next()
+    w.upload_next()
+    assert get(settings, UploadJob, 1).retry_at is not None
+    second = get(settings, UploadJob, 2)
+    assert "private draft" in second.error and second.retry_at is None  # trying again could post it twice
+
+
+def test_the_next_12_01_am_follows_the_clock_on_the_wall():
+    retry_time = worker_module.retry_time
+    utc = ZoneInfo("UTC")
+    assert retry_time("America/New_York", datetime(2026, 10, 26, 3, tzinfo=utc)) == datetime(2026, 10, 26, 4, 1, tzinfo=utc)
+    assert retry_time("America/New_York", datetime(2026, 10, 26, 5, tzinfo=utc)) == datetime(2026, 10, 27, 4, 1, tzinfo=utc)
+    # Daylight saving time ends at 2 AM on Nov 1, 2026: the next 12:01 AM is an hour later in UTC.
+    assert retry_time("America/New_York", datetime(2026, 11, 1, 5, tzinfo=utc)) == datetime(2026, 11, 2, 5, 1, tzinfo=utc)
+
+
+def test_youtubes_limits_say_when_to_try_again():
+    def error(reason):
+        return _api_error(httpx.Response(403, json={"error": {"message": "m", "errors": [{"reason": reason}]}}))
+
+    assert [error(r).retry for r in ("uploadLimitExceeded", "quotaExceeded", "rateLimitExceeded", "forbidden")] == [
+        "tomorrow", "quota", "tomorrow", "",
+    ]
 
 
 def test_unconnected_channels_still_go_through_studio(settings, clip_id):
