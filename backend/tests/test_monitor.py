@@ -197,6 +197,22 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
 
 
+def test_channel_check_says_which_streams_it_skipped_and_whose_they_are(rumble):
+    from typer.testing import CliRunner
+
+    from clipper.cli import app
+
+    _, _, site, _ = rumble
+    site["videos"] = {
+        "v6mine": {"title": "Q After Dark", "duration": 3600, "live_status": "was_live", "channel_url": OURS},
+        "v6lofi": {"title": "lofi house radio", "duration": None, "live_status": "is_live",
+                   "channel_url": "https://rumble.com/c/LofiGirl"},
+    }
+    out = CliRunner().invoke(app, ["channel-check", "rumble.com/c/TheQuartering"]).output
+    assert "Q After Dark" in out.split("Skipped")[0]
+    assert "lofi house radio  (Rumble says: https://rumble.com/c/LofiGirl)" in out
+
+
 def test_a_rumble_video_counts_only_if_rumble_says_its_the_channels():
     owner_is = monitor.rumble_owner_is
     assert owner_is({"channel_url": "https://rumble.com/c/thequartering"}, OURS)  # case doesn't matter

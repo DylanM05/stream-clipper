@@ -174,9 +174,11 @@ def channel_check(url: Annotated[str, typer.Argument(help="A channel link, as yo
         typer.secho(str(e), fg="red", err=True)
         raise typer.Exit(1)
     typer.echo(f"{platform}: {channel_url}")
+    skipped: list[tuple[str, str]] = []
     try:
         # Everything on a Rumble channel, not only what the worker hasn't settled yet.
-        listed = list_rumble(channel_url) if platform == "rumble" else Monitor(get_settings())._list(platform, channel_url)
+        listed = (list_rumble(channel_url, skipped=skipped) if platform == "rumble"
+                  else Monitor(get_settings())._list(platform, channel_url))
     except Exception as e:
         typer.secho(f"Couldn't read it: {e}", fg="red", err=True)
         raise typer.Exit(1)
@@ -185,6 +187,10 @@ def channel_check(url: Annotated[str, typer.Argument(help="A channel link, as yo
         typer.echo(f"  {state:>10}  {item.title[:80]}  {item.url}")
     if not listed:
         typer.echo("  (no videos)")
+    if skipped:
+        typer.echo("Skipped, as another channel's:")
+        for title, owner in skipped:
+            typer.echo(f"  {title[:80]}  (Rumble says: {owner})")
 
 
 @app.command()

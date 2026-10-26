@@ -121,7 +121,8 @@ class RumbleError(RuntimeError):
     """Rumble turned the server away; the message says why in plain words."""
 
 
-def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None) -> list[Listed]:
+def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
+                skipped: list[tuple[str, str]] | None = None) -> list[Listed]:
     """The channel's newest streams, each read on its own for whether it's live, how long it is and whose it is,
     except those already `settled` (queued, skipped or older), which the monitor has no more use for.
 
@@ -130,7 +131,8 @@ def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[s
     the next page at once, which Rumble answers with "Too Many Requests" (Oct 26, 2026).
 
     That page also links other channels' live streams, so only streams Rumble says are this channel's count. The
-    ids of other channels' streams go in `others`, so a later check doesn't read them again.
+    ids of other channels' streams go in `others`, so a later check doesn't read them again, and their titles and
+    owners in `skipped` (for `clipper channel-check`).
     """
     others = set() if others is None else others
     found: list[Listed] = []
@@ -161,6 +163,9 @@ def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[s
                 continue
             if not rumble_owner_is(video, channel_url):
                 others.add(vid)
+                if skipped is not None:
+                    owner = video.get("channel_url") or video.get("channel") or video.get("uploader") or "nobody said"
+                    skipped.append((video.get("title") or url, owner))
                 continue
             found.append(Listed(
                 id=vid, url=url, title=video.get("title") or "",
