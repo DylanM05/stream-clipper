@@ -1,4 +1,6 @@
 ﻿import io
+import json
+import re
 from datetime import timedelta
 
 import pytest
@@ -116,13 +118,14 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
 
 def refusal(status: int) -> Response:
     """A yt-dlp response with `status`, for raising the HTTPError yt-dlp would."""
-    return Response(io.BytesIO(b""), url="https://rumble.com/c/TheQuartering/livestreams", headers={}, status=status)
+    return Response(io.BytesIO(b""), url="https://rumble.com/api/Media/oembed.json", headers={}, status=status)
 
 
 @pytest.fixture
 def rumble(tmp_path, monkeypatch):
-    """A show watching a Rumble channel, with yt-dlp replaced: the channel page lists links, and each video says
-    whether it's live and how long it is."""
+    """A show watching a Rumble channel, with the upload browser and yt-dlp replaced. The browser lists the videos
+    on the channel's page; Rumble's oEmbed API gives each one's player (whose id isn't the page's, as on Rumble),
+    and the player says whose video it is, whether it's live and how long it is."""
     settings = Settings(data_dir=tmp_path)
     with Session(get_engine(settings)) as s:
         show = Show(name="TheQuartering", mode="segment")
@@ -134,6 +137,10 @@ def rumble(tmp_path, monkeypatch):
         channel_id = channel.id
     site = {"videos": {}, "read": [], "pages": [], "options": [], "refuse": None}
 
+    def channel_videos(cdp_url, channel_url):
+        site["pages"].append(channel_url)
+        return [f"https://rumble.com/{v}-a-stream.html" for v in site["videos"]]
+
     class FakeYoutubeDL:
         def __init__(self, opts):
             site["options"].append(opts)
@@ -144,20 +151,20 @@ def rumble(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-        def urlopen(self, url):
-            site["pages"].append(url)
+        def urlopen(self, url):  # Rumble's oEmbed API
             if site["refuse"]:
                 raise HTTPError(refusal(site["refuse"]))
-            # Like Rumble's page: other channels' live streams up top, then the channel's own videos, which can
-            # include another channel's stream too (a raid, say). Each video is linked twice.
-            grid = "".join(f'<a class="videostream__link link" href="/{v}-a-stream.html?e9s=src">' for v in site["videos"])
-            return io.BytesIO(f"<html>{grid}{grid}</html>".encode())
+            page_id = re.search(r"rumble\.com%2F(v[0-9a-z]+)-", url)[1]
+            iframe = f'<iframe src="https://rumble.com/embed/u4.p{page_id[1:]}/?pub=4"></iframe>'
+            return io.BytesIO(json.dumps({"type": "video", "html": iframe}).encode())
 
         def extract_info(self, url, download=False):
-            vid = monitor.RUMBLE_VIDEO.search(url)[1]
-            site["read"].append(vid)
-            return site["videos"][vid]
+            player = re.fullmatch(r"https://rumble\.com/embed/p(\w+)/", url)
+            assert player, f"yt-dlp must be given the video's own player, not {url}"
+            site["read"].append(f"v{player[1]}")
+            return site["videos"][f"v{player[1]}"]
 
+    monkeypatch.setattr(monitor.rumble, "channel_videos", channel_videos)
     monkeypatch.setattr(monitor, "YoutubeDL", FakeYoutubeDL)
     return settings, Monitor(settings), site, channel_id
 
@@ -192,7 +199,7 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     assert queued.status == "queued"
     with Session(get_engine(settings)) as s:
         assert s.get(Vod, queued.vod_id).url == "https://rumble.com/v6live-a-stream.html"
-    # One page per check, the channel's own, and every request passes itself off as Chrome.
+    # The channel's page once per check, and every request yt-dlp makes passes itself off as Chrome.
     assert site["pages"] == ["https://rumble.com/c/TheQuartering"] * 3
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
 
@@ -211,11 +218,11 @@ def test_channel_check_says_which_streams_it_skipped_and_whose_they_are(rumble):
     out = CliRunner().invoke(app, ["channel-check", "rumble.com/c/TheQuartering", "--links"]).output
     assert "Q After Dark" in out.split("Skipped")[0]
     assert "lofi house radio  (Rumble says: https://rumble.com/c/LofiGirl)" in out
-    assert "/v6mine-a-stream.html  class: videostream__link link" in out  # every link on the page, for working out why
+    assert "  https://rumble.com/v6lofi-a-stream.html" in out.split("Video links")[1]  # every link the browser found
 
 
 def test_a_rumble_video_counts_only_if_rumble_says_its_the_channels():
-    owner_is = monitor.rumble_owner_is
+    owner_is = monitor.rumble.owner_is
     assert owner_is({"channel_url": "https://rumble.com/c/thequartering"}, OURS)  # case doesn't matter
     assert not owner_is({"channel_url": "https://rumble.com/c/SomeoneElse", "channel": "TheQuartering"}, OURS)
     assert owner_is({"channel": "The Quartering"}, OURS)  # no link: by name
@@ -224,6 +231,7 @@ def test_a_rumble_video_counts_only_if_rumble_says_its_the_channels():
 
 def test_rumble_turning_the_server_away_reads_plainly_on_the_channel(rumble):
     settings, mon, site, channel_id = rumble
+    site["videos"] = {"v6mine": {"title": "Q After Dark", "duration": 3600, "live_status": "was_live", "channel_url": OURS}}
     site["refuse"] = 429
     mon.check(channel_id)
     with Session(get_engine(settings)) as s:
@@ -232,11 +240,10 @@ def test_rumble_turning_the_server_away_reads_plainly_on_the_channel(rumble):
 
 
 def test_only_rumble_gets_impersonation():
-    from clipper.pipeline.download import site_options
-
-    assert str(site_options("https://rumble.com/v6abcd-a-stream.html")["impersonate"]).startswith("chrome")
-    assert site_options("https://kick.com/kinocasino/videos/abc") == {}
-    assert site_options("https://notrumble.com/x") == {}
+    options = monitor.rumble.ytdlp_options
+    assert str(options("https://rumble.com/v6abcd-a-stream.html")["impersonate"]).startswith("chrome")
+    assert options("https://kick.com/kinocasino/videos/abc") == {}
+    assert options("https://notrumble.com/x") == {}
 
 
 def post(id_, duration=1250.0):

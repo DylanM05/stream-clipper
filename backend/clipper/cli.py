@@ -10,7 +10,6 @@
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -170,8 +169,10 @@ def channel_check(
     links: Annotated[bool, typer.Option("--links", help="Rumble: also list every video link on the channel's page.")] = False,
 ) -> None:
     """Show what the worker sees on a channel: its newest videos, and whether each is live and how long it is."""
-    from .monitor import RUMBLE_ANCHOR, ChannelUrlError, Monitor, list_rumble, parse_channel, rumble_page
+    from . import rumble
+    from .monitor import ChannelUrlError, Monitor, list_rumble, parse_channel
 
+    settings = get_settings()
     try:
         platform, channel_url = parse_channel(url)
     except ChannelUrlError as e:
@@ -181,8 +182,8 @@ def channel_check(
     skipped: list[tuple[str, str]] = []
     try:
         # Everything on a Rumble channel, not only what the worker hasn't settled yet.
-        listed = (list_rumble(channel_url, skipped=skipped) if platform == "rumble"
-                  else Monitor(get_settings())._list(platform, channel_url))
+        listed = (list_rumble(settings.studio_cdp_url, channel_url, skipped=skipped) if platform == "rumble"
+                  else Monitor(settings)._list(platform, channel_url))
     except Exception as e:
         typer.secho(f"Couldn't read it: {e}", fg="red", err=True)
         raise typer.Exit(1)
@@ -196,12 +197,10 @@ def channel_check(
         for title, owner in skipped:
             typer.echo(f"  {title[:80]}  (Rumble says: {owner})")
     if links and platform == "rumble":
-        page = rumble_page(channel_url)
-        anchors = list(RUMBLE_ANCHOR.finditer(page))
-        typer.echo(f"Video links on the page ({len(anchors)}, in a page of {len(page):,} characters):")
-        for m in anchors:
-            cls = re.search(r'class="([^"]*)"', m[0])
-            typer.echo(f"  {m[1]}  class: {cls[1] if cls else '(none)'}")
+        found = rumble.channel_videos(settings.studio_cdp_url, channel_url)
+        typer.echo(f"Video links on the page in the upload browser ({len(found)}):")
+        for link in found:
+            typer.echo(f"  {link}")
 
 
 @app.command()

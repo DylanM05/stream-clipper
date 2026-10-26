@@ -7,8 +7,8 @@ it's seen. Videos that were already on a channel when it was added are listed as
 processed if you ask for them in the app, except a stream that was live at the time, which is treated
 as new.
 
-Rumble's channel page only links its videos, without saying which is live or how long it is, so the newest
-few that haven't been settled yet are each read for that (list_rumble).
+A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
+long it is, so the newest few that haven't been settled yet are each read for that (list_rumble).
 """
 
 import logging
@@ -20,14 +20,13 @@ from urllib.parse import urlparse
 
 from sqlmodel import Session, col, or_, select
 from yt_dlp import YoutubeDL
-from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.utils import DownloadError, unsmuggle_url
 
-from . import notify, xposts
+from . import notify, rumble, xposts
 from .config import Settings
 from .db import Channel, ChannelVideo, Show, get_engine, queue_vod, utcnow
 from .notify import Note
-from .pipeline.download import site_options
+from .rumble import RumbleError
 
 log = logging.getLogger(__name__)
 
@@ -35,10 +34,7 @@ RECENT = 15  # newest videos looked at on each listing
 RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
 # Videos read per check at most, so Rumble isn't asked too often: enough for the other channels' live streams every
 # page links plus the channel's own newest five. Later checks only read what's new.
-RUMBLE_MAX_READS = 12
-RUMBLE_VIDEO = re.compile(r"rumble\.com/(v[0-9a-z]+)[-.]", re.IGNORECASE)  # rumble.com/v6abcd-the-title.html
-# A link to a video on a Rumble page: the whole <a> tag, and its path.
-RUMBLE_ANCHOR = re.compile(r'<a\b[^>]*?href="(/v[0-9a-z]+-[^"?#]*\.html)[^"]*"[^>]*>', re.IGNORECASE)
+RUMBLE_MAX_READS = 10
 # x.com pages that aren't accounts
 X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
 
@@ -119,19 +115,10 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
     return found
 
 
-class RumbleError(RuntimeError):
-    """Rumble turned the server away; the message says why in plain words."""
-
-
-def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
+def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
                 skipped: list[tuple[str, str]] | None = None) -> list[Listed]:
-    """The channel's newest videos, each read on its own for whether it's live, how long it is and whose it is,
-    except those already `settled` (queued, skipped or older), which the monitor has no more use for.
-
-    The links come straight from the channel's main page, in one request; its stream replays are listed there too.
-    (Its Livestreams tab, as the server gets it, lists none of the channel's own streams, presumably filled in with
-    JavaScript; and yt-dlp's own Rumble channel reader finds only one video and then asks for the next page at once,
-    which Rumble answers with "Too Many Requests". Both seen Oct 26, 2026.)
+    """The channel's newest videos (rumble.py), each read on its own for whether it's live, how long it is and
+    whose it is, except those already `settled` (queued, skipped or older), which the monitor has no more use for.
 
     Every Rumble page also links other channels' live streams, so only videos Rumble says are this channel's count.
     The ids of other channels' videos go in `others`, so a later check doesn't read them again, and their titles
@@ -139,28 +126,31 @@ def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[s
     """
     others = set() if others is None else others
     found: list[Listed] = []
-    links = rumble_links(rumble_page(channel_url))
-    if not links:
-        raise RumbleError("Found no videos on the channel's page. Rumble may have changed it; check the link, and what "
-                          "`clipper channel-check --links` finds on the server.")
-    with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(channel_url)}) as ydl:
+    problems: list[RumbleError] = []
+    links = rumble.channel_videos(cdp_url, channel_url)
+    with YoutubeDL({"quiet": True, "no_warnings": True, **rumble.ytdlp_options(channel_url)}) as ydl:
         reads = 0
-        for path in links:
-            url = f"https://rumble.com{path}"
-            vid = RUMBLE_VIDEO.search(url)[1]
+        for url in links:
+            vid = rumble.VIDEO_PAGE.search(url)[1]
             if vid in settled or vid in others:
                 continue
             if len(found) >= RUMBLE_RECENT or reads >= RUMBLE_MAX_READS:
                 break
             reads += 1
             try:
-                video = ydl.extract_info(url, download=False)
+                video = ydl.extract_info(rumble.player_url(url, ydl), download=False)
             except DownloadError as e:
                 if "429" in str(e):
-                    raise RumbleError(_rumble_refusal(429)) from e
+                    raise RumbleError(rumble.refusal(429)) from e
                 log.info("Couldn't read %s: %s", url, e)
                 continue
-            if not rumble_owner_is(video, channel_url):
+            except RumbleError as e:
+                if any(code in str(e) for code in ("(429", "(403")):
+                    raise
+                log.info("Couldn't read %s: %s", url, e)
+                problems.append(e)
+                continue
+            if not rumble.owner_is(video, channel_url):
                 others.add(vid)
                 if skipped is not None:
                     owner = video.get("channel_url") or video.get("channel") or video.get("uploader") or "nobody said"
@@ -170,43 +160,9 @@ def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[s
                 id=vid, url=url, title=video.get("title") or "",
                 duration=float(video["duration"]) if video.get("duration") else None, live=is_live(video),
             ))
+    if problems and not found and not (skipped if skipped is not None else others):
+        raise problems[0]  # nothing could be read: say why, rather than look like an empty channel
     return found
-
-
-def rumble_page(url: str) -> str:
-    """A Rumble page's HTML, fetched as Chrome (see site_options)."""
-    with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(url)}) as ydl:
-        try:
-            return ydl.urlopen(url).read().decode("utf-8", "replace")
-        except HTTPError as e:
-            raise RumbleError(_rumble_refusal(e.status)) from e
-
-
-def rumble_links(page: str) -> list[str]:
-    """Video links on a Rumble page, in order and once each. Other channels' are among them; rumble_owner_is
-    tells them apart, since Rumble's markup for them has changed before."""
-    return list(dict.fromkeys(m[1] for m in RUMBLE_ANCHOR.finditer(page)))
-
-
-def rumble_owner_is(video: dict, channel_url: str) -> bool:
-    """Whether Rumble says the video belongs to the channel: by its channel link (/c/Name or /user/Name), else by
-    its channel's name. A video that says neither doesn't count, rather than risk another channel's stream."""
-    want = channel_url.rstrip("/").rsplit("/", 1)[-1].lower()
-    owner = (video.get("channel_url") or video.get("uploader_url") or "").rstrip("/")
-    if owner:
-        return owner.rsplit("/", 1)[-1].lower() == want
-    names = {re.sub(r"\W", "", (video.get(k) or "").lower()) for k in ("channel", "uploader")}
-    return re.sub(r"\W", "", want) in names
-
-
-def _rumble_refusal(status: int) -> str:
-    if status == 429:
-        return ("Rumble says the server asked too often (429 Too Many Requests). It usually clears up within the hour; "
-                "the channel is tried again at each check.")
-    if status == 403:
-        return ("Rumble's Cloudflare check turned the server away (403 Forbidden). A newer yt-dlp (rebuild the image) "
-                "may get through again.")
-    return f"Rumble answered {status}."
 
 
 def is_live(entry: dict) -> bool:
@@ -250,7 +206,8 @@ class Monitor:
                     select(ChannelVideo.video_id).join(Channel)
                     .where(Channel.url == channel_url, ChannelVideo.status != "waiting")
                 ))
-            return list_rumble(channel_url, settled, self._rumble_others.setdefault(channel_url, set()))
+            return list_rumble(self.settings.studio_cdp_url, channel_url, settled,
+                               self._rumble_others.setdefault(channel_url, set()))
         if platform != "x":
             return list_recent(platform, channel_url)
         posts = xposts.video_posts(self.settings.studio_cdp_url, channel_url.rsplit("/", 1)[-1])

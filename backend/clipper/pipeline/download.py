@@ -4,11 +4,10 @@ import hashlib
 import logging
 from collections.abc import Callable
 from pathlib import Path
-from urllib.parse import urlparse
 
 from yt_dlp import YoutubeDL
-from yt_dlp.networking.impersonate import ImpersonateTarget
 
+from .. import rumble
 from ..config import Settings
 from ..ffmpeg import probe_duration
 from ..workspace import Workspace, write_json
@@ -50,19 +49,10 @@ def _register_local(path: Path, settings: Settings) -> Workspace:
     return ws
 
 
-def site_options(url: str) -> dict:
-    """yt-dlp options a site needs. Rumble sits behind Cloudflare's bot check and refuses yt-dlp's own requests,
-    so for it yt-dlp passes itself off as Chrome (with curl-cffi). That gets round the check; it was chosen knowingly
-    on Oct 26, 2026, and stops working if Cloudflare catches on."""
-    host = (urlparse(url).hostname or "").lower()
-    if host == "rumble.com" or host.endswith(".rumble.com"):
-        return {"impersonate": ImpersonateTarget.from_str("chrome")}
-    return {}
-
-
 def _download(url: str, settings: Settings, on_progress: Callable[[float], None] | None, limit_mbps: float) -> Workspace:
-    with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(url)}) as ydl:
-        info = ydl.extract_info(url, download=False)
+    with YoutubeDL({"quiet": True, "no_warnings": True, **rumble.ytdlp_options(url)}) as ydl:
+        # A Rumble video page holds another video's player first, which yt-dlp would take: go by its own (rumble.py).
+        info = ydl.extract_info(rumble.player_url(url, ydl) if rumble.is_rumble(url) else url, download=False)
     if info.get("_type") == "playlist":
         raise ValueError("That URL is a playlist or channel; give the URL of a single video or VOD.")
     if info.get("is_live"):
@@ -84,7 +74,7 @@ def _download(url: str, settings: Settings, on_progress: Callable[[float], None]
         "noprogress": True,
         "progress_hooks": [_ProgressLog(on_progress)],
         **speed_limit(limit_mbps),
-        **site_options(url),
+        **rumble.ytdlp_options(url),
     }
     log.info("Downloading %r (%s)%s", info.get("title"), info.get("webpage_url") or url,
              f" at up to {limit_mbps:g} Mbit/s" if limit_mbps else "")
