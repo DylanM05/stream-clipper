@@ -295,15 +295,20 @@ class Uploaded(BaseModel):
 
 class AppSettings(BaseModel):
     download_limit_mbps: float  # 0 = no limit
+    full_speed_from: float  # hours of the day when downloads ignore the limit; the same for both is off
+    full_speed_until: float
     cleanup_after_days: float  # delete a finished stream's big files this long after its last change
+    timezone: str  # what the hours are in (CLIPPER_TIMEZONE)
 
 
 class AppSettingsPatch(BaseModel):
     download_limit_mbps: float | None = Field(default=None, ge=0, le=100_000)
+    full_speed_from: float | None = Field(default=None, ge=0, le=24)
+    full_speed_until: float | None = Field(default=None, ge=0, le=24)
     cleanup_after_days: float | None = Field(default=None, ge=0, le=3650)
 
 
-APP_SETTING_KEYS = ("download_limit_mbps", "cleanup_after_days")
+APP_SETTING_KEYS = ("download_limit_mbps", "full_speed_from", "full_speed_until", "cleanup_after_days")
 
 
 class Pauses(BaseModel):
@@ -674,7 +679,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         for key in APP_SETTING_KEYS:
             stored = get_app_setting(s, key)
             values[key] = float(stored) if stored is not None else float(getattr(settings, key))
-        return AppSettings(**values)
+        return AppSettings(**values, timezone=settings.timezone)
 
     @app.get("/api/settings")
     def get_settings_route(s: Session = Depends(db)) -> AppSettings:
@@ -682,8 +687,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.patch("/api/settings")
     def update_settings(body: AppSettingsPatch, s: Session = Depends(db)) -> AppSettings:
-        """A running download switches to a new speed limit within a few seconds; cleanup uses its new days
-        from its next round."""
+        """A running download switches to a new speed limit (or full-speed hours) within a few seconds; cleanup
+        uses its new days from its next round."""
         for key, value in body.model_dump(exclude_none=True).items():
             set_app_setting(s, key, str(value))
         s.commit()

@@ -243,7 +243,10 @@ export interface ChannelVideo {
 /** Settings changed from the app. */
 export interface AppSettings {
   download_limit_mbps: number; // 0 = no limit
+  full_speed_from: number; // hours of the day when downloads ignore the limit; the same for both is off
+  full_speed_until: number;
   cleanup_after_days: number; // a finished stream's big files are deleted this long after its last change
+  timezone: string; // what those hours are in
 }
 
 export class ApiError extends Error {
@@ -295,7 +298,7 @@ export const api = {
   logout: () => post<void>("/api/logout"),
   summary: () => request<{ to_review: number; to_upload: number; videos_in_progress: number }>("/api/summary"),
   settings: () => request<AppSettings>("/api/settings"),
-  updateSettings: (body: Partial<AppSettings>) => patch<AppSettings>("/api/settings", body),
+  updateSettings: (body: Partial<Omit<AppSettings, "timezone">>) => patch<AppSettings>("/api/settings", body),
   storage: () =>
     request<{ free_gb: number | null; total_gb: number | null; videos_gb: number; min_free_gb: number }>("/api/storage"),
   pauses: () => request<Pauses>("/api/pauses"),

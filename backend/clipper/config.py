@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     max_height: int = 1080
     # Keeps a long VOD download from using the whole connection (0 = no limit). Also changeable in the app.
     download_limit_mbps: float = 50
+    # Hours of the day (0-24, in `timezone`) when downloads ignore that limit, such as when overnight streams
+    # end and nobody needs the connection: from 5 to 11, or 22 to 6 past midnight. The same for both is off.
+    # Also changeable in the app.
+    full_speed_from: float = Field(default=0, ge=0, le=24)
+    full_speed_until: float = Field(default=0, ge=0, le=24)
 
     # Disk space. A stream's big files (source, preview, audio, renders) are deleted this many days after
     # all its clips are uploaded or rejected (0 = right away); also changeable in the app. Each rendered clip

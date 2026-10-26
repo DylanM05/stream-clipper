@@ -265,12 +265,16 @@ class Worker:
                     description="\n\n".join(p for p in (episode_summary or text, chapters) if p),
                 ))
 
-            self._wait_for_preview(vod_id, preview)
+            # The clips don't need the preview: ones going ahead without review start rendering now, and the
+            # inbox lists the rest. Only playing them in the app waits for it.
             added = self._add_clips(vod_id, clips, show)
+            if summary := _added_summary(added):
+                if preview.is_alive():
+                    summary += "\nThe preview to watch them in the app is still being made."
+                self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
+            self._wait_for_preview(vod_id, preview)
             self._update_vod(vod_id, status="ready", progress=1)
             log.info("Video %d ready with %d clips", vod_id, len(clips))
-            if summary := _added_summary(added):
-                self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
         except Paused:
             log.info("Video %d paused", vod_id)
             if preview := self._previews.pop(vod_id, None):
@@ -326,8 +330,12 @@ class Worker:
             value = get_app_setting(s, key)
         return float(value) if value is not None else float(getattr(self.settings, key))
 
-    def download_limit(self) -> float:
-        """Mbit/s cap for downloads; 0 means none."""
+    def download_limit(self, now: datetime | None = None) -> float:
+        """Mbit/s cap for downloads; 0 means none, as it is during the full-speed hours."""
+        local = now or datetime.now(ZoneInfo(self.settings.timezone))
+        start, end = self.app_setting("full_speed_from"), self.app_setting("full_speed_until")
+        if in_hours(local.hour + local.minute / 60, start, end):
+            return 0
         return self.app_setting("download_limit_mbps")
 
     def _show_for(self, vod: Vod, meta: dict) -> Show | None:
@@ -416,7 +424,8 @@ class Worker:
                 return download.fetch(url, self.settings, on_progress=self._progress(vod_id, "downloads", limit),
                                       limit_mbps=limit)
             except LimitChanged:
-                log.info("Download speed limit changed to %g Mbit/s; carrying on at that", self.download_limit())
+                new = self.download_limit()
+                log.info("Download speed limit changed to %s; carrying on at that", f"{new:g} Mbit/s" if new else "none")
 
     # --- Renders ------------------------------------------------------------
 
@@ -898,6 +907,14 @@ class Worker:
             vod.updated_at = utcnow()
             s.add(vod)
             s.commit()
+
+
+def in_hours(hour: float, start: float, end: float) -> bool:
+    """Whether `hour` of the day is from `start` up to `end`, which can run past midnight (22 to 6). The same
+    hour for both means never."""
+    if start == end:
+        return False
+    return start <= hour < end if start < end else hour >= start or hour < end
 
 
 def best_picks(clips: list[Clip], show: Show | None) -> set[str]:

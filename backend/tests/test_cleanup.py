@@ -96,7 +96,8 @@ def test_cleanup_waits_as_long_as_set_in_the_app(settings):
     finished_stream(settings, days_ago=4)
     client = TestClient(web_app.create_app(settings))
     assert client.patch("/api/settings", json={"cleanup_after_days": 7}).json() == {
-        "download_limit_mbps": 50, "cleanup_after_days": 7,
+        "download_limit_mbps": 50, "full_speed_from": 0, "full_speed_until": 0, "cleanup_after_days": 7,
+        "timezone": "America/New_York",
     }
     assert worker_module.Worker(settings).clean_up_next() is False
     client.patch("/api/settings", json={"cleanup_after_days": 0})

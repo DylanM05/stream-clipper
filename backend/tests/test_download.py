@@ -17,3 +17,10 @@ def test_the_limit_can_be_changed_in_the_app(tmp_path):
     assert client.patch("/api/settings", json={"download_limit_mbps": 25}).json()["download_limit_mbps"] == 25
     assert client.get("/api/settings").json()["download_limit_mbps"] == 25
     assert client.patch("/api/settings", json={"download_limit_mbps": -1}).status_code == 422
+
+
+def test_full_speed_hours_are_set_in_the_app(tmp_path):
+    client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
+    body = client.patch("/api/settings", json={"full_speed_from": 5, "full_speed_until": 11}).json()
+    assert (body["full_speed_from"], body["full_speed_until"], body["timezone"]) == (5, 11, "America/New_York")
+    assert client.patch("/api/settings", json={"full_speed_until": 25}).status_code == 422

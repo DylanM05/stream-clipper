@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, errorText, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, platformName, timeOfDay, titleDate, usePoll } from "../lib";
@@ -166,6 +166,7 @@ function DownloadAndDisk() {
         value={limit}
         onSave={async (v) => setData(await api.updateSettings({ download_limit_mbps: v }))}
       />
+      <FullSpeedHours settings={settings} onChange={setData} />
       <SettingLine
         text={
           (storage?.free_gb != null ? `${storage.free_gb} GB free on the data disk; streams use ${storage.videos_gb} GB. ` : "") +
@@ -179,6 +180,94 @@ function DownloadAndDisk() {
       />
       <Notifications />
     </div>
+  );
+}
+
+const hourLabel = (h: number) => `${h % 12 || 12} ${h % 24 < 12 ? "AM" : "PM"}`;
+
+/** "EDT" for America/New_York, or the zone's name if the browser doesn't know a short one. */
+function zoneLabel(timezone: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, timeZoneName: "short" }).formatToParts(new Date());
+    return parts.find((p) => p.type === "timeZoneName")?.value ?? timezone;
+  } catch {
+    return timezone;
+  }
+}
+
+/** Hours of the day when downloads ignore the speed limit, such as when overnight streams end and nobody's online. */
+function FullSpeedHours({ settings, onChange }: { settings: AppSettings; onChange: (s: AppSettings) => void }) {
+  const toast = useToast();
+  const [editing, setEditing] = useState(false);
+  const [from, setFrom] = useState(5);
+  const [until, setUntil] = useState(11);
+  const on = settings.full_speed_from !== settings.full_speed_until;
+  const zone = zoneLabel(settings.timezone);
+
+  const save = async (body: { full_speed_from: number; full_speed_until: number }, done: string) => {
+    try {
+      onChange(await api.updateSettings(body));
+      setEditing(false);
+      toast({ text: done });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
+  if (editing) {
+    const select = (value: number, set: (v: number) => void, label: string) => (
+      <label className="flex-1">
+        <span className="mb-1 block text-xs text-zinc-500">{label}</span>
+        <select
+          value={value}
+          onChange={(e) => set(Number(e.target.value))}
+          className="w-full appearance-none rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+        >
+          {Array.from({ length: 24 }, (_, h) => (
+            <option key={h} value={h}>
+              {hourLabel(h)}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+    return (
+      <div className="space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+        <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Full speed hours ({zone})</p>
+        <div className="flex gap-2">
+          {select(from, setFrom, "From")}
+          {select(until, setUntil, "Until")}
+        </div>
+        <div className="flex gap-2">
+          {on && <Button onClick={() => save({ full_speed_from: 0, full_speed_until: 0 }, "Full speed hours off")}>Turn off</Button>}
+          <Button onClick={() => setEditing(false)}>Cancel</Button>
+          <Button tone="primary" disabled={from === until} onClick={() => save({ full_speed_from: from, full_speed_until: until }, "Saved.")} className="flex-1">
+            Save
+          </Button>
+        </div>
+        <p className="text-xs text-zinc-500">
+          Between these hours downloads ignore the limit and use your whole connection, such as right after overnight streams
+          end. A download that's running speeds up or slows down within a few seconds when they start and end.
+        </p>
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        if (on) {
+          setFrom(settings.full_speed_from);
+          setUntil(settings.full_speed_until);
+        }
+        setEditing(true);
+      }}
+      className="block w-full text-left text-xs text-zinc-500"
+    >
+      {on
+        ? `Full speed from ${hourLabel(settings.full_speed_from)} to ${hourLabel(settings.full_speed_until)} (${zone}). `
+        : "No full-speed hours. "}
+      <span className="font-semibold text-violet-300">{on ? "Change" : "Set some"}</span>
+    </button>
   );
 }
 

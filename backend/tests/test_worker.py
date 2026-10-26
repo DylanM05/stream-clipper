@@ -2,6 +2,7 @@ import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 from conftest import line, transcript
@@ -597,6 +598,42 @@ def test_the_preview_is_made_alongside_claudes_step_or_also_transcription(settin
     worker_module.Worker(settings).process_vod(vod_id)
     assert get(settings, Vod, vod_id).status == "ready"
     assert seen["started_after_transcription"] is not with_transcription
+
+
+def test_clips_are_ready_before_the_preview_is(settings, fake_pipeline, monkeypatch):
+    sent = collect_notes(monkeypatch)
+    seen = {}
+
+    def proxy(ws, settings_, on_progress=None):
+        deadline = time.monotonic() + 5
+        while not clips(settings) and time.monotonic() < deadline:  # the slow preview finishes last
+            time.sleep(0.05)
+        seen["clips_while_previewing"] = len(clips(settings))
+
+    monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+
+    assert seen["clips_while_previewing"] == 4
+    assert get(settings, Vod, vod_id).status == "ready"
+    [note] = sent
+    assert note.message == "4 to review\nThe preview to watch them in the app is still being made."
+
+
+@pytest.mark.parametrize("hour, limit", [(4, 50), (5, 0), (10.5, 0), (11, 50), (23, 50)])
+def test_downloads_go_at_full_speed_in_the_hours_set(settings, hour, limit):
+    with Session(get_engine(settings)) as s:
+        set_app_setting(s, "full_speed_from", "5")
+        set_app_setting(s, "full_speed_until", "11")
+        s.commit()
+    tz = ZoneInfo(settings.timezone)
+    now = datetime(2026, 10, 26, int(hour), int(hour % 1 * 60), tzinfo=tz)
+    assert worker_module.Worker(settings).download_limit(now) == limit
+
+
+def test_full_speed_hours_can_run_past_midnight():
+    assert [worker_module.in_hours(h, 22, 6) for h in (21, 22, 2, 6)] == [False, True, True, False]
+    assert not any(worker_module.in_hours(h, 3, 3) for h in (0, 3, 12))  # the same hour twice is off
 
 
 def test_a_failed_preview_fails_the_video_once_the_rest_is_done(settings, fake_pipeline, monkeypatch):

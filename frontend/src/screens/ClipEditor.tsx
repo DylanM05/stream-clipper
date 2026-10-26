@@ -224,7 +224,7 @@ function Editor({ clip, lines, onSaved }: { clip: Clip; lines: Line[]; onSaved: 
           )}
           {videoError && (
             <p className="absolute inset-0 grid place-items-center p-6 text-center text-sm text-zinc-400">
-              The preview isn't available yet.
+              The preview is still being made, so this can't play yet. Read the transcript below, or come back in a bit.
             </p>
           )}
           <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-xs tabular-nums">
