@@ -142,14 +142,14 @@ def test_when_a_listed_video_was_posted():
 
 def refusal(status: int) -> Response:
     """A yt-dlp response with `status`, for raising the HTTPError yt-dlp would."""
-    return Response(io.BytesIO(b""), url="https://rumble.com/api/Media/oembed.json", headers={}, status=status)
+    return Response(io.BytesIO(b""), url="https://rumble.com/v6a-a-stream.html", headers={}, status=status)
 
 
 @pytest.fixture
 def rumble(tmp_path, monkeypatch):
     """A show watching a Rumble channel, with the upload browser and yt-dlp replaced. The browser lists the videos
-    on the channel's page; Rumble's oEmbed API gives each one's player (whose id isn't the page's, as on Rumble),
-    and the player says whose video it is, whether it's live and how long it is."""
+    on the channel's page. Each one's page carries the featured video's player first, and describes its own (whose
+    id isn't the page's, as on Rumble); that player says whose video it is, whether it's live and how long it is."""
     settings = Settings(data_dir=tmp_path)
     with Session(get_engine(settings)) as s:
         show = Show(name="TheQuartering", mode="segment")
@@ -175,12 +175,15 @@ def rumble(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
-        def urlopen(self, url):  # Rumble's oEmbed API
+        def urlopen(self, url):  # a video's page
             if site["refuse"]:
                 raise HTTPError(refusal(site["refuse"]))
-            page_id = re.search(r"rumble\.com%2F(v[0-9a-z]+)-", url)[1]
-            iframe = f'<iframe src="https://rumble.com/embed/u4.p{page_id[1:]}/?pub=4"></iframe>'
-            return io.BytesIO(json.dumps({"type": "video", "html": iframe}).encode())
+            page_id = re.search(r"rumble\.com/(v[0-9a-z]+)-", url)[1]
+            own = {"@type": "VideoObject", "url": url, "embedUrl": f"https://rumble.com/embed/p{page_id[1:]}/"}
+            return io.BytesIO((
+                '<iframe src="https://rumble.com/embed/u4.pFEATURED/?pub=4"></iframe>'  # whose video isn't listed
+                f"<script type=application/ld+json>{json.dumps([own])}</script>"
+            ).encode())
 
         def extract_info(self, url, download=False):
             player = re.fullmatch(r"https://rumble\.com/embed/p(\w+)/", url)

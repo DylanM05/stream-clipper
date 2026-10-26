@@ -5,9 +5,11 @@ Rumble sits behind Cloudflare's bot check, and its pages have moved on from what
   the channel's videos at most, plus the "live now" strip of other channels' streams that every Rumble page has.
   So the list is read from the upload browser (studio.py, the same one that reads X), where the page runs as
   it does for you.
-- A video's page carries another video's player before its own, and yt-dlp takes the first one, so it reports,
-  and downloads, the wrong video. Each video's own player is looked up with Rumble's oEmbed API instead (the
-  page's id, like v7h973m, isn't the player's), and yt-dlp is given that.
+- A video's page carries the channel's newest (or featured) video's player before its own. yt-dlp takes the
+  first one, and so does Rumble's oEmbed API, so both report, and download, the wrong video: the "9 Thugs" page
+  came back as the "$1000 Viewer Event", and once a newer stream was up, the Viewer Event's page as that. Each
+  video's own player is read from the page's description of its own video instead (player_url; the page's
+  id, like v7h973m, isn't the player's), and yt-dlp is given that.
 - The requests yt-dlp makes to Rumble pass themselves off as Chrome (with curl-cffi), which gets round the bot
   check. That was chosen knowingly on Oct 26, 2026, and stops working if Cloudflare catches on.
 """
@@ -16,7 +18,7 @@ import json
 import logging
 import re
 import time
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
 from yt_dlp import YoutubeDL
@@ -27,9 +29,10 @@ from .studio import NOT_RUNNING
 
 log = logging.getLogger(__name__)
 
-OEMBED_URL = "https://rumble.com/api/Media/oembed.json"
 VIDEO_PAGE = re.compile(r"rumble\.com/(v[0-9a-z]+)[-.]", re.IGNORECASE)  # rumble.com/v6abcd-the-title.html
 PLAYER = re.compile(r"rumble\.com/embed/(?:[0-9a-z]+\.)?([0-9a-z]+)", re.IGNORECASE)  # rumble.com/embed/v5xyz/
+# Rumble leaves the quotes off its attributes where it can: <script type=application/ld+json>
+JSON_LD = re.compile(r"<script[^>]*type=[\"']?application/ld\+json[\"']?[^>]*>(.*?)</script>", re.IGNORECASE | re.DOTALL)
 GRID_WAIT_S = 30  # for the channel's page to show its videos in the browser
 
 
@@ -102,21 +105,49 @@ def video_links(hrefs: list[str]) -> list[str]:
 
 
 def player_url(video_url: str, ydl: YoutubeDL) -> str:
-    """The video's own player (rumble.com/embed/…), which yt-dlp reads correctly, from Rumble's oEmbed API. A
-    player link is returned as it is."""
+    """The video's own player (rumble.com/embed/…), which yt-dlp reads correctly. A player link is returned as it is.
+
+    The page describes its own video for search engines (a JSON-LD VideoObject) with the page's link and its
+    player's. Only a description whose link is this page counts, so another video's player on the page can't be
+    taken for it. If there's none, it says so rather than guess.
+    """
     if PLAYER.search(video_url):
         return video_url
+    page = VIDEO_PAGE.search(video_url)
+    if not page:
+        raise RumbleError(f"{video_url} isn't a Rumble video's page.")
     try:
-        answer = json.loads(ydl.urlopen(f"{OEMBED_URL}?{urlencode({'url': video_url})}").read())
+        html = ydl.urlopen(video_url).read().decode("utf-8", "replace")
     except HTTPError as e:
         raise RumbleError(refusal(e.status) if e.status in (403, 429) else
-                          f"Rumble wouldn't say which player is {video_url}'s (its oEmbed API answered {e.status}).") from e
-    except ValueError as e:
-        raise RumbleError(f"Rumble's oEmbed API didn't answer with JSON for {video_url}.") from e
-    m = PLAYER.search(str(answer.get("html") or "")) if isinstance(answer, dict) else None
-    if not m:
-        raise RumbleError(f"Rumble's oEmbed API gave no player for {video_url}.")
-    return f"https://rumble.com/embed/{m[1]}/"
+                          f"Rumble answered {e.status} for {video_url}.") from e
+    for item in _described(html):
+        own = VIDEO_PAGE.search(str(item.get("url") or ""))
+        player = PLAYER.search(str(item.get("embedUrl") or ""))
+        if item.get("@type") == "VideoObject" and own and own[1].lower() == page[1].lower() and player:
+            return f"https://rumble.com/embed/{player[1]}/"
+    raise RumbleError(f"Couldn't tell which player on {video_url} is its own: the page doesn't describe its video "
+                      "the way Rumble's pages did (Oct 2026), so rumble.py needs updating.")
+
+
+def _described(html: str) -> list[dict]:
+    """Everything the page describes in its JSON-LD blocks, flattened."""
+    found: list[dict] = []
+
+    def walk(node) -> None:
+        if isinstance(node, list):
+            for x in node:
+                walk(x)
+        elif isinstance(node, dict):
+            found.append(node)
+            walk(node.get("@graph"))
+
+    for block in JSON_LD.findall(html):
+        try:
+            walk(json.loads(block))
+        except ValueError:
+            continue  # a broken block; the others may still say
+    return found
 
 
 def owner_is(video: dict, channel_url: str) -> bool:
