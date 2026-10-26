@@ -204,6 +204,28 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
 
 
+def test_past_rumble_streams_further_down_the_page_never_come_up_as_new(rumble):
+    settings, mon, site, channel_id = rumble
+    past = {f"v6p{n}": {"title": f"Past stream {n}", "duration": 9000, "live_status": "was_live", "channel_url": OURS}
+            for n in range(8)}  # newest first, as on the Live tab
+    site["videos"] = {"v6lofi": {"title": "lofi", "duration": None, "live_status": "is_live",
+                                 "channel_url": "https://rumble.com/c/LofiGirl"}, **past}
+    mon.check(channel_id)
+    assert {k: v.status for k, v in items(settings).items()} == {f"v6p{n}": "older" for n in range(monitor.RUMBLE_RECENT)}
+
+    for _ in range(3):
+        site["read"].clear()
+        mon.check(channel_id)
+        assert site["read"] == []  # the newest few are settled, and the older ones stay unread
+    assert set(items(settings)) == {f"v6p{n}" for n in range(monitor.RUMBLE_RECENT)}
+
+    site["videos"] = {"v6new": {"title": "Tonight", "duration": None, "live_status": "is_live", "channel_url": OURS},
+                      **site["videos"]}
+    mon.check(channel_id)
+    assert site["read"] == ["v6new"]
+    assert items(settings)["v6new"].status == "waiting"
+
+
 def test_channel_check_says_which_streams_it_skipped_and_whose_they_are(rumble):
     from typer.testing import CliRunner
 

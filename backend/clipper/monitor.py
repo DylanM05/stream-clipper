@@ -8,7 +8,7 @@ processed if you ask for them in the app, except a stream that was live at the t
 as new.
 
 A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
-long it is, so the newest few that haven't been settled yet are each read for that (list_rumble).
+long it is, so of the newest few, those that haven't been settled yet are each read for that (list_rumble).
 """
 
 import logging
@@ -117,8 +117,9 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
 
 def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
                 skipped: list[tuple[str, str]] | None = None) -> list[Listed]:
-    """The channel's newest videos (rumble.py), each read on its own for whether it's live, how long it is and
-    whose it is, except those already `settled` (queued, skipped or older), which the monitor has no more use for.
+    """The channel's newest RUMBLE_RECENT videos (rumble.py), each read on its own for whether it's live, how
+    long it is and whose it is, except those already `settled` (queued, skipped or older), which the monitor has
+    no more use for. Older videos further down the page are never read: they were there before.
 
     Every Rumble page also links other channels' live streams, so only videos Rumble says are this channel's count.
     The ids of other channels' videos go in `others`, so a later check doesn't read them again, and their titles
@@ -129,13 +130,18 @@ def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(),
     problems: list[RumbleError] = []
     links = rumble.channel_videos(cdp_url, channel_url)
     with YoutubeDL({"quiet": True, "no_warnings": True, **rumble.ytdlp_options(channel_url)}) as ydl:
-        reads = 0
+        reads = own = 0
         for url in links:
             vid = rumble.VIDEO_PAGE.search(url)[1]
-            if vid in settled or vid in others:
+            if vid in others:
                 continue
-            if len(found) >= RUMBLE_RECENT or reads >= RUMBLE_MAX_READS:
+            if own >= RUMBLE_RECENT or reads >= RUMBLE_MAX_READS:
                 break
+            own += 1
+            # A settled video still takes its place among the newest few. Otherwise each check would reach one
+            # further back, and the channel's past streams would come up as new, five at a time.
+            if vid in settled:
+                continue
             reads += 1
             try:
                 video = ydl.extract_info(rumble.player_url(url, ydl), download=False)
@@ -151,6 +157,7 @@ def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(),
                 problems.append(e)
                 continue
             if not rumble.owner_is(video, channel_url):
+                own -= 1
                 others.add(vid)
                 if skipped is not None:
                     owner = video.get("channel_url") or video.get("channel") or video.get("uploader") or "nobody said"
