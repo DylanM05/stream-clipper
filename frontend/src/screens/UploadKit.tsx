@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type Destination, type UploadJob, type Visibility } from "../api";
 import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
 import { ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, upcoming, usePoll } from "../lib";
@@ -341,7 +341,10 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
   const toast = useToast();
   const { data: setup } = usePoll(api.thumbnails, 0);
   const [hint, setHint] = useState(clip.thumbnail_hint);
+  const [prompt, setPrompt] = useState(clip.thumbnail_prompt);
+  useEffect(() => setPrompt(clip.thumbnail_prompt), [clip.thumbnail_prompt]); // a new thumbnail brings its own
   const busy = clip.thumbnail_status === "queued" || clip.thumbnail_status === "making";
+  const changed = prompt.trim() !== clip.thumbnail_prompt.trim();
   if (setup && !setup.configured) {
     return (
       <p className="text-xs text-zinc-500">To make thumbnails, add an OpenRouter key (CLIPPER_OPENROUTER_API_KEY) to .env. See the README.</p>
@@ -367,12 +370,46 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
       {busy && (
         <div className="space-y-2">
           <p className="text-sm text-amber-300">
-            {clip.thumbnail_status === "queued" ? "Waiting its turn…" : "Claude is coming up with it, then the image model draws it…"}
+            {clip.thumbnail_status === "queued"
+              ? "Waiting its turn…"
+              : clip.thumbnail_redrawing
+                ? "The image model is drawing it again…"
+                : "Claude is coming up with it, then the image model draws it…"}
           </p>
           <ProgressBar value={null} />
         </div>
       )}
-      {clip.thumbnail_status === "failed" && <p className="break-words text-xs text-red-300">{clip.thumbnail_error}</p>}
+      {clip.thumbnail_error && !busy && (
+        <p className="break-words text-xs text-red-300">
+          {clip.thumbnail_url ? "The last try didn't work out, so it kept this one: " : ""}
+          {clip.thumbnail_error}
+        </p>
+      )}
+      {clip.thumbnail_prompt && (
+        <details className="rounded-xl bg-zinc-900 ring-1 ring-white/5">
+          <summary className="cursor-pointer px-3.5 py-3 text-sm font-semibold text-zinc-300">The prompt it was drawn from</summary>
+          <div className="space-y-2 px-3.5 pb-3.5">
+            <textarea
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={6}
+              maxLength={4000}
+              className="w-full rounded-xl bg-zinc-800 px-3.5 py-3 text-sm outline-none focus:ring-2 focus:ring-violet-500"
+            />
+            <Button
+              disabled={busy || !prompt.trim()}
+              onClick={() => run(() => api.redrawThumbnail(clip.id, prompt), "Drawing it again. It takes a minute.")}
+              className="w-full"
+            >
+              <SparkIcon className="size-4" /> {changed ? "Draw it with your changes" : "Draw it again"}
+            </Button>
+            <p className="text-xs text-zinc-500">
+              Change anything you like and draw it again. The same people go along, with fresh frames of the video and their
+              photos, and Claude isn't asked for a new idea. Make another, below, has Claude start over instead.
+            </p>
+          </div>
+        </details>
+      )}
       <textarea
         value={hint}
         onChange={(e) => setHint(e.target.value)}

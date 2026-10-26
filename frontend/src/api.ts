@@ -77,6 +77,8 @@ export interface Clip {
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
   thumbnail_idea: string; // what Claude came up with
+  thumbnail_prompt: string; // the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+  thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from Claude
   thumbnail_error: string;
   upload_state: UploadState;
   next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself
@@ -346,6 +348,7 @@ export const api = {
 
   thumbnails: () => request<{ configured: boolean; model: string }>("/api/thumbnails"),
   makeThumbnail: (clipId: number, hint: string) => post<Clip>(`/api/clips/${clipId}/thumbnail`, { hint }),
+  redrawThumbnail: (clipId: number, prompt: string) => post<Clip>(`/api/clips/${clipId}/thumbnail`, { prompt }),
   applyThumbnail: (clipId: number) => post<{ applied: boolean }>(`/api/clips/${clipId}/thumbnail/apply`),
   stats: (showId: number | null) => request<Stats>(`/api/stats${showId === null ? "" : `?show_id=${showId}`}`),
 

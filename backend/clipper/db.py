@@ -214,11 +214,15 @@ class ClipRecord(SQLModel, table=True):
     uploaded_at: datetime | None = None
     # A thumbnail for its landscape video (thumbnails.py), made by the worker: "" (none asked for), queued,
     # making, done or failed. thumbnail_hint is your idea for it; thumbnail_idea is what Claude came up with.
+    # thumbnail_plan is the plan the one it has was drawn from (thumbnails.Idea as JSON: who's in it and the image
+    # prompt), so it can be drawn again; thumbnail_redraw is the prompt to draw it again with, while that's queued.
     thumbnail_status: str = ""
     thumbnail_path: str = ""
     thumbnail_hint: str = ""
     thumbnail_idea: str = ""
     thumbnail_error: str = ""
+    thumbnail_plan: str = ""
+    thumbnail_redraw: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

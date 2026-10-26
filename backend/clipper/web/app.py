@@ -112,6 +112,8 @@ class ClipOut(BaseModel):
     thumbnail_hint: str
     thumbnail_idea: str
     thumbnail_error: str
+    thumbnail_prompt: str  # the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+    thumbnail_redrawing: bool  # it's queued or being drawn again from a prompt, rather than a new idea from Claude
     # Where its uploads stand (upload_states): "", uploading, queued, scheduled, retrying or failed; and when
     # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself.
     upload_state: str
@@ -121,6 +123,7 @@ class ClipOut(BaseModel):
 
 class ThumbnailRequest(BaseModel):
     hint: str = Field(default="", max_length=1000)  # your idea for it
+    prompt: str = Field(default="", max_length=4000)  # draw again from this image prompt, without asking Claude
 
 
 class VodDetail(BaseModel):
@@ -427,6 +430,14 @@ def iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt else None
 
 
+def plan_prompt(plan: str) -> str:
+    """The image prompt in a thumbnail's saved plan (ClipRecord.thumbnail_plan)."""
+    try:
+        return str(json.loads(plan).get("prompt") or "") if plan else ""
+    except (ValueError, AttributeError):
+        return ""
+
+
 def studio_upload_url(channel_id: str) -> str:
     """YouTube Studio's upload page, straight on the right channel when its UC… id is known."""
     return f"https://studio.youtube.com/channel/{channel_id}/videos/upload?d=ud" if channel_id else "https://www.youtube.com/upload"
@@ -560,8 +571,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
         thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
-            **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "created_at", "updated_at",
-                                       "reviewed_at", "uploaded_at"}),
+            **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "thumbnail_plan", "thumbnail_redraw",
+                                       "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+            thumbnail_prompt=plan_prompt(clip.thumbnail_plan),
+            thumbnail_redrawing=bool(clip.thumbnail_redraw) and clip.thumbnail_status in ("queued", "making"),
             vod_title=vod.title or vod.url,
             vod_duration=vod.duration,
             has_video=video_size > 0,
@@ -1478,7 +1491,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/clips/{clip_id}/thumbnail")
     def request_thumbnail(clip_id: int, body: ThumbnailRequest, s: Session = Depends(db)) -> ClipOut:
-        """Have the worker make a thumbnail (a new one, if it has one), built on your idea if you give one."""
+        """Have the worker make a thumbnail (a new one, if it has one), built on your idea if you give one; or, with
+        a prompt, draw the one it has again from that prompt (the one it was drawn from, or your changes to it)."""
         clip, vod = get_clip(s, clip_id)
         if not settings.openrouter_api_key:
             raise HTTPException(409, "Thumbnails need an OpenRouter key: set CLIPPER_OPENROUTER_API_KEY (see the README)")
@@ -1486,7 +1500,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(409, "One is being made already")
         if vod.cleaned_at or not vod.workspace:
             raise HTTPException(409, "This stream's video files were deleted, so there are no frames to draw the people from")
-        clip.thumbnail_status, clip.thumbnail_hint, clip.thumbnail_error = "queued", body.hint.strip(), ""
+        if prompt := body.prompt.strip():
+            clip.thumbnail_redraw = prompt
+        else:
+            clip.thumbnail_hint, clip.thumbnail_redraw = body.hint.strip(), ""
+        clip.thumbnail_status, clip.thumbnail_error = "queued", ""
         s.add(clip)
         s.commit()
         s.refresh(clip)

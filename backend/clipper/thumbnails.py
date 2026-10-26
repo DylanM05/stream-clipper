@@ -78,14 +78,15 @@ class Photo:
 
 
 def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", http: httpx.Client | None = None,
-         channel_picture: ChannelPicture | None = None) -> tuple[Path, Idea, str]:
+         channel_picture: ChannelPicture | None = None, idea: Idea | None = None) -> tuple[Path, Idea, str]:
     """Make the clip's thumbnail: a JPEG next to its renders, Claude's idea for it, and who's in it and where
-    their likeness came from."""
+    their likeness came from. Given an `idea` (a saved one, perhaps with its prompt changed), Claude isn't asked
+    for a new one: it's drawn again, with fresh frames and photos of the same people."""
     if not settings.openrouter_api_key:
         raise ThumbnailError("Thumbnails need an OpenRouter key: set CLIPPER_OPENROUTER_API_KEY (see the README).")
     if not ws.meta_json.exists() or not ws.source.exists():
         raise ThumbnailError("The stream's video files were deleted, so there are no frames to draw the people from.")
-    idea = write_idea(settings, clip, excerpt(ws, clip), notes)
+    idea = idea or write_idea(settings, clip, excerpt(ws, clip), notes)
     http = http or httpx.Client(timeout=TIMEOUT_S, follow_redirects=True)
     with tempfile.TemporaryDirectory(prefix="clipper-thumb-") as tmp:
         outside = [p for p in idea.people if not p.in_video][:MAX_LOOKUPS]

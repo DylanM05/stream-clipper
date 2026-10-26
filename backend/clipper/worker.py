@@ -775,21 +775,31 @@ class Worker:
         vod = self._get(Vod, clip.vod_id)
         show = self._get(Show, vod.show_id) if vod.show_id else None
         notes = "\n\n".join(n.strip() for n in (show.notes if show else "", vod.notes) if n.strip())
-        log.info("Making a thumbnail for clip %d (%r)", clip_id, clip.title)
+        redraw = clip.thumbnail_redraw.strip()
+        log.info("%s a thumbnail for clip %d (%r)", "Drawing again" if redraw else "Making", clip_id, clip.title)
         try:
             if not vod.workspace:
                 raise ThumbnailError("This video hasn't been downloaded.")
+            plan = None
+            if redraw:  # the saved plan, with the prompt as you left it; Claude isn't asked again
+                plan = (thumbnails.Idea.model_validate_json(clip.thumbnail_plan) if clip.thumbnail_plan
+                        else thumbnails.Idea(people=[], concept="Drawn from your prompt.", text="", prompt=""))
+                plan.prompt = redraw
             path, idea, cast = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes,
-                                               channel_picture=self._channel_picture)
+                                               channel_picture=self._channel_picture, idea=plan)
         except Exception as e:
             log.warning("No thumbnail for clip %d: %s", clip_id, e)
             error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"
-            self._update_clip(clip_id, thumbnail_status="failed", thumbnail_error=error[:1000])
+            # A clip that has a thumbnail keeps it, so a new one that didn't work out doesn't cost it the old.
+            kept = bool(clip.thumbnail_path) and Path(clip.thumbnail_path).is_file()
+            self._update_clip(clip_id, thumbnail_status="done" if kept else "failed", thumbnail_error=error[:1000],
+                              thumbnail_redraw="")
             return
         text = f' Text: "{idea.text}".' if idea.text.strip() else ""
         people = f" People: {cast}." if cast else ""
         self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path),
-                          thumbnail_idea=f"{idea.concept}{text}{people}")
+                          thumbnail_idea=f"{idea.concept}{text}{people}", thumbnail_plan=idea.model_dump_json(),
+                          thumbnail_redraw="")
 
     def _channel_picture(self, name: str) -> tuple[str, str] | None:
         """For thumbnails: the picture of the YouTube channel a search for someone finds first. Uses the API key,

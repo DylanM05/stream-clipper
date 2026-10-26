@@ -110,27 +110,46 @@ def test_long_clips_are_thinned_out_evenly(settings, clip_id, monkeypatch):
 
 
 def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, clip_id, monkeypatch):
-    def make(settings_, clip, ws, notes="", channel_picture=None):
+    given = []
+
+    def make(settings_, clip, ws, notes="", channel_picture=None, idea=None):
         assert notes == "Don wears a red cap." and clip.thumbnail_hint == "Don as a judge"
         assert channel_picture("Anyone") is None  # no API key or connected channel to search YouTube with
+        given.append(idea)
         out = ws.clips_dir / f"{clip.key}-thumbnail.jpg"
         out.parent.mkdir(exist_ok=True)
         out.write_bytes(b"jpeg")
-        idea = Idea(people=[don()], concept="Don as a judge, gavel raised.", text="GUILTY", prompt="...")
+        idea = idea or Idea(people=[don()], concept="Don as a judge, gavel raised.", text="GUILTY", prompt="Don bangs a gavel.")
         return out, idea, "Don (from the video)"
 
     monkeypatch.setattr(worker_module.thumbnails, "make", make)
-    with Session(get_engine(settings)) as s:
-        clip = s.get(ClipRecord, clip_id)
-        clip.thumbnail_status, clip.thumbnail_hint = "queued", "Don as a judge"
-        s.commit()
+    queue(settings, clip_id, thumbnail_hint="Don as a judge")
     w = worker_module.Worker(settings)
     assert w.make_next_thumbnail() is True and w.make_next_thumbnail() is False
 
     clip = get_clip(settings, clip_id)
-    assert clip.thumbnail_status == "done"
+    assert clip.thumbnail_status == "done" and given == [None]  # Claude came up with it
     assert clip.thumbnail_idea == 'Don as a judge, gavel raised. Text: "GUILTY". People: Don (from the video).'
     assert clip.thumbnail_path.endswith("ch01-thumbnail.jpg")
+    assert Idea.model_validate_json(clip.thumbnail_plan).prompt == "Don bangs a gavel."  # kept, to draw again
+
+    # Drawn again from a changed prompt: the same plan and people, without asking Claude.
+    queue(settings, clip_id, thumbnail_redraw="Don bangs a gavel, in a courtroom sketch style.")
+    w.make_next_thumbnail()
+    assert given[1].people == [don()] and given[1].prompt == "Don bangs a gavel, in a courtroom sketch style."
+    clip = get_clip(settings, clip_id)
+    assert Idea.model_validate_json(clip.thumbnail_plan).prompt == "Don bangs a gavel, in a courtroom sketch style."
+    assert clip.thumbnail_redraw == ""
+
+
+def queue(settings, clip_id, **fields) -> None:
+    """Ask for a thumbnail, as the app does."""
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.thumbnail_status = "queued"
+        for k, v in fields.items():
+            setattr(clip, k, v)
+        s.commit()
 
 
 def don() -> Person:
@@ -223,6 +242,15 @@ def test_a_failed_thumbnail_says_why(settings, clip_id, monkeypatch):
     clip = get_clip(settings, clip_id)
     assert (clip.thumbnail_status, clip.thumbnail_error) == ("failed", "The image model sent no picture back")
 
+    # One that has a thumbnail keeps it when another try doesn't work out.
+    image = settings.data_dir / "thumb.jpg"
+    image.write_bytes(b"jpeg")
+    queue(settings, clip_id, thumbnail_path=str(image), thumbnail_redraw="Don, but bigger")
+    worker_module.Worker(settings).make_next_thumbnail()
+    clip = get_clip(settings, clip_id)
+    assert (clip.thumbnail_status, clip.thumbnail_path, clip.thumbnail_redraw) == ("done", str(image), "")
+    assert clip.thumbnail_error == "The image model sent no picture back"
+
 
 def test_shows_that_make_thumbnails_queue_them_for_rendered_chapters(settings, clip_id, monkeypatch):
     monkeypatch.setattr(worker_module.render, "render_landscape", lambda source, clip, out, *a, **k: out.write_bytes(b"v"))
@@ -258,6 +286,16 @@ def test_asking_for_a_thumbnail_in_the_app(settings, clip_id):
     assert clip["thumbnail_url"].startswith(f"/media/clips/{clip_id}/thumbnail.jpg?v=")
     assert client.get(f"/media/clips/{clip_id}/thumbnail.jpg").content == b"jpeg"
     assert client.post(f"/api/clips/{clip_id}/thumbnail/apply").status_code == 409  # not uploaded yet
+
+    # The prompt it was drawn from shows, and it can be drawn again from that or a changed one.
+    with Session(get_engine(settings)) as s:
+        row = s.get(ClipRecord, clip_id)
+        row.thumbnail_plan = Idea(people=[don()], concept="c", text="", prompt="Don bangs a gavel.").model_dump_json()
+        s.commit()
+    assert client.get(f"/api/clips/{clip_id}").json()["thumbnail_prompt"] == "Don bangs a gavel."
+    clip = client.post(f"/api/clips/{clip_id}/thumbnail", json={"prompt": " Don bangs a gavel, smiling. "}).json()
+    assert (clip["thumbnail_status"], clip["thumbnail_redrawing"], clip["thumbnail_hint"]) == ("queued", True, "Don as a judge")
+    assert get_clip(settings, clip_id).thumbnail_redraw == "Don bangs a gavel, smiling."
 
     settings.openrouter_api_key = ""
     unset = TestClient(web_app.create_app(settings))
