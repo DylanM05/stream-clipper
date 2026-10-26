@@ -148,8 +148,11 @@ def rumble(tmp_path, monkeypatch):
             site["pages"].append(url)
             if site["refuse"]:
                 raise HTTPError(refusal(site["refuse"]))
-            links = "".join(f'<a class="videostream__link link" href="/{v}-a-stream.html?e9s=src">' for v in site["videos"])
-            return io.BytesIO(f"<html>{links}{links}</html>".encode())  # each video is linked twice
+            # Like Rumble's page: other channels' live streams up top, then the channel's own grid, which can
+            # include another channel's stream too (a raid, say). Each video is linked twice.
+            elsewhere = '<a class="main-menu-item" href="/v6else-somebody-else-live.html">'
+            grid = "".join(f'<a class="videostream__link link" href="/{v}-a-stream.html?e9s=src">' for v in site["videos"])
+            return io.BytesIO(f"<html>{elsewhere}{grid}{grid}</html>".encode())
 
         def extract_info(self, url, download=False):
             vid = monitor.RUMBLE_VIDEO.search(url)[1]
@@ -160,22 +163,29 @@ def rumble(tmp_path, monkeypatch):
     return settings, Monitor(settings), site, channel_id
 
 
+OURS = "https://rumble.com/c/TheQuartering"
+
+
 def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     settings, mon, site, channel_id = rumble
     site["videos"] = {
-        "v6live": {"title": "Live now", "duration": None, "live_status": "is_live"},
-        "v6old": {"title": "Last week", "duration": 9000, "live_status": "was_live"},
+        "v6live": {"title": "Live now", "duration": None, "live_status": "is_live", "channel_url": OURS},
+        "v6guest": {"title": "Someone else", "duration": None, "live_status": "is_live",
+                    "channel_url": "https://rumble.com/c/SomeoneElse"},
+        "v6old": {"title": "Last week", "duration": 9000, "live_status": "was_live", "channel_url": OURS},
     }
     mon.check(channel_id)
     found = items(settings)
+    assert set(found) == {"v6live", "v6old"}  # only the channel's own streams
     assert (found["v6live"].status, found["v6live"].reason) == ("waiting", "Still live")
     assert found["v6old"].status == "older"
+    assert "v6else" not in site["read"]  # outside the channel's grid: not even looked at
 
     site["read"].clear()
-    site["videos"]["v6live"] = {"title": "Live now", "duration": 14400, "live_status": "was_live"}
+    site["videos"]["v6live"] = {"title": "Live now", "duration": 14400, "live_status": "was_live", "channel_url": OURS}
     mon.check(channel_id)
     assert items(settings)["v6live"].reason == "Making sure the stream has ended"
-    assert site["read"] == ["v6live"]  # last week's is settled, so it isn't read again
+    assert site["read"] == ["v6live"]  # last week's is settled and the other channel's is known, so neither is read
 
     mon.check(channel_id)
     queued = items(settings)["v6live"]
@@ -185,6 +195,14 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     # One page per check, the Livestreams tab, and every request passes itself off as Chrome.
     assert set(site["pages"]) == {"https://rumble.com/c/TheQuartering/livestreams"} and len(site["pages"]) == 3
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
+
+
+def test_a_rumble_video_counts_only_if_rumble_says_its_the_channels():
+    owner_is = monitor.rumble_owner_is
+    assert owner_is({"channel_url": "https://rumble.com/c/thequartering"}, OURS)  # case doesn't matter
+    assert not owner_is({"channel_url": "https://rumble.com/c/SomeoneElse", "channel": "TheQuartering"}, OURS)
+    assert owner_is({"channel": "The Quartering"}, OURS)  # no link: by name
+    assert not owner_is({}, OURS)  # says nothing: doesn't count
 
 
 def test_rumble_turning_the_server_away_reads_plainly_on_the_channel(rumble):
