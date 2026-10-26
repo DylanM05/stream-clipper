@@ -54,8 +54,8 @@ TITLE_MAX = 100
 REASONS = {
     "quotaExceeded": "The Google Cloud project's daily YouTube API quota is used up. It resets at midnight "
                      "Pacific time; retry after that.",
-    "uploadLimitExceeded": "YouTube says this channel has uploaded as many videos as it can for now. Its limit "
-                           "lifts within 24 hours of the earlier uploads; retry then.",
+    "uploadLimitExceeded": "YouTube says this channel has uploaded as many videos as it can today. The limit "
+                           "resets at midnight.",
     "accessNotConfigured": "The YouTube Data API isn't turned on in the Google Cloud project. Enable it there, then retry.",
     "youtubeSignupRequired": "The Google account this channel was connected with has no YouTube channel. Connect it again.",
     "insufficientPermissions": "This channel was connected before the app could manage playlists. Tap Reconnect on it "
