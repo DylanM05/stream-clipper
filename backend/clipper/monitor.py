@@ -33,7 +33,9 @@ log = logging.getLogger(__name__)
 
 RECENT = 15  # newest videos looked at on each listing
 RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
-RUMBLE_MAX_READS = 8  # videos read per check at most, so Rumble isn't asked too often
+# Videos read per check at most, so Rumble isn't asked too often: enough for the other channels' live streams every
+# page links plus the channel's own newest five. Later checks only read what's new.
+RUMBLE_MAX_READS = 12
 RUMBLE_VIDEO = re.compile(r"rumble\.com/(v[0-9a-z]+)[-.]", re.IGNORECASE)  # rumble.com/v6abcd-the-title.html
 # A link to a video on a Rumble page: the whole <a> tag, and its path.
 RUMBLE_ANCHOR = re.compile(r'<a\b[^>]*?href="(/v[0-9a-z]+-[^"?#]*\.html)[^"]*"[^>]*>', re.IGNORECASE)
@@ -123,28 +125,25 @@ class RumbleError(RuntimeError):
 
 def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
                 skipped: list[tuple[str, str]] | None = None) -> list[Listed]:
-    """The channel's newest streams, each read on its own for whether it's live, how long it is and whose it is,
+    """The channel's newest videos, each read on its own for whether it's live, how long it is and whose it is,
     except those already `settled` (queued, skipped or older), which the monitor has no more use for.
 
-    The links come straight from the first page of the channel's Livestreams tab (its main page lists uploads), in
-    one request. yt-dlp's own Rumble channel reader finds only one video on Rumble's current pages and then asks for
-    the next page at once, which Rumble answers with "Too Many Requests" (Oct 26, 2026).
+    The links come straight from the channel's main page, in one request; its stream replays are listed there too.
+    (Its Livestreams tab, as the server gets it, lists none of the channel's own streams, presumably filled in with
+    JavaScript; and yt-dlp's own Rumble channel reader finds only one video and then asks for the next page at once,
+    which Rumble answers with "Too Many Requests". Both seen Oct 26, 2026.)
 
-    That page also links other channels' live streams, so only streams Rumble says are this channel's count. The
-    ids of other channels' streams go in `others`, so a later check doesn't read them again, and their titles and
-    owners in `skipped` (for `clipper channel-check`).
+    Every Rumble page also links other channels' live streams, so only videos Rumble says are this channel's count.
+    The ids of other channels' videos go in `others`, so a later check doesn't read them again, and their titles
+    and owners in `skipped` (for `clipper channel-check`).
     """
     others = set() if others is None else others
     found: list[Listed] = []
+    links = rumble_links(rumble_page(channel_url))
+    if not links:
+        raise RumbleError("Found no videos on the channel's page. Rumble may have changed it; check the link, and what "
+                          "`clipper channel-check --links` finds on the server.")
     with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(channel_url)}) as ydl:
-        try:
-            page = ydl.urlopen(f"{channel_url}/livestreams").read().decode("utf-8", "replace")
-        except HTTPError as e:
-            raise RumbleError(_rumble_refusal(e.status)) from e
-        links = rumble_links(page)
-        if not links:
-            raise RumbleError("Found no streams on the channel's Livestreams page. Rumble may have changed it; check the "
-                              "link, and what `clipper channel-check` finds on the server.")
         reads = 0
         for path in links:
             url = f"https://rumble.com{path}"
@@ -174,12 +173,19 @@ def list_rumble(channel_url: str, settled: set[str] = frozenset(), others: set[s
     return found
 
 
+def rumble_page(url: str) -> str:
+    """A Rumble page's HTML, fetched as Chrome (see site_options)."""
+    with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(url)}) as ydl:
+        try:
+            return ydl.urlopen(url).read().decode("utf-8", "replace")
+        except HTTPError as e:
+            raise RumbleError(_rumble_refusal(e.status)) from e
+
+
 def rumble_links(page: str) -> list[str]:
-    """Video links on a Rumble page, in order and once each: those in the page's own video grid (class
-    videostream__link) if it has any, since the rest of the page links other channels."""
-    anchors = [(m[1], m[0]) for m in RUMBLE_ANCHOR.finditer(page)]
-    grid = [href for href, tag in anchors if "videostream__link" in tag]
-    return list(dict.fromkeys(grid or [href for href, _ in anchors]))
+    """Video links on a Rumble page, in order and once each. Other channels' are among them; rumble_owner_is
+    tells them apart, since Rumble's markup for them has changed before."""
+    return list(dict.fromkeys(m[1] for m in RUMBLE_ANCHOR.finditer(page)))
 
 
 def rumble_owner_is(video: dict, channel_url: str) -> bool:

@@ -10,6 +10,7 @@
 
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -164,9 +165,12 @@ def llm_check() -> None:
 
 
 @app.command("channel-check")
-def channel_check(url: Annotated[str, typer.Argument(help="A channel link, as you'd add it under a show.")]) -> None:
+def channel_check(
+    url: Annotated[str, typer.Argument(help="A channel link, as you'd add it under a show.")],
+    links: Annotated[bool, typer.Option("--links", help="Rumble: also list every video link on the channel's page.")] = False,
+) -> None:
     """Show what the worker sees on a channel: its newest videos, and whether each is live and how long it is."""
-    from .monitor import ChannelUrlError, Monitor, list_rumble, parse_channel
+    from .monitor import RUMBLE_ANCHOR, ChannelUrlError, Monitor, list_rumble, parse_channel, rumble_page
 
     try:
         platform, channel_url = parse_channel(url)
@@ -191,6 +195,13 @@ def channel_check(url: Annotated[str, typer.Argument(help="A channel link, as yo
         typer.echo("Skipped, as another channel's:")
         for title, owner in skipped:
             typer.echo(f"  {title[:80]}  (Rumble says: {owner})")
+    if links and platform == "rumble":
+        page = rumble_page(channel_url)
+        anchors = list(RUMBLE_ANCHOR.finditer(page))
+        typer.echo(f"Video links on the page ({len(anchors)}, in a page of {len(page):,} characters):")
+        for m in anchors:
+            cls = re.search(r'class="([^"]*)"', m[0])
+            typer.echo(f"  {m[1]}  class: {cls[1] if cls else '(none)'}")
 
 
 @app.command()

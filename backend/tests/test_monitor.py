@@ -148,11 +148,10 @@ def rumble(tmp_path, monkeypatch):
             site["pages"].append(url)
             if site["refuse"]:
                 raise HTTPError(refusal(site["refuse"]))
-            # Like Rumble's page: other channels' live streams up top, then the channel's own grid, which can
+            # Like Rumble's page: other channels' live streams up top, then the channel's own videos, which can
             # include another channel's stream too (a raid, say). Each video is linked twice.
-            elsewhere = '<a class="main-menu-item" href="/v6else-somebody-else-live.html">'
             grid = "".join(f'<a class="videostream__link link" href="/{v}-a-stream.html?e9s=src">' for v in site["videos"])
-            return io.BytesIO(f"<html>{elsewhere}{grid}{grid}</html>".encode())
+            return io.BytesIO(f"<html>{grid}{grid}</html>".encode())
 
         def extract_info(self, url, download=False):
             vid = monitor.RUMBLE_VIDEO.search(url)[1]
@@ -169,6 +168,8 @@ OURS = "https://rumble.com/c/TheQuartering"
 def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     settings, mon, site, channel_id = rumble
     site["videos"] = {
+        "v6lofi": {"title": "lofi house radio", "duration": None, "live_status": "is_live",
+                   "channel_url": "https://rumble.com/c/LofiGirl"},  # in the "live now" strip on every page
         "v6live": {"title": "Live now", "duration": None, "live_status": "is_live", "channel_url": OURS},
         "v6guest": {"title": "Someone else", "duration": None, "live_status": "is_live",
                     "channel_url": "https://rumble.com/c/SomeoneElse"},
@@ -179,21 +180,20 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     assert set(found) == {"v6live", "v6old"}  # only the channel's own streams
     assert (found["v6live"].status, found["v6live"].reason) == ("waiting", "Still live")
     assert found["v6old"].status == "older"
-    assert "v6else" not in site["read"]  # outside the channel's grid: not even looked at
 
     site["read"].clear()
     site["videos"]["v6live"] = {"title": "Live now", "duration": 14400, "live_status": "was_live", "channel_url": OURS}
     mon.check(channel_id)
     assert items(settings)["v6live"].reason == "Making sure the stream has ended"
-    assert site["read"] == ["v6live"]  # last week's is settled and the other channel's is known, so neither is read
+    assert site["read"] == ["v6live"]  # last week's is settled and the other channels' are known: none is read
 
     mon.check(channel_id)
     queued = items(settings)["v6live"]
     assert queued.status == "queued"
     with Session(get_engine(settings)) as s:
         assert s.get(Vod, queued.vod_id).url == "https://rumble.com/v6live-a-stream.html"
-    # One page per check, the Livestreams tab, and every request passes itself off as Chrome.
-    assert set(site["pages"]) == {"https://rumble.com/c/TheQuartering/livestreams"} and len(site["pages"]) == 3
+    # One page per check, the channel's own, and every request passes itself off as Chrome.
+    assert site["pages"] == ["https://rumble.com/c/TheQuartering"] * 3
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
 
 
@@ -208,9 +208,10 @@ def test_channel_check_says_which_streams_it_skipped_and_whose_they_are(rumble):
         "v6lofi": {"title": "lofi house radio", "duration": None, "live_status": "is_live",
                    "channel_url": "https://rumble.com/c/LofiGirl"},
     }
-    out = CliRunner().invoke(app, ["channel-check", "rumble.com/c/TheQuartering"]).output
+    out = CliRunner().invoke(app, ["channel-check", "rumble.com/c/TheQuartering", "--links"]).output
     assert "Q After Dark" in out.split("Skipped")[0]
     assert "lofi house radio  (Rumble says: https://rumble.com/c/LofiGirl)" in out
+    assert "/v6mine-a-stream.html  class: videostream__link link" in out  # every link on the page, for working out why
 
 
 def test_a_rumble_video_counts_only_if_rumble_says_its_the_channels():
