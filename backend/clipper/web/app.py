@@ -1515,7 +1515,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/clips/{clip_id}/thumbnail/apply")
     def apply_thumbnail(clip_id: int, s: Session = Depends(db)) -> dict:
-        """Put the clip's thumbnail on its video that's already on YouTube, for channels connected to the API."""
+        """Put the clip's thumbnail on its video that's already on YouTube, for channels connected to the API: the
+        video the app uploaded, else the one whose link you gave when marking it uploaded by hand."""
         clip, _ = get_clip(s, clip_id)
         path = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         if clip.thumbnail_status != "done" or not path or not path.is_file():
@@ -1523,16 +1524,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         job = s.exec(select(UploadJob).where(
             UploadJob.clip_id == clip_id, UploadJob.which == "video", UploadJob.status == "done",
         ).order_by(col(UploadJob.created_at).desc())).first()
-        vid = video_id(job.youtube_url) if job else ""
+        link = job.youtube_url if job else clip.youtube_url
+        if not job and "/shorts/" in link.lower():
+            raise HTTPException(409, "The link it was marked uploaded with is a Short's, and Shorts don't use custom thumbnails. "
+                                     "Mark it uploaded again with its 16:9 video's link.")
+        vid = video_id(link)
         if not vid:
-            raise HTTPException(409, "Its video hasn't been uploaded by the app yet (Shorts don't use thumbnails)")
+            raise HTTPException(409, "There's no link to its video on YouTube. If you uploaded it yourself, mark it uploaded "
+                                     "with the 16:9 video's link (Shorts don't use thumbnails).")
         dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
         if not (dest and dest.youtube_token):
             raise HTTPException(409, "Only channels connected to the YouTube API take it from here. Download it and set it in YouTube Studio.")
         try:
             google().set_thumbnail(dest.youtube_token, vid, path)
         except YouTubeError as e:
-            raise HTTPException(502, str(e)) from None
+            # A link you gave can be to a video on another channel than the clip's, which YouTube turns down too.
+            mine = "" if job else f" Also check the link it was marked uploaded with is a video on {dest.name}."
+            raise HTTPException(502, f"{e}{mine}") from None
         return {"applied": True}
 
     # --- How uploads are doing on YouTube (stats.py) ---

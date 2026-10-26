@@ -556,6 +556,32 @@ def test_marking_a_clip_uploaded_by_hand_stops_its_retries(settings, clip_id, mo
     assert get(settings, UploadJob, 1).retry_at is None
 
 
+def test_a_new_thumbnail_goes_on_a_video_uploaded_by_hand_by_the_link_it_was_marked_with(settings, clip_id, monkeypatch):
+    youtube = FakeGoogle()
+    monkeypatch.setattr(web_app, "Google", lambda *a, **k: youtube)
+    client = TestClient(web_app.create_app(settings))
+    client.post("/api/login", json={"password": "pw"})
+    image = settings.data_dir / "thumb.jpg"
+    image.write_bytes(b"jpeg")
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.thumbnail_status, clip.thumbnail_path = "done", str(image)
+        s.commit()
+    apply = f"/api/clips/{clip_id}/thumbnail/apply"
+
+    client.post(f"/api/clips/{clip_id}/uploaded", json={"youtube_url": "https://youtube.com/shorts/abcDEF12345"})
+    res = client.post(apply)
+    assert res.status_code == 409 and "Short's" in res.json()["detail"]
+
+    client.post(f"/api/clips/{clip_id}/uploaded", json={"youtube_url": "https://youtu.be/abcDEF12345"})
+    assert client.post(apply).json() == {"applied": True}
+    assert youtube.thumbnails == [("refresh", "abcDEF12345", b"jpeg")]
+
+    youtube.thumbnail_error = YouTubeError("YouTube doesn't let this channel use custom thumbnails yet.")
+    res = client.post(apply)
+    assert res.status_code == 502 and "is a video on Kino Casino Klips" in res.json()["detail"]
+
+
 def test_studio_retries_only_what_never_reached_studio(settings, clip_id, monkeypatch):
     from clipper.studio import StudioError
     from test_uploads import FakeStudio

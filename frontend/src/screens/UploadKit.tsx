@@ -436,7 +436,9 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
       </div>
       <p className="text-xs text-zinc-500">
         {destination?.api_connected
-          ? "It goes on the video when the app uploads it."
+          ? clip.status === "uploaded"
+            ? "Use on YouTube swaps it onto the video that's up: the one the app uploaded, or for one you uploaded yourself, the link you marked it uploaded with."
+            : "It goes on the video when the app uploads it."
           : "Channels uploading through YouTube Studio don't take it automatically: download it and add it in Studio."}
         {clip.has_short && " Shorts don't use custom thumbnails, so it's only for the 16:9 video."}
       </p>
