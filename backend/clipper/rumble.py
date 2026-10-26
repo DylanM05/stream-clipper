@@ -18,6 +18,7 @@ import json
 import logging
 import re
 import time
+from pathlib import Path
 from urllib.parse import urlparse
 
 from playwright.sync_api import sync_playwright
@@ -148,6 +149,111 @@ def _described(html: str) -> list[dict]:
         except ValueError:
             continue  # a broken block; the others may still say
     return found
+
+
+UPLOAD_PAGE = "https://rumble.com/upload.php"
+
+# What each form control on a page is: its kind, label, whether it shows, a choice's value and a list's options.
+# What's typed into fields and hidden fields' values aren't read: they can hold the session's tokens.
+_FORM_JS = r"""() => {
+  const text = s => (s || "").replace(/\s+/g, " ").trim();
+  const shown = el => !!(el.offsetWidth || el.offsetHeight || el.getClientRects().length);
+  const labelOf = el => {
+    const label = el.id && document.querySelector(`label[for="${CSS.escape(el.id)}"]`);
+    if (label) return text(label.innerText);
+    const wrap = el.closest("label");
+    if (wrap) return text(wrap.innerText);
+    return text(el.getAttribute("aria-label") || el.getAttribute("placeholder") || el.getAttribute("title"));
+  };
+  const controls = [...document.querySelectorAll(
+    "input, select, textarea, button, [role=button], [role=radio], [role=checkbox], [contenteditable=true]"
+  )].map(el => {
+    const tag = el.tagName.toLowerCase();
+    const type = (el.getAttribute("type") || el.getAttribute("role") || "").toLowerCase();
+    const choice = type === "radio" || type === "checkbox";
+    const button = tag === "button" || type === "button" || type === "submit";
+    return {
+      tag, type, id: el.id || "", name: el.getAttribute("name") || "",
+      label: labelOf(el).slice(0, 150),
+      text: button ? text(el.innerText || el.value).slice(0, 80) : "",
+      value: choice ? (el.value || "").slice(0, 80) : "",
+      checked: !!el.checked, shown: shown(el), required: !!el.required,
+      accept: el.getAttribute("accept") || "",
+      options: tag === "select" ? [...el.options].map(o => [o.value, text(o.text)]) : [],
+    };
+  });
+  const forms = [...document.forms].map(f => ({
+    id: f.id || "", action: f.getAttribute("action") || "", method: (f.getAttribute("method") || "get").toLowerCase(),
+  }));
+  const headings = [...document.querySelectorAll("h1, h2, h3, h4, legend")].map(h => text(h.innerText)).filter(Boolean);
+  return {url: location.href, title: document.title, forms, headings: headings.slice(0, 60), controls};
+}"""
+
+
+def upload_page(cdp_url: str, save_dir: Path) -> dict:
+    """What Rumble's upload page asks for, as the upload browser shows it: its forms and their controls (see
+    describe_form). The page and a screenshot of it are saved in `save_dir`, for building the uploader against."""
+    try:
+        with sync_playwright() as p:
+            try:
+                browser = p.chromium.connect_over_cdp(cdp_url, timeout=15_000)
+            except Exception as e:
+                raise RumbleError(NOT_RUNNING) from e
+            context = browser.contexts[0] if browser.contexts else browser.new_context()
+            page = context.new_page()
+            try:
+                page.goto(UPLOAD_PAGE, wait_until="load", timeout=60_000)
+                page.wait_for_timeout(5000)  # for its scripts to build the form
+                save_dir.mkdir(parents=True, exist_ok=True)
+                (save_dir / "upload-page.html").write_text(page.content(), encoding="utf-8")
+                page.screenshot(path=str(save_dir / "upload-page.png"), full_page=True, timeout=15_000)
+                return page.evaluate(_FORM_JS)
+            finally:
+                page.close()
+    except RumbleError:
+        raise
+    except Exception as e:
+        raise RumbleError(f"Lost the upload browser ({e})".splitlines()[0][:500]) from e
+
+
+def describe_form(page: dict) -> list[str]:
+    """upload_page's findings as lines of text, in page order: what shows, then what's hidden for now (later steps
+    of the form often are)."""
+    controls = page.get("controls") or []
+    lines = []
+    if "login" in (page.get("url") or "").lower() or any(c["type"] == "password" and c["shown"] for c in controls):
+        lines.append("The upload browser isn't signed in to Rumble: open it, sign in at rumble.com, then run this again.")
+    lines.append(f"Page: {page.get('title', '')} ({page.get('url', '')})")
+    for form in page.get("forms") or []:
+        lines.append(f"Form: {form['method'].upper()} {form['action'] or '(this page)'}" + (f"  #{form['id']}" if form["id"] else ""))
+    if page.get("headings"):
+        lines.append("Headings: " + " | ".join(page["headings"]))
+    for shown in (True, False):
+        group = [c for c in controls if c["shown"] == shown and c["type"] != "hidden"]
+        lines.append(f"{'Showing' if shown else 'Hidden for now'} ({len(group)}):")
+        lines += ["  " + _control(c) for c in group]
+    hidden_fields = [c["name"] or c["id"] for c in controls if c["type"] == "hidden"]
+    if hidden_fields:
+        lines.append("Hidden fields: " + ", ".join(filter(None, hidden_fields)))
+    return lines
+
+
+def _control(c: dict) -> str:
+    kind = c["tag"] + (f"[{c['type']}]" if c["type"] and c["type"] != c["tag"] else "")
+    parts = [kind]
+    parts += [f"#{c['id']}"] if c["id"] else []
+    parts += [f"name={c['name']}"] if c["name"] else []
+    parts += [f"value={c['value']}"] if c["value"] else []
+    parts += [f"accept={c['accept']}"] if c["accept"] else []
+    parts += ["checked"] if c["checked"] else []
+    parts += ["required"] if c["required"] else []
+    words = c["text"] or c["label"]
+    parts += [f'"{words}"'] if words else []
+    if c["options"]:
+        shown = [f"{value}={label}" for value, label in c["options"][:150]]
+        more = len(c["options"]) - len(shown)
+        parts.append("options: " + "; ".join(shown) + (f"; and {more} more" if more > 0 else ""))
+    return "  ".join(parts)
 
 
 def owner_is(video: dict, channel_url: str) -> bool:

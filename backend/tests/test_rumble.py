@@ -67,6 +67,44 @@ def test_rumble_not_saying_which_player_is_the_pages_own_says_why(ydl, message):
         rumble.player_url(PAGE, ydl)
 
 
+def control(**fields) -> dict:
+    """A form control the way upload_page's script reports it."""
+    return {"tag": "input", "type": "", "id": "", "name": "", "label": "", "text": "", "value": "", "checked": False,
+            "shown": True, "required": False, "accept": "", "options": [], **fields}
+
+
+def test_the_upload_page_is_described_shown_first_then_what_a_later_step_shows():
+    page = {
+        "url": rumble.UPLOAD_PAGE, "title": "Upload Video", "headings": ["Upload Video", "Licensing"],
+        "forms": [{"id": "upform", "action": "/upload.php", "method": "post"}],
+        "controls": [
+            control(type="file", id="Filedata", name="Filedata", accept="video/*", label="Choose a file", required=True),
+            control(type="hidden", name="csrf"),
+            control(tag="select", id="channelId", name="channelId", label="Channel",
+                    options=[["0", "TheClips"], ["5", "Kino Klips"]]),
+            control(type="radio", name="license", value="6", label="Rumble Only", shown=False, checked=True),
+            control(tag="button", type="submit", id="submitForm", text="Upload", shown=False),
+        ],
+    }
+    assert rumble.describe_form(page) == [
+        f"Page: Upload Video ({rumble.UPLOAD_PAGE})",
+        "Form: POST /upload.php  #upform",
+        "Headings: Upload Video | Licensing",
+        "Showing (2):",
+        '  input[file]  #Filedata  name=Filedata  accept=video/*  required  "Choose a file"',
+        '  select  #channelId  name=channelId  "Channel"  options: 0=TheClips; 5=Kino Klips',
+        "Hidden for now (2):",
+        '  input[radio]  name=license  value=6  checked  "Rumble Only"',
+        '  button[submit]  #submitForm  "Upload"',
+        "Hidden fields: csrf",
+    ]
+
+
+def test_a_signed_out_browser_is_pointed_out():
+    page = {"url": "https://rumble.com/login.php", "title": "Login", "controls": [control(type="password", name="password")]}
+    assert rumble.describe_form(page)[0].startswith("The upload browser isn't signed in to Rumble")
+
+
 def test_video_links_drop_tracking_and_other_pages():
     hrefs = [
         "https://rumble.com/v7hdjt2-q-after-hours-ep.-41.html?e9s=src_v1_sa",

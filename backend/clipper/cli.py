@@ -6,6 +6,7 @@
 - `clipper process <url-or-file>` runs the whole pipeline in the foreground, without the app.
 - `clipper doctor` and `clipper llm-check` check the server setup and the Claude Code login.
 - `clipper channel-check <url>` shows what the worker sees on a watched channel.
+- `clipper rumble-upload-check` shows what Rumble's upload page asks for, in the upload browser.
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
 """
 
@@ -202,6 +203,24 @@ def channel_check(
         typer.echo(f"Video links on the page in the upload browser ({len(found)}):")
         for link in found:
             typer.echo(f"  {link}")
+
+
+@app.command("rumble-upload-check")
+def rumble_upload_check() -> None:
+    """Show what Rumble's upload page asks for, as the upload browser (signed in to Rumble) sees it. Nothing is
+    uploaded or changed; the page and a screenshot of it are saved under the data folder's rumble/."""
+    from . import rumble
+
+    settings = get_settings()
+    save_dir = settings.data_dir / "rumble"
+    try:
+        page = rumble.upload_page(settings.studio_cdp_url, save_dir)
+    except rumble.RumbleError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1)
+    for line in rumble.describe_form(page):
+        typer.echo(line)
+    typer.echo(f"\nSaved the page and a screenshot of it in {save_dir}")
 
 
 @app.command("timing-check")
