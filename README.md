@@ -204,8 +204,8 @@ The **Stats** screen lists every upload the app made with its views, likes and c
 ## Watching Rumble channels
 
 Add `rumble.com/c/name` (or `rumble.com/name`) under a show's **Channels to watch**, or paste a Rumble video's link on **Videos**. Rumble sits behind Cloudflare's bot check, which turns yt-dlp away, so for Rumble only, yt-dlp passes itself off as Chrome (its curl-cffi add-on, already in the image for Kick). That gets round the check on purpose; it was chosen knowingly on Oct 26, 2026.
-- **How it's watched:** Rumble's channel page doesn't say which video is live or how long each is, so every 10 minutes the worker reads the newest 5 videos it hasn't settled yet. A stream is queued once it's no longer live and its replay is the same length on two checks in a row, like the other platforms.
-- **Check it works:** on the server, `docker compose exec worker yt-dlp --impersonate chrome --flat-playlist --playlist-end 3 -J https://rumble.com/c/NAME` should list videos. If it says 403 Forbidden, Cloudflare has caught on and Rumble is blocked until yt-dlp is updated; the channel's card shows the same error.
+- **How it's watched:** every 10 minutes the worker loads the first page of the channel's **Livestreams** tab (`rumble.com/c/NAME/livestreams`; the main page lists uploads), once. That page doesn't say which stream is live or how long each is, so the worker reads the newest 5 it hasn't settled yet. A stream is queued once it's no longer live and its replay is the same length on two checks in a row, like the other platforms. (yt-dlp's own Rumble channel reader finds only one video on Rumble's pages and then asks for the next page straight away, which Rumble answers with 429 Too Many Requests.)
+- **Check it works:** on the server, `docker compose exec worker clipper channel-check rumble.com/c/NAME` lists the streams the worker sees, with LIVE or their length. A 429 means Rumble thinks the server asked too often, which usually clears within the hour; a 403 means Cloudflare caught on and Rumble is blocked until a newer yt-dlp gets through. The channel's card shows either.
 
 ## Watching X accounts
 

@@ -5,6 +5,7 @@
 - `clipper add <url>` queues a video for the worker.
 - `clipper process <url-or-file>` runs the whole pipeline in the foreground, without the app.
 - `clipper doctor` and `clipper llm-check` check the server setup and the Claude Code login.
+- `clipper channel-check <url>` shows what the worker sees on a watched channel.
 """
 
 import json
@@ -160,6 +161,30 @@ def llm_check() -> None:
         typer.secho(f"Failed: {e}", fg="red", err=True)
         raise typer.Exit(1)
     typer.secho(f"OK: answer={result.answer}, title={result.title!r}", fg="green")
+
+
+@app.command("channel-check")
+def channel_check(url: Annotated[str, typer.Argument(help="A channel link, as you'd add it under a show.")]) -> None:
+    """Show what the worker sees on a channel: its newest videos, and whether each is live and how long it is."""
+    from .monitor import ChannelUrlError, Monitor, list_rumble, parse_channel
+
+    try:
+        platform, channel_url = parse_channel(url)
+    except ChannelUrlError as e:
+        typer.secho(str(e), fg="red", err=True)
+        raise typer.Exit(1)
+    typer.echo(f"{platform}: {channel_url}")
+    try:
+        # Everything on a Rumble channel, not only what the worker hasn't settled yet.
+        listed = list_rumble(channel_url) if platform == "rumble" else Monitor(get_settings())._list(platform, channel_url)
+    except Exception as e:
+        typer.secho(f"Couldn't read it: {e}", fg="red", err=True)
+        raise typer.Exit(1)
+    for item in listed:
+        state = "LIVE" if item.live else to_timecode(item.duration) if item.duration else "length not known yet"
+        typer.echo(f"  {state:>10}  {item.title[:80]}  {item.url}")
+    if not listed:
+        typer.echo("  (no videos)")
 
 
 @app.command()

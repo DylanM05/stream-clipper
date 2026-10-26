@@ -1,7 +1,10 @@
+﻿import io
 from datetime import timedelta
 
 import pytest
 from sqlmodel import Session, select
+from yt_dlp.networking.common import Response
+from yt_dlp.networking.exceptions import HTTPError
 
 from clipper import monitor
 from clipper.config import Settings
@@ -111,6 +114,11 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
         assert len(s.exec(select(Vod)).all()) == 1
 
 
+def refusal(status: int) -> Response:
+    """A yt-dlp response with `status`, for raising the HTTPError yt-dlp would."""
+    return Response(io.BytesIO(b""), url="https://rumble.com/c/TheQuartering/livestreams", headers={}, status=status)
+
+
 @pytest.fixture
 def rumble(tmp_path, monkeypatch):
     """A show watching a Rumble channel, with yt-dlp replaced: the channel page lists links, and each video says
@@ -124,7 +132,7 @@ def rumble(tmp_path, monkeypatch):
         s.add(channel)
         s.commit()
         channel_id = channel.id
-    site = {"videos": {}, "read": [], "options": []}
+    site = {"videos": {}, "read": [], "pages": [], "options": [], "refuse": None}
 
     class FakeYoutubeDL:
         def __init__(self, opts):
@@ -136,10 +144,14 @@ def rumble(tmp_path, monkeypatch):
         def __exit__(self, *exc):
             return False
 
+        def urlopen(self, url):
+            site["pages"].append(url)
+            if site["refuse"]:
+                raise HTTPError(refusal(site["refuse"]))
+            links = "".join(f'<a class="videostream__link link" href="/{v}-a-stream.html?e9s=src">' for v in site["videos"])
+            return io.BytesIO(f"<html>{links}{links}</html>".encode())  # each video is linked twice
+
         def extract_info(self, url, download=False):
-            if url.startswith("https://rumble.com/c/"):
-                return {"_type": "playlist", "entries": [{"_type": "url", "url": f"https://rumble.com/{v}-a-stream.html"}
-                                                         for v in site["videos"]]}
             vid = monitor.RUMBLE_VIDEO.search(url)[1]
             site["read"].append(vid)
             return site["videos"][vid]
@@ -170,8 +182,18 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
     assert queued.status == "queued"
     with Session(get_engine(settings)) as s:
         assert s.get(Vod, queued.vod_id).url == "https://rumble.com/v6live-a-stream.html"
-    # Every request to Rumble passes itself off as Chrome, to get past its Cloudflare check.
+    # One page per check, the Livestreams tab, and every request passes itself off as Chrome.
+    assert set(site["pages"]) == {"https://rumble.com/c/TheQuartering/livestreams"} and len(site["pages"]) == 3
     assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
+
+
+def test_rumble_turning_the_server_away_reads_plainly_on_the_channel(rumble):
+    settings, mon, site, channel_id = rumble
+    site["refuse"] = 429
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        assert "429 Too Many Requests" in s.get(Channel, channel_id).last_error
+        assert s.get(Channel, channel_id).last_error.startswith("Rumble says the server asked too often")
 
 
 def test_only_rumble_gets_impersonation():

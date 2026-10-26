@@ -20,6 +20,7 @@ from urllib.parse import urlparse
 
 from sqlmodel import Session, col, or_, select
 from yt_dlp import YoutubeDL
+from yt_dlp.networking.exceptions import HTTPError
 from yt_dlp.utils import DownloadError, unsmuggle_url
 
 from . import notify, xposts
@@ -33,6 +34,7 @@ log = logging.getLogger(__name__)
 RECENT = 15  # newest videos looked at on each listing
 RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
 RUMBLE_VIDEO = re.compile(r"rumble\.com/(v[0-9a-z]+)[-.]", re.IGNORECASE)  # rumble.com/v6abcd-the-title.html
+RUMBLE_LINK = re.compile(r'href="(/v[0-9a-z]+-[^"?#]*\.html)', re.IGNORECASE)  # a video's link on a channel page
 # x.com pages that aren't accounts
 X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
 
@@ -113,30 +115,55 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
     return found
 
 
+class RumbleError(RuntimeError):
+    """Rumble turned the server away; the message says why in plain words."""
+
+
 def list_rumble(channel_url: str, settled: set[str] = frozenset()) -> list[Listed]:
-    """The channel's newest videos, each read on its own for whether it's live and how long it is, except those
-    already `settled` (queued, skipped or older), which the monitor has no more use for."""
-    flat = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": RUMBLE_RECENT,
-            **site_options(channel_url)}
-    with YoutubeDL(flat) as ydl:
-        info = ydl.extract_info(channel_url, download=False)
+    """The channel's newest streams, each read on its own for whether it's live and how long it is, except those
+    already `settled` (queued, skipped or older), which the monitor has no more use for.
+
+    The links come straight from the first page of the channel's Livestreams tab (its main page lists uploads), in
+    one request. yt-dlp's own Rumble channel reader finds only one video on Rumble's current pages and then asks for
+    the next page at once, which Rumble answers with "Too Many Requests" (Oct 26, 2026).
+    """
     found: list[Listed] = []
     with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(channel_url)}) as ydl:
-        for entry in info.get("entries") or []:
-            url = (entry or {}).get("url") or ""
-            m = RUMBLE_VIDEO.search(url)
-            if not m or m[1] in settled:
+        try:
+            page = ydl.urlopen(f"{channel_url}/livestreams").read().decode("utf-8", "replace")
+        except HTTPError as e:
+            raise RumbleError(_rumble_refusal(e.status)) from e
+        links = list(dict.fromkeys(RUMBLE_LINK.findall(page)))[:RUMBLE_RECENT]
+        if not links:
+            raise RumbleError("Found no streams on the channel's Livestreams page. Rumble may have changed it; check the "
+                              "link, and what `clipper channel-check` finds on the server.")
+        for path in links:
+            url = f"https://rumble.com{path}"
+            vid = RUMBLE_VIDEO.search(url)[1]
+            if vid in settled:
                 continue
             try:
                 video = ydl.extract_info(url, download=False)
             except DownloadError as e:
+                if "429" in str(e):
+                    raise RumbleError(_rumble_refusal(429)) from e
                 log.info("Couldn't read %s: %s", url, e)
                 continue
             found.append(Listed(
-                id=m[1], url=url, title=video.get("title") or "",
+                id=vid, url=url, title=video.get("title") or "",
                 duration=float(video["duration"]) if video.get("duration") else None, live=is_live(video),
             ))
     return found
+
+
+def _rumble_refusal(status: int) -> str:
+    if status == 429:
+        return ("Rumble says the server asked too often (429 Too Many Requests). It usually clears up within the hour; "
+                "the channel is tried again at each check.")
+    if status == 403:
+        return ("Rumble's Cloudflare check turned the server away (403 Forbidden). A newer yt-dlp (rebuild the image) "
+                "may get through again.")
+    return f"Rumble answered {status}."
 
 
 def is_live(entry: dict) -> bool:
@@ -208,7 +235,7 @@ class Monitor:
             listed = self.lister(platform, url)
         except Exception as e:
             log.warning("Checking %s failed: %s", url, e)
-            error = str(e) if isinstance(e, xposts.XError) else f"{type(e).__name__}: {e}"
+            error = str(e) if isinstance(e, (xposts.XError, RumbleError)) else f"{type(e).__name__}: {e}"
             self._finish(channel_id, last_error=error[:500])
             if not was_failing:  # once, not on every check until it's fixed
                 notify.send(self.settings, Note(f"Can't check {url}", error[:500], link="shows", tone="bad"))
