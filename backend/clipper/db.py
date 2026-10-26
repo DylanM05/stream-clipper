@@ -255,6 +255,7 @@ class ChannelVideo(SQLModel, table=True):
     status: str = "waiting"  # waiting (live or not confirmed finished), queued, skipped, older
     reason: str = ""
     vod_id: int | None = Field(default=None, foreign_key="vod.id")
+    published_at: datetime | None = None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
     first_seen_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 

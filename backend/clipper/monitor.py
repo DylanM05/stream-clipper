@@ -15,7 +15,7 @@ import logging
 import re
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from sqlmodel import Session, col, or_, select
@@ -35,6 +35,8 @@ RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
 # Videos read per check at most, so Rumble isn't asked too often: enough for the other channels' live streams every
 # page links plus the channel's own newest five. Later checks only read what's new.
 RUMBLE_MAX_READS = 10
+# A Twitch stream's preview image: .../cf_vods/<server>/<hash>_<channel>_<stream id>_<unix start time>//thumb/...
+TWITCH_STARTED = re.compile(r"/cf_vods/[^/]+/[0-9a-f]+_\w+_\d+_(\d{10})/")
 # x.com pages that aren't accounts
 X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
 
@@ -51,6 +53,7 @@ class Listed:
     duration: float | None
     live: bool
     final: bool = False  # a post, done as soon as it's up, rather than a stream's VOD
+    published: float | None = None  # when it was posted or streamed (unix time), if the platform says
 
 
 def parse_channel(url: str) -> tuple[str, str]:
@@ -94,7 +97,9 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
     """The channel's newest videos, without downloading anything."""
     found: list[Listed] = []
     for listing in listing_urls(platform, channel_url):
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": RECENT}
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": RECENT,
+                # YouTube's lists only say "3 days ago"; this turns that into a date.
+                "extractor_args": {"youtubetab": {"approximate_date": [""]}}}
         try:
             with YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(listing, download=False)
@@ -111,8 +116,19 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
                 title=entry.get("title") or "",
                 duration=float(entry["duration"]) if entry.get("duration") else None,
                 live=is_live(entry),
+                published=published(entry),
             ))
     return found
+
+
+def published(entry: dict) -> float | None:
+    """When a listed video was posted or streamed, as a unix time. Twitch's list doesn't say, but a past stream's
+    preview image is stored under a name ending in when the stream started."""
+    if when := entry.get("timestamp") or entry.get("release_timestamp"):
+        return float(when)
+    if started := TWITCH_STARTED.search(entry.get("thumbnail") or ""):
+        return float(started[1])
+    return None
 
 
 def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(), others: set[str] | None = None,
@@ -166,6 +182,7 @@ def list_rumble(cdp_url: str, channel_url: str, settled: set[str] = frozenset(),
             found.append(Listed(
                 id=vid, url=url, title=video.get("title") or "",
                 duration=float(video["duration"]) if video.get("duration") else None, live=is_live(video),
+                published=published(video),
             ))
     if problems and not found and not (skipped if skipped is not None else others):
         raise problems[0]  # nothing could be read: say why, rather than look like an empty channel
@@ -218,7 +235,8 @@ class Monitor:
         if platform != "x":
             return list_recent(platform, channel_url)
         posts = xposts.video_posts(self.settings.studio_cdp_url, channel_url.rsplit("/", 1)[-1])
-        return [Listed(id=p.id, url=p.url, title=p.text[:1000], duration=p.duration, live=False, final=True) for p in posts]
+        return [Listed(id=p.id, url=p.url, title=p.text[:1000], duration=p.duration, live=False, final=True,
+                       published=p.posted) for p in posts]
 
     def check_next(self) -> bool:
         """Check the most overdue channel, if one is due. True if a channel was checked."""
@@ -255,6 +273,7 @@ class Monitor:
             queued = 0
             new_titles = []
             for item in listed:
+                when = datetime.fromtimestamp(item.published, timezone.utc) if item.published else None
                 row = s.exec(
                     select(ChannelVideo).where(ChannelVideo.channel_id == channel_id, ChannelVideo.video_id == item.id)
                 ).first()
@@ -262,15 +281,19 @@ class Monitor:
                     # A stream that's live when the channel is added still counts as new: its VOD isn't done yet.
                     if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
                         s.add(ChannelVideo(
-                            channel_id=channel_id, video_id=item.id, url=item.url, title=item.title,
+                            channel_id=channel_id, video_id=item.id, url=item.url, title=item.title, published_at=when,
                             duration=item.duration, status="older", reason="Already on the channel when you added it",
                         ))
                         continue
                     row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
                 elif row.status != "waiting":
+                    if when and not row.published_at:  # listed before dates were kept
+                        row.published_at = when
+                        s.add(row)
                     continue
                 finished = not item.live and (item.final or bool(item.duration and row.duration == item.duration))
                 row.title, row.duration, row.updated_at = item.title, item.duration, utcnow()
+                row.published_at = when or row.published_at
                 if not finished:
                     row.status, row.reason = "waiting", _waiting_reason(item)
                 elif reason := skip_reason(channel, item):

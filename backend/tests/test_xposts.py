@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from clipper.xposts import SIGNED_OUT, XError, parse_posts, read_profile
+from clipper.xposts import SIGNED_OUT, Post, XError, parse_posts, read_profile
 
 
 def tweet(id_, text, author="Andywarski", video_ms=None, **extra):
@@ -53,6 +53,12 @@ def test_finds_the_accounts_own_video_posts():
     assert preshow.url == "https://x.com/Andywarski/status/1"
     assert preshow.duration == 1250.416
     assert preshow.text == "LIVE TONIGHT ON ♥️♠️♦️♣️KINO CASINO♣️♦️♠️♥️ AT 8:30PM EST - H3 & MORE! RT TO SUPPORT:"
+
+
+def test_a_posts_time_comes_from_its_id():
+    posted_ms = 1_792_773_700_123  # Oct 23 2026, 16:41:40.123 UTC
+    post = Post(id=str((posted_ms - 1288834974657) << 22 | 0x2A5F1), url="", text="", duration=None)
+    assert post.posted == posted_ms / 1000  # the low bits say which server, not when
 
 
 def x_user(screen_name):

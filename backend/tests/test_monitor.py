@@ -1,7 +1,8 @@
 ﻿import io
 import json
 import re
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from sqlmodel import Session, select
@@ -116,6 +117,29 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
         assert len(s.exec(select(Vod)).all()) == 1
 
 
+def test_videos_keep_when_they_were_posted_even_ones_listed_before_dates_were_kept(setup):
+    settings, mon, fake, (show_id, channel_id) = setup
+    fake.videos = [video("old")]
+    mon.check(channel_id)
+    assert items(settings)["old"].published_at is None  # as listed by an older version
+
+    fake.videos = [replace(video("new"), published=1787329245.0), replace(video("old"), published=1787000000.0)]
+    mon.check(channel_id)
+    found = items(settings)
+    assert found["new"].published_at == datetime(2026, 8, 21, 16, 20, 45, tzinfo=timezone.utc)
+    assert found["old"].published_at == datetime.fromtimestamp(1787000000, timezone.utc)
+
+
+def test_when_a_listed_video_was_posted():
+    assert monitor.published({"timestamp": 1787329245}) == 1787329245  # Kick, Rumble, and YouTube roughly
+    # Twitch's list doesn't say, but its preview image is stored under the stream's start time.
+    thumbnail = ("https://static-cdn.jtvnw.net/cf_vods/d2nvs31859zcd8/"
+                 "4bd2ab6c3c1e4d2fbf4b_kino_casino_41234567890_1787329245//thumb/thumb0-320x180.jpg")
+    assert monitor.published({"thumbnail": thumbnail}) == 1787329245
+    assert monitor.published({"thumbnail": "https://vod-secure.twitch.tv/_404/404_processing_320x180.png"}) is None
+    assert monitor.published({}) is None
+
+
 def refusal(status: int) -> Response:
     """A yt-dlp response with `status`, for raising the HTTPError yt-dlp would."""
     return Response(io.BytesIO(b""), url="https://rumble.com/api/Media/oembed.json", headers={}, status=status)
@@ -180,13 +204,15 @@ def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
         "v6live": {"title": "Live now", "duration": None, "live_status": "is_live", "channel_url": OURS},
         "v6guest": {"title": "Someone else", "duration": None, "live_status": "is_live",
                     "channel_url": "https://rumble.com/c/SomeoneElse"},
-        "v6old": {"title": "Last week", "duration": 9000, "live_status": "was_live", "channel_url": OURS},
+        "v6old": {"title": "Last week", "duration": 9000, "live_status": "was_live", "channel_url": OURS,
+                  "timestamp": 1787329245},
     }
     mon.check(channel_id)
     found = items(settings)
     assert set(found) == {"v6live", "v6old"}  # only the channel's own streams
     assert (found["v6live"].status, found["v6live"].reason) == ("waiting", "Still live")
     assert found["v6old"].status == "older"
+    assert found["v6old"].published_at == datetime.fromtimestamp(1787329245, timezone.utc)
 
     site["read"].clear()
     site["videos"]["v6live"] = {"title": "Live now", "duration": 14400, "live_status": "was_live", "channel_url": OURS}

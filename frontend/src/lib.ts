@@ -90,6 +90,17 @@ export function upcoming(iso: string): string {
   return prefix + timeOfDay(iso);
 }
 
+/** A day in the past: "Tue, Oct 20", with the year if it isn't this one; without the weekday, "Oct 20". */
+export function pastDay(iso: string, weekday = true): string {
+  const day = new Date(iso);
+  return day.toLocaleDateString("en-US", {
+    ...(weekday && { weekday: "short" }),
+    month: "short",
+    day: "numeric",
+    ...(day.getFullYear() !== new Date().getFullYear() && { year: "numeric" }),
+  });
+}
+
 /** 1234 → "1.2K" */
 export function compact(n: number): string {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);

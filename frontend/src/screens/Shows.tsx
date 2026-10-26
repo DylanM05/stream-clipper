@@ -13,7 +13,7 @@ import {
   type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
-import { ago, applyTitlePattern, clamp, cn, copyText, go, length, titleDate, usePoll } from "../lib";
+import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, titleDate, usePoll } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
@@ -1292,7 +1292,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
         </CardAction>
       </div>
 
-      {open && <ChannelVideos channelId={channel.id} />}
+      {open && <ChannelVideos channelId={channel.id} roughDates={channel.platform === "youtube"} />}
     </div>
   );
 }
@@ -1318,7 +1318,8 @@ const ITEM_STATUS: Record<ChannelVideo["status"], [string, string]> = {
   older: ["Older", "text-zinc-500"],
 };
 
-function ChannelVideos({ channelId }: { channelId: number }) {
+/** What the watcher found on a channel, newest first, each with when it was posted where the platform says. */
+function ChannelVideos({ channelId, roughDates }: { channelId: number; roughDates: boolean }) {
   const toast = useToast();
   const { data: videos, refresh } = usePoll(() => api.channelVideos(channelId), 10000, channelId);
 
@@ -1348,6 +1349,8 @@ function ChannelVideos({ channelId }: { channelId: number }) {
               </a>
               <p className="mt-0.5 text-xs text-zinc-500">
                 <span className={cn("font-semibold", tone)}>{label}</span>
+                {/* YouTube only says "3 days ago", so its dates are rough */}
+                {v.published_at ? ` · ${roughDates ? `about ${pastDay(v.published_at, false)}` : pastDay(v.published_at)}` : ""}
                 {v.duration ? ` · ${length(v.duration)}` : ""}
                 {v.reason ? ` · ${v.reason}` : ""}
               </p>

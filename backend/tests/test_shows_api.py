@@ -2,6 +2,7 @@ import json
 import shutil
 import sqlite3
 import subprocess
+from datetime import datetime, timezone
 from urllib.parse import unquote
 
 import pytest
@@ -155,11 +156,17 @@ def test_channels(client, settings):
     paused = client.patch(f"/api/channels/{channel['id']}", json={"enabled": False, "keywords": " kino , casino "}).json()
     assert paused["enabled"] is False and paused["keywords"] == "kino , casino"
 
-    with Session(get_engine(settings)) as s:  # as if the watcher had listed an older video
-        s.add(ChannelVideo(channel_id=channel["id"], video_id="v1", url="https://kick.com/kinocasino/videos/v1",
-                           title="Old stream", duration=3600, status="older"))
+    with Session(get_engine(settings)) as s:  # as if the watcher had listed older videos
+        s.add_all([
+            ChannelVideo(channel_id=channel["id"], video_id="v0", url="https://kick.com/kinocasino/videos/v0",
+                         title="Older stream", status="older", published_at=datetime(2026, 9, 1, tzinfo=timezone.utc)),
+            ChannelVideo(channel_id=channel["id"], video_id="v1", url="https://kick.com/kinocasino/videos/v1",
+                         title="Old stream", duration=3600, status="older", published_at=datetime(2026, 10, 1, tzinfo=timezone.utc)),
+        ])
         s.commit()
-    [older] = client.get(f"/api/channels/{channel['id']}/videos").json()
+    older, oldest = client.get(f"/api/channels/{channel['id']}/videos").json()  # newest first, by when they were posted
+    assert (older["title"], older["published_at"]) == ("Old stream", "2026-10-01T00:00:00+00:00")
+    assert oldest["title"] == "Older stream"
     queued = client.post(f"/api/channel-videos/{older['id']}/process").json()
     assert queued["status"] == "queued"
     vod = client.get(f"/api/vods/{queued['vod_id']}").json()["vod"]

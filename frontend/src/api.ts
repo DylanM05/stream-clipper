@@ -242,6 +242,7 @@ export interface ChannelVideo {
   status: "waiting" | "queued" | "skipped" | "older";
   reason: string;
   vod_id: number | null;
+  published_at: string | null; // when it was posted or streamed, if the platform says (roughly, on YouTube)
   first_seen_at: string;
 }
 

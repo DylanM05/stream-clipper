@@ -405,6 +405,7 @@ class ChannelVideoOut(BaseModel):
     status: str
     reason: str
     vod_id: int | None
+    published_at: str | None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
     first_seen_at: str
 
 
@@ -531,8 +532,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return f"{url}?v={int(path.stat().st_mtime)}" if path.exists() else ""
 
     def channel_video_out(item: ChannelVideo) -> ChannelVideoOut:
-        return ChannelVideoOut(**item.model_dump(exclude={"first_seen_at", "updated_at"}),
-                               first_seen_at=iso(item.first_seen_at))
+        return ChannelVideoOut(**item.model_dump(exclude={"published_at", "first_seen_at", "updated_at"}),
+                               published_at=iso(item.published_at), first_seen_at=iso(item.first_seen_at))
 
     def found(s: Session, model, id_: int, what: str):
         row = s.get(model, id_)
@@ -1213,9 +1214,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/channels/{channel_id}/videos")
     def channel_videos(channel_id: int, s: Session = Depends(db)) -> list[ChannelVideoOut]:
         found(s, Channel, channel_id, "channel")
-        rows = s.exec(
+        rows = s.exec(  # newest first, by when they were posted where that's known
             select(ChannelVideo).where(ChannelVideo.channel_id == channel_id)
-            .order_by(col(ChannelVideo.first_seen_at).desc(), col(ChannelVideo.id)).limit(50)
+            .order_by(func.coalesce(ChannelVideo.published_at, ChannelVideo.first_seen_at).desc(), col(ChannelVideo.id))
+            .limit(50)
         )
         return [channel_video_out(item) for item in rows]
 

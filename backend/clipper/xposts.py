@@ -41,6 +41,11 @@ class Post:
     text: str
     duration: float | None  # of its video, in seconds
 
+    @property
+    def posted(self) -> float:
+        """When it was posted, as a unix time: X's post ids count milliseconds since late 2010 in their top bits."""
+        return ((int(self.id) >> 22) + 1288834974657) / 1000
+
 
 def video_posts(cdp_url: str, handle: str) -> list[Post]:
     """The account's newest posts that have a video, as the upload browser sees its profile."""
