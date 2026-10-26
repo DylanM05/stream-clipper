@@ -177,7 +177,7 @@ export interface Channel {
   id: number;
   show_id: number;
   url: string;
-  platform: "kick" | "twitch" | "youtube" | "x";
+  platform: "kick" | "twitch" | "youtube" | "rumble" | "x";
   keywords: string;
   exclude: string;
   min_minutes: number;

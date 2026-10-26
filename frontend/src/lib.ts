@@ -101,6 +101,7 @@ export function platformName(extractor: string): string {
   if (key.startsWith("youtube")) return "YouTube";
   if (key.startsWith("twitter")) return "X";
   if (key.startsWith("kick")) return "Kick";
+  if (key.startsWith("rumble")) return "Rumble";
   if (key === "local") return "File";
   return extractor;
 }

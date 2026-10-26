@@ -86,7 +86,7 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
           inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="Paste a Twitch, Kick, YouTube or X link"
+          placeholder="Paste a Twitch, Kick, YouTube, Rumble or X link"
           className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none ring-violet-500 placeholder:text-zinc-500 focus:ring-2"
         />
         {canPaste && (

@@ -20,7 +20,13 @@ import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
 const SAMPLE_TITLE = "Short title written by Claude";
-const PLATFORM_NAME: Record<Channel["platform"], string> = { kick: "Kick", twitch: "Twitch", youtube: "YouTube", x: "X" };
+const PLATFORM_NAME: Record<Channel["platform"], string> = {
+  kick: "Kick",
+  twitch: "Twitch",
+  youtube: "YouTube",
+  rumble: "Rumble",
+  x: "X",
+};
 
 const hasClips = (mode: Mode) => mode !== "whole";
 const hasEpisode = (mode: Mode) => mode !== "segment";
@@ -57,8 +63,8 @@ export function Shows() {
           </div>
           <h2 className="mt-4 text-lg font-semibold">No shows yet</h2>
           <p className="mt-1 max-w-xs text-sm text-zinc-400">
-            A show sets the titles, context for Claude and upload channel for its videos, and can watch Kick, Twitch
-            and YouTube channels for new streams, and X accounts for new videos.
+            A show sets the titles, context for Claude and upload channel for its videos, and can watch Kick, Twitch,
+            YouTube and Rumble channels for new streams, and X accounts for new videos.
           </p>
         </div>
       )}
@@ -1121,7 +1127,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name or x.com/name"
+          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name or x.com/name"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
         {showFilters ? (

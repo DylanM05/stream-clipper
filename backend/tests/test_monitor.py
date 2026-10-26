@@ -16,7 +16,11 @@ def test_parse_channel_links():
     assert parse_channel("youtube.com/channel/UC123/videos") == ("youtube", "https://www.youtube.com/channel/UC123")
     assert parse_channel("https://x.com/Andywarski") == ("x", "https://x.com/andywarski")
     assert parse_channel("twitter.com/@Andywarski/status/2113687311779282973") == ("x", "https://x.com/andywarski")
-    for not_an_account in ("https://x.com/i/status/1", "x.com/home", "x.com/someone.else"):
+    assert parse_channel("rumble.com/c/TheQuartering") == ("rumble", "https://rumble.com/c/TheQuartering")
+    assert parse_channel("https://rumble.com/TheQuartering") == ("rumble", "https://rumble.com/c/TheQuartering")
+    assert parse_channel("rumble.com/user/someone/videos") == ("rumble", "https://rumble.com/user/someone")
+    assert parse_channel("rumble.com/vivafrei") == ("rumble", "https://rumble.com/c/vivafrei")  # starts with v, still a channel
+    for not_an_account in ("https://x.com/i/status/1", "x.com/home", "x.com/someone.else", "rumble.com/v6abcd-a-stream.html"):
         with pytest.raises(ChannelUrlError):
             parse_channel(not_an_account)
 
@@ -105,6 +109,77 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
         vod = s.get(Vod, new.vod_id)
         assert (vod.url, vod.show_id, vod.mode, vod.mode_auto) == ("https://kick.com/kino/videos/new", show_id, "segment", True)
         assert len(s.exec(select(Vod)).all()) == 1
+
+
+@pytest.fixture
+def rumble(tmp_path, monkeypatch):
+    """A show watching a Rumble channel, with yt-dlp replaced: the channel page lists links, and each video says
+    whether it's live and how long it is."""
+    settings = Settings(data_dir=tmp_path)
+    with Session(get_engine(settings)) as s:
+        show = Show(name="TheQuartering", mode="segment")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url="https://rumble.com/c/TheQuartering", platform="rumble")
+        s.add(channel)
+        s.commit()
+        channel_id = channel.id
+    site = {"videos": {}, "read": [], "options": []}
+
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            site["options"].append(opts)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download=False):
+            if url.startswith("https://rumble.com/c/"):
+                return {"_type": "playlist", "entries": [{"_type": "url", "url": f"https://rumble.com/{v}-a-stream.html"}
+                                                         for v in site["videos"]]}
+            vid = monitor.RUMBLE_VIDEO.search(url)[1]
+            site["read"].append(vid)
+            return site["videos"][vid]
+
+    monkeypatch.setattr(monitor, "YoutubeDL", FakeYoutubeDL)
+    return settings, Monitor(settings), site, channel_id
+
+
+def test_rumble_streams_are_queued_once_their_replay_is_finished(rumble):
+    settings, mon, site, channel_id = rumble
+    site["videos"] = {
+        "v6live": {"title": "Live now", "duration": None, "live_status": "is_live"},
+        "v6old": {"title": "Last week", "duration": 9000, "live_status": "was_live"},
+    }
+    mon.check(channel_id)
+    found = items(settings)
+    assert (found["v6live"].status, found["v6live"].reason) == ("waiting", "Still live")
+    assert found["v6old"].status == "older"
+
+    site["read"].clear()
+    site["videos"]["v6live"] = {"title": "Live now", "duration": 14400, "live_status": "was_live"}
+    mon.check(channel_id)
+    assert items(settings)["v6live"].reason == "Making sure the stream has ended"
+    assert site["read"] == ["v6live"]  # last week's is settled, so it isn't read again
+
+    mon.check(channel_id)
+    queued = items(settings)["v6live"]
+    assert queued.status == "queued"
+    with Session(get_engine(settings)) as s:
+        assert s.get(Vod, queued.vod_id).url == "https://rumble.com/v6live-a-stream.html"
+    # Every request to Rumble passes itself off as Chrome, to get past its Cloudflare check.
+    assert site["options"] and all(str(o.get("impersonate")).startswith("chrome") for o in site["options"])
+
+
+def test_only_rumble_gets_impersonation():
+    from clipper.pipeline.download import site_options
+
+    assert str(site_options("https://rumble.com/v6abcd-a-stream.html")["impersonate"]).startswith("chrome")
+    assert site_options("https://kick.com/kinocasino/videos/abc") == {}
+    assert site_options("https://notrumble.com/x") == {}
 
 
 def post(id_, duration=1250.0):

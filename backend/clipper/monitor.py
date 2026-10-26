@@ -1,10 +1,14 @@
-"""Watches channels on Kick, Twitch and YouTube, and accounts on X, and queues their new videos for processing.
+"""Watches channels on Kick, Twitch, YouTube and Rumble, and accounts on X, and queues their new videos for
+processing.
 
 A new video is queued once it's finished: not live, and the same length on two checks in a row,
 because Twitch doesn't say whether a VOD is still recording. A video posted on X is finished as soon as
 it's seen. Videos that were already on a channel when it was added are listed as "older" and only
 processed if you ask for them in the app, except a stream that was live at the time, which is treated
 as new.
+
+Rumble's channel page only links its videos, without saying which is live or how long it is, so the newest
+few that haven't been settled yet are each read for that (list_rumble).
 """
 
 import logging
@@ -22,10 +26,13 @@ from . import notify, xposts
 from .config import Settings
 from .db import Channel, ChannelVideo, Show, get_engine, queue_vod, utcnow
 from .notify import Note
+from .pipeline.download import site_options
 
 log = logging.getLogger(__name__)
 
 RECENT = 15  # newest videos looked at on each listing
+RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
+RUMBLE_VIDEO = re.compile(r"rumble\.com/(v[0-9a-z]+)[-.]", re.IGNORECASE)  # rumble.com/v6abcd-the-title.html
 # x.com pages that aren't accounts
 X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
 
@@ -63,7 +70,14 @@ def parse_channel(url: str) -> tuple[str, str]:
         handle = parts[0].removeprefix("@")
         if re.fullmatch(r"\w{1,15}", handle, re.ASCII) and handle.lower() not in X_PAGES:
             return "x", f"https://x.com/{handle.lower()}"
-    raise ChannelUrlError("Use a channel link like kick.com/name, twitch.tv/name, youtube.com/@name or x.com/name")
+    if host == "rumble.com" and parts:
+        if parts[0] in ("c", "user") and len(parts) > 1:
+            return "rumble", f"https://rumble.com/{parts[0]}/{parts[1]}"
+        if not parts[0].endswith(".html") and parts[0] not in ("embed", "videos", "browse", "search"):
+            return "rumble", f"https://rumble.com/c/{parts[0]}"  # rumble.com/Name is the channel's short link
+    raise ChannelUrlError(
+        "Use a channel link like kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name or x.com/name"
+    )
 
 
 def listing_urls(platform: str, channel_url: str) -> list[str]:
@@ -95,6 +109,32 @@ def list_recent(platform: str, channel_url: str) -> list[Listed]:
                 title=entry.get("title") or "",
                 duration=float(entry["duration"]) if entry.get("duration") else None,
                 live=is_live(entry),
+            ))
+    return found
+
+
+def list_rumble(channel_url: str, settled: set[str] = frozenset()) -> list[Listed]:
+    """The channel's newest videos, each read on its own for whether it's live and how long it is, except those
+    already `settled` (queued, skipped or older), which the monitor has no more use for."""
+    flat = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": RUMBLE_RECENT,
+            **site_options(channel_url)}
+    with YoutubeDL(flat) as ydl:
+        info = ydl.extract_info(channel_url, download=False)
+    found: list[Listed] = []
+    with YoutubeDL({"quiet": True, "no_warnings": True, **site_options(channel_url)}) as ydl:
+        for entry in info.get("entries") or []:
+            url = (entry or {}).get("url") or ""
+            m = RUMBLE_VIDEO.search(url)
+            if not m or m[1] in settled:
+                continue
+            try:
+                video = ydl.extract_info(url, download=False)
+            except DownloadError as e:
+                log.info("Couldn't read %s: %s", url, e)
+                continue
+            found.append(Listed(
+                id=m[1], url=url, title=video.get("title") or "",
+                duration=float(video["duration"]) if video.get("duration") else None, live=is_live(video),
             ))
     return found
 
@@ -133,6 +173,13 @@ class Monitor:
         self.lister = lister or self._list
 
     def _list(self, platform: str, channel_url: str) -> list[Listed]:
+        if platform == "rumble":
+            with Session(self.engine) as s:
+                settled = set(s.exec(
+                    select(ChannelVideo.video_id).join(Channel)
+                    .where(Channel.url == channel_url, ChannelVideo.status != "waiting")
+                ))
+            return list_rumble(channel_url, settled)
         if platform != "x":
             return list_recent(platform, channel_url)
         posts = xposts.video_posts(self.settings.studio_cdp_url, channel_url.rsplit("/", 1)[-1])
