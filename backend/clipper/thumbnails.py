@@ -153,8 +153,9 @@ def _channel(person: Person, channel_picture: ChannelPicture | None) -> str:
 
 
 def _same_person(person: Person, title: str) -> bool:
-    """Whether a page or channel name is theirs: "The Quartering" for TheQuartering, "Ethan Klein TV" for Ethan Klein.
-    Short names must match exactly, so "Jer" doesn't find "Jeremy"."""
+    """Whether a page or channel name is theirs, by the name the video uses or their full name: "The Quartering" for
+    TheQuartering, "Jeremy Hambly" for Jer if Claude knows that's who Jer is. Short names must match exactly, since a
+    nickname like "Jer" on its own could be any Jeremy."""
     found = _squash(title)
 
     def matches(name: str) -> bool:

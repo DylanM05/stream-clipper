@@ -167,10 +167,12 @@ class FakeWeb:
 
 def test_only_a_page_or_channel_with_their_name_counts():
     same = thumbnails._same_person
+    # One person, three names: Jer, TheQuartering and Jeremy Hambly.
     assert same(talked_about("TheQuartering", "Jeremy Hambly"), "Jeremy Hambly")
-    assert same(talked_about("TheQuartering"), "The Quartering")
+    assert same(talked_about("TheQuartering", "Jeremy Hambly"), "The Quartering")
+    assert same(talked_about("Jer", "Jeremy Hambly"), "Jeremy Hambly")
+    assert not same(talked_about("Jer"), "Jeremy Renner")  # a nickname alone could be any Jeremy
     assert same(talked_about("Ethan Klein"), "Ethan Klein TV")
-    assert not same(talked_about("Jer"), "Jeremy Hambly")  # short names must match exactly
     assert not same(talked_about("Ethan Klein"), "H3 Podcast")
 
 
