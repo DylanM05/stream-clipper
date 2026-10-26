@@ -6,6 +6,7 @@
 - `clipper process <url-or-file>` runs the whole pipeline in the foreground, without the app.
 - `clipper doctor` and `clipper llm-check` check the server setup and the Claude Code login.
 - `clipper channel-check <url>` shows what the worker sees on a watched channel.
+- `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
 """
 
 import json
@@ -201,6 +202,74 @@ def channel_check(
         typer.echo(f"Video links on the page in the upload browser ({len(found)}):")
         for link in found:
             typer.echo(f"  {link}")
+
+
+@app.command("timing-check")
+def timing_check(
+    vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: the 5 newest finished videos.")] = None,
+    fix: Annotated[bool, typer.Option("--fix", help="Put their transcripts on the video's timing, and move the clips still in the inbox to match.")] = False,
+) -> None:
+    """Check that videos' transcripts, which time the Shorts' captions, line up with the video (see timing.py)."""
+    from sqlmodel import Session, col, select
+
+    from . import timing
+    from .db import ClipRecord, Vod, get_engine, utcnow
+    from .models import Transcript
+    from .workspace import Workspace, write_text
+
+    settings = get_settings()
+    with Session(get_engine(settings)) as s:
+        query = select(Vod).where(col(Vod.workspace).is_not(None), Vod.status == "ready").order_by(col(Vod.id).desc())
+        vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids else query.limit(5)).all()
+        for vod in vods:
+            typer.echo(f"{vod.id}  {vod.title[:80]}")
+            ws = Workspace(settings.vods_dir / vod.workspace)
+            if not ws.transcript_json.exists():
+                typer.echo("    No transcript: it was posted whole.")
+                continue
+            if vod.cleaned_at or not ws.source.exists():
+                typer.echo("    Its video file is deleted, so it can't be checked.")
+                continue
+            transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
+            found = timing.measure(ws.source)
+            if not found.jumps:
+                typer.echo("    Lines up with the video.")
+                continue
+            old = found.made_the_old_way(transcript)
+            if old is None:
+                typer.echo("    Its sound jumps, but whether its transcript allows for that can't be told; left as it is.")
+                continue
+            if not old:
+                typer.echo("    Lines up with the video (its transcript allows for where its sound jumps).")
+                continue
+            for jump in found.jumps[:8]:
+                typer.echo(f"    From {to_timecode(found.video_time(jump.at))}, words are timed "
+                           f"{abs(jump.shift):.1f} s {'early' if jump.shift > 0 else 'late'}")
+            if len(found.jumps) > 8:
+                typer.echo(f"    …and it jumps {len(found.jumps) - 8} more times")
+            if not fix:
+                typer.echo(f"    Put it right with: clipper timing-check {vod.id} --fix")
+                continue
+
+            write_text(ws.transcript_json, found.fix(transcript).model_dump_json())
+            ws.audio_wav.unlink(missing_ok=True)  # the old soundtrack; made again with the right timing if needed
+            moved, redo = 0, []
+            for clip in s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id, ClipRecord.kind != "whole")):
+                if clip.status in ("proposed", "extra"):
+                    clip.start, clip.end, clip.updated_at = found.video_time(clip.start), found.video_time(clip.end), utcnow()
+                    s.add(clip)
+                    moved += 1
+                elif clip.status == "rendered" and clip.short_path:
+                    redo.append(clip)
+            s.commit()
+            typer.secho(f"    Fixed its transcript, and moved its {moved} clips in the inbox and extras to match. Clips "
+                        "already approved keep their start and end, in case you trimmed them.", fg="green")
+            if redo:
+                typer.echo("    These Shorts need rendering again for their captions (Upload tab: To inbox, then approve it):")
+                for clip in redo:
+                    typer.echo(f"      {clip.key}  {clip.title[:70]}")
+        if not vods:
+            typer.echo("No finished videos" + (" with those ids." if vod_ids else "."))
 
 
 @app.command()

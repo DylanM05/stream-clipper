@@ -234,6 +234,7 @@ Everything the app does is also available from the command line, e.g. `docker co
 | `add "<url>" [--whole/--segment] [--notes "..."]` | Queue a video for the worker, same as the app's **Add video**. |
 | `process "<url>" [--notes "..."] [--no-render] [--redo STEP] [--only ID]` | Run the whole pipeline in the foreground without the app; handy for testing prompts. |
 | `doctor`, `llm-check` | Check the setup and the Claude Code login. |
+| `timing-check [ID...] [--fix]` | Check that finished videos' transcripts (the 5 newest, or these ids) line up with the video. Videos transcribed before the sound kept the video's timing have their words, and so their Shorts' captions, timed early after any point where the stream dropped and came back; `--fix` puts the transcript right and moves the clips still in the inbox to match. |
 | `browser` | On a desktop: open the upload browser (Chrome or Edge with its own profile) to sign in to YouTube or X. |
 | `serve`, `worker` | The two services `docker compose up` runs. |
 

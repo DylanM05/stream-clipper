@@ -2,8 +2,9 @@
 
 import json
 import subprocess
+import tempfile
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from functools import lru_cache
 from pathlib import Path
 
@@ -42,6 +43,26 @@ def probe(path: Path) -> dict:
 
 def probe_duration(path: Path) -> float:
     return float(probe(path)["format"]["duration"])
+
+
+def audio_frames(path: Path) -> Iterator[tuple[float | None, int]]:
+    """The timestamp (None if it has none) and number of samples of each frame of the first audio stream.
+    It decodes all of it: a minute or two for an 8-hour stream."""
+    cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "frame=pts_time,nb_samples",
+           "-of", "csv=p=0", str(path)]
+    # The log goes to a file: a damaged stream can log more than a pipe holds while the frames are read.
+    with tempfile.TemporaryFile("w+", encoding="utf-8", errors="replace") as log:
+        with subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=log, text=True, encoding="utf-8", errors="replace") as proc:
+            for line in proc.stdout:
+                pts, samples = (line.strip().split(",") + ["", ""])[:2]
+                if samples.isdigit():
+                    try:
+                        yield float(pts), int(samples)
+                    except ValueError:  # N/A
+                        yield None, int(samples)
+        if proc.returncode != 0:
+            log.seek(0)
+            raise FFmpegError(f"ffprobe could not read the sound in {path}:\n{_tail(log.read())}")
 
 
 @lru_cache

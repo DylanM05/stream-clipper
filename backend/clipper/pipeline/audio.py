@@ -11,6 +11,10 @@ from ..workspace import Workspace
 log = logging.getLogger(__name__)
 
 SAMPLE_RATE = 16000
+# Silence fills a gap in the soundtrack's timestamps (a stream that dropped and came back) and a start after
+# the picture's, so a time in the WAV, and so in the transcript, is that moment in the video, where clips are
+# cut. A WAV keeps no timestamps: without this, every word after a gap was timed early (see timing.py).
+VIDEO_TIMING = "aresample=async=1:first_pts=0"
 
 
 def extract(ws: Workspace) -> None:
@@ -18,7 +22,8 @@ def extract(ws: Workspace) -> None:
         return
     log.info("Extracting audio")
     tmp = ws.audio_wav.with_name("audio.tmp.wav")
-    ffmpeg.run(["-i", str(ws.source), "-vn", "-ac", "1", "-ar", str(SAMPLE_RATE), "-c:a", "pcm_s16le", str(tmp)])
+    ffmpeg.run(["-i", str(ws.source), "-vn", "-af", VIDEO_TIMING, "-ac", "1", "-ar", str(SAMPLE_RATE),
+                "-c:a", "pcm_s16le", str(tmp)])
     tmp.replace(ws.audio_wav)
 
 
