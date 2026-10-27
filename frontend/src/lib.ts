@@ -101,6 +101,13 @@ export function pastDay(iso: string, weekday = true): string {
   });
 }
 
+/** Where a YouTube channel's uploads go: YouTube, Rumble or both. */
+export type Sites = "youtube" | "rumble" | "both";
+
+export function sitesOf(channel: { youtube: boolean; rumble: boolean }): Sites {
+  return channel.youtube && channel.rumble ? "both" : channel.rumble ? "rumble" : "youtube";
+}
+
 /** 1234 → "1.2K" */
 export function compact(n: number): string {
   return new Intl.NumberFormat("en", { notation: "compact", maximumFractionDigits: 1 }).format(n);

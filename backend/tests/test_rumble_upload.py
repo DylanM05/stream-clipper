@@ -162,18 +162,21 @@ def test_a_failed_rumble_upload_before_submitting_tries_again_tomorrow(settings,
     assert (job.status, job.screenshot) == ("failed", "/data/shot.png") and job.retry_at is not None
 
 
-def test_a_show_that_uploads_by_itself_goes_to_rumble_too_when_its_channel_does(settings, clip_id):
+@pytest.mark.parametrize("youtube, rumble, sites", [
+    (True, True, ["rumble", "youtube"]), (False, True, ["rumble"]), (True, False, ["youtube"]),
+])
+def test_a_show_that_uploads_by_itself_goes_where_its_channels_uploads_go(settings, clip_id, youtube, rumble, sites):
     with Session(get_engine(settings)) as s:
         show = Show(name="Kino", auto_shorts="upload", auto_chapters="upload")
         s.add(show)
         s.commit()
-        vod = s.get(Vod, 1)
-        vod.show_id = show.id
-        s.add(vod)
+        vod, dest = s.get(Vod, 1), s.get(Destination, 1)
+        vod.show_id, dest.youtube, dest.rumble = show.id, youtube, rumble
+        s.add_all([vod, dest])
         s.commit()
     worker_module.Worker(settings)._auto_upload(clip_id)
     with Session(get_engine(settings)) as s:
-        assert sorted(j.site for j in s.exec(select(UploadJob))) == ["rumble", "youtube"]
+        assert sorted(j.site for j in s.exec(select(UploadJob))) == sites
 
 
 def test_rumble_and_youtube_keep_their_own_turns(settings, clip_id):
@@ -211,8 +214,13 @@ def test_choosing_rumble_in_the_app(settings, clip_id):
     assert client.post(f"/api/clips/{clip_id}/uploads", json={"site": "youtube"}).status_code == 201  # both
 
     dest = client.patch("/api/destinations/1", json={"name": "Kino Klips", "rumble": False}).json()
-    assert (dest["rumble"], dest["rumble_category"]) == (False, "Podcasts")  # the category stays
+    assert (dest["youtube"], dest["rumble"], dest["rumble_category"]) == (True, False, "Podcasts")  # YouTube only now
     client.delete(f"/api/upload-jobs/{rumble.json()['id']}")
     res = client.post(f"/api/clips/{clip_id}/uploads", json={"site": "rumble"})
-    assert res.status_code == 409 and "Switch on Rumble" in res.json()["detail"]
+    assert res.status_code == 409 and "go to Rumble" in res.json()["detail"]
+
+    dest = client.patch("/api/destinations/1", json={"name": "Kino Klips", "youtube": False, "rumble": True}).json()
+    assert (dest["youtube"], dest["rumble"]) == (False, True)  # Rumble only
+    res = client.patch("/api/destinations/1", json={"name": "Kino Klips", "rumble": False})
+    assert res.status_code == 422 and "YouTube, Rumble or both" in res.json()["detail"]  # somewhere, at least
     assert client.patch("/api/destinations/1", json={"name": "Kino Klips", "rumble_category": "Cats"}).status_code == 422

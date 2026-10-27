@@ -208,7 +208,9 @@ class ShowPatch(BaseModel):
 class DestinationIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     url: str = Field(default="", max_length=500)
-    rumble: bool | None = None  # its uploads can go to Rumble too; unchanged if left out
+    # Where its uploads go, one or both; each unchanged if left out.
+    youtube: bool | None = None
+    rumble: bool | None = None
     rumble_category: str | None = None  # one of rumble_upload.CATEGORIES
 
 
@@ -221,7 +223,8 @@ class DestinationOut(BaseModel):
     api_connected: bool  # uploads go through the YouTube API
     api_account: str  # the channel name Google reported when it was connected
     api_error: str  # why connecting failed, or why the sign-in stopped working
-    rumble: bool  # its uploads can also go to Rumble, through the upload browser
+    youtube: bool  # its uploads go to YouTube
+    rumble: bool  # and/or to Rumble, through the upload browser
     rumble_category: str
 
 
@@ -628,13 +631,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return DestinationOut(id=d.id, name=d.name, url=d.url, channel_id=d.channel_id,
                               studio_upload_url=studio_upload_url(d.channel_id),
                               api_connected=bool(d.youtube_token), api_account=d.youtube_account, api_error=d.youtube_error,
-                              rumble=d.rumble, rumble_category=d.rumble_category)
+                              youtube=d.youtube, rumble=d.rumble, rumble_category=d.rumble_category)
 
-    def set_rumble(dest: Destination, body: DestinationIn) -> None:
+    def set_sites(dest: Destination, body: DestinationIn) -> None:
+        """Where the channel's uploads go, and Rumble's category for them."""
         if body.rumble_category is not None and body.rumble_category not in RUMBLE_CATEGORIES:
             raise HTTPException(422, f"Rumble's categories are {', '.join(RUMBLE_CATEGORIES)}")
-        if body.rumble is not None:
-            dest.rumble = body.rumble
+        youtube = dest.youtube if body.youtube is None else body.youtube
+        rumble = dest.rumble if body.rumble is None else body.rumble
+        if not (youtube or rumble):
+            raise HTTPException(422, "Its uploads have to go to YouTube, Rumble or both")
+        dest.youtube, dest.rumble = youtube, rumble
         if body.rumble_category is not None:
             dest.rumble_category = body.rumble_category
 
@@ -1061,7 +1068,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_destination(body: DestinationIn, s: Session = Depends(db)) -> DestinationOut:
         url = body.url.strip()
         dest = Destination(name=body.name.strip(), url=url, channel_id=resolve_channel_id(url) if url else "")
-        set_rumble(dest, body)
+        set_sites(dest, body)
         s.add(dest)
         s.commit()
         s.refresh(dest)
@@ -1077,7 +1084,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 forget_sign_in(s, dest)  # it's for the old channel
             dest.channel_id = channel_id
         dest.name, dest.url = body.name.strip(), url
-        set_rumble(dest, body)
+        set_sites(dest, body)
         s.add(dest)
         s.commit()
         s.refresh(dest)
@@ -1415,7 +1422,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if body.site == "rumble":
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
             if not (dest and dest.rumble):
-                raise HTTPException(409, "Switch on Rumble for its channel under Shows → YouTube channels first")
+                raise HTTPException(409, "Set its channel's uploads to go to Rumble (or both) under Shows → YouTube channels first")
         busy = s.exec(select(UploadJob).where(
             UploadJob.clip_id == clip_id, UploadJob.which == body.which, UploadJob.site == body.site,
             col(UploadJob.status).in_(("queued", "uploading")),

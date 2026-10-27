@@ -57,11 +57,17 @@ class Destination(SQLModel, table=True):
     youtube_token: str = ""  # Google refresh token for the channel
     youtube_account: str = ""  # the channel's name as Google reported it when connecting
     youtube_error: str = ""  # why connecting failed, or why the sign-in stopped working
-    # Its uploads can also go to Rumble (rumble_upload.py): to the channel of the Rumble account the upload browser
-    # is signed in to, under this primary category.
+    # Where its uploads go: YouTube, and/or Rumble (rumble_upload.py), to the channel of the Rumble account the
+    # upload browser is signed in to, under rumble_category. At least one of the two.
+    youtube: bool = True
     rumble: bool = False
     rumble_category: str = "Entertainment"
     created_at: datetime = Field(default_factory=utcnow)
+
+    @property
+    def sites(self) -> list[str]:
+        """Where its uploads go, as UploadJob.site values."""
+        return [site for site in ("youtube", "rumble") if getattr(self, site)]
 
 
 class UploadJob(SQLModel, table=True):

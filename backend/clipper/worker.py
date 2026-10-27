@@ -551,7 +551,8 @@ class Worker:
 
     def _auto_upload(self, clip_id: int) -> None:
         """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review:
-        for a highlight its Short if it has one, else the video. It goes to Rumble too if its channel does."""
+        for a highlight its Short if it has one, else the video. It goes where its channel's uploads go: YouTube,
+        Rumble or both."""
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
@@ -563,7 +564,7 @@ class Worker:
                 return  # uploaded or tried before: what happens next is up to you
             if clip.destination_id:
                 dest = s.get(Destination, clip.destination_id)
-                for site in ("youtube", "rumble") if dest and dest.rumble else ("youtube",):
+                for site in dest.sites if dest else ["youtube"]:
                     s.add(UploadJob(clip_id=clip_id, which=which, site=site, visibility=show.auto_visibility))
                 s.commit()
                 return

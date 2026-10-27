@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type Destination, type Site, type UploadJob, type Visibility } from "../api";
 import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
-import { ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, upcoming, usePoll } from "../lib";
+import {
+  ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, sitesOf, upcoming, usePoll, type Sites,
+} from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, ProgressBar, Screen, useToast } from "../ui";
 
@@ -181,8 +183,7 @@ const JOB_STATUS: Record<UploadJob["status"], string> = {
 };
 const METHOD_LABEL: Record<UploadJob["method"], string> = { api: " · YouTube API", studio: " · Studio", browser: "", "": "" };
 const SITE_LABEL: Record<Site, string> = { youtube: "YouTube", rumble: "Rumble" };
-const WHERE_LABEL = { youtube: "YouTube", rumble: "Rumble", both: "Both" } as const;
-type Where = keyof typeof WHERE_LABEL;
+const WHERE_LABEL: Record<Sites, string> = { youtube: "YouTube", rumble: "Rumble", both: "Both" };
 
 /**
  * The worker uploads to YouTube through its API if the channel is connected, else through YouTube Studio; and to
@@ -192,8 +193,11 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   const toast = useToast();
   const { data: jobs, refresh } = usePoll(() => api.uploads(clip.id), 4000, clip.id);
   const [visibility, setVisibility] = useState<Visibility>(() => loadSetting("clipper.uploadVisibility", "public"));
-  const [where, setWhere] = useState<Where>(() => loadSetting("clipper.uploadWhere", "both"));
-  const sites: Site[] = !destination?.rumble ? ["youtube"] : where === "both" ? ["youtube", "rumble"] : [where];
+  // Where the channel's uploads go, unless something else is picked for this upload.
+  const [picked, setPicked] = useState<Sites | null>(null);
+  useEffect(() => setPicked(null), [destination?.id]);
+  const where: Sites = picked ?? (destination ? sitesOf(destination) : "youtube");
+  const sites: Site[] = where === "both" ? ["youtube", "rumble"] : [where];
   // The sites a file can start going to: not ones it's already queued for or uploading to.
   const startable = (which: UploadJob["which"]) =>
     sites.filter((site) => !jobs?.some((j) => j.which === which && j.site === site && ["queued", "uploading"].includes(j.status)));
@@ -214,7 +218,6 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   };
   const start = (which: UploadJob["which"]) => {
     saveSetting("clipper.uploadVisibility", visibility);
-    saveSetting("clipper.uploadWhere", where);
     const to = startable(which);
     return run(async () => {
       for (const site of to) await api.startUpload(clip.id, which, visibility, site);
@@ -247,10 +250,10 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
       {destination?.api_error && <p className="text-xs text-red-300">{destination.api_error}</p>}
       {destination?.rumble && (
         <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
-          {(Object.keys(WHERE_LABEL) as Where[]).map((w) => (
+          {(Object.keys(WHERE_LABEL) as Sites[]).map((w) => (
             <button
               key={w}
-              onClick={() => setWhere(w)}
+              onClick={() => setPicked(w)}
               className={cn("rounded-lg py-2 text-sm font-semibold", where === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
             >
               {WHERE_LABEL[w]}

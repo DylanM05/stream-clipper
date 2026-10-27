@@ -13,7 +13,7 @@ import {
   type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
-import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, titleDate, usePoll } from "../lib";
+import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, sitesOf, titleDate, usePoll, type Sites } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
@@ -360,11 +360,13 @@ function DestinationRow(props: { destination: Destination; apiReady: boolean; on
   );
 }
 
-/** Whether a channel's uploads can also go to Rumble, and under which of Rumble's categories. */
+const SITES_LABEL: Record<Sites, string> = { youtube: "YouTube", rumble: "Rumble", both: "Both" };
+
+/** Where a channel's uploads go (YouTube, Rumble or both), and under which of Rumble's categories. */
 function RumbleOption({ destination, onChanged }: { destination: Destination; onChanged: () => void }) {
   const toast = useToast();
   const { data: rumble } = usePoll(api.rumble, 0);
-  const save = async (fields: { rumble?: boolean; rumble_category?: string }) => {
+  const save = async (fields: { youtube?: boolean; rumble?: boolean; rumble_category?: string }) => {
     try {
       await api.updateDestination(destination.id, { name: destination.name, url: destination.url, ...fields });
       onChanged();
@@ -374,15 +376,12 @@ function RumbleOption({ destination, onChanged }: { destination: Destination; on
   };
   return (
     <div className="mt-3 space-y-2 border-t border-white/5 pt-3">
-      <label className="flex items-center gap-3">
-        <input
-          type="checkbox"
-          checked={destination.rumble}
-          onChange={(e) => save({ rumble: e.target.checked })}
-          className="size-5 shrink-0 accent-violet-500"
-        />
-        <span className="text-sm text-zinc-300">Also post to Rumble</span>
-      </label>
+      <p className="text-xs text-zinc-500">Uploads go to</p>
+      <Segmented
+        options={SITES_LABEL}
+        value={sitesOf(destination)}
+        onChange={(v) => save({ youtube: v !== "rumble", rumble: v !== "youtube" })}
+      />
       {destination.rumble && (
         <>
           <select
@@ -397,11 +396,14 @@ function RumbleOption({ destination, onChanged }: { destination: Destination; on
           </select>
           <p className="text-xs text-zinc-500">
             Rumble category for its uploads. They go to the channel of the Rumble account the upload browser is signed in
-            to, under Rumble's “{rumble?.licence ?? "Rumble Only"}” licence (non-exclusive). Pick YouTube, Rumble or both on
-            a clip's Upload page; a show that uploads by itself posts to both.
+            to, under Rumble's “{rumble?.licence ?? "Rumble Only"}” licence (non-exclusive).
           </p>
         </>
       )}
+      <p className="text-xs text-zinc-500">
+        Shows that upload by themselves post there. On a clip's Upload page it's what's picked to start with, and you can
+        pick another for that upload.
+      </p>
     </div>
   );
 }

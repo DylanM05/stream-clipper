@@ -117,7 +117,8 @@ export interface Destination {
   api_connected: boolean; // uploads go through the YouTube API; otherwise through YouTube Studio
   api_account: string; // the channel name Google reported when it was connected
   api_error: string; // why connecting failed, or why its sign-in stopped working
-  rumble: boolean; // its uploads can also go to Rumble, through the upload browser
+  youtube: boolean; // its uploads go to YouTube
+  rumble: boolean; // and/or to Rumble, through the upload browser
   rumble_category: string; // Rumble's primary category for them
 }
 
@@ -361,7 +362,10 @@ export const api = {
 
   destinations: () => request<Destination[]>("/api/destinations"),
   addDestination: (body: { name: string; url: string }) => post<Destination>("/api/destinations", body),
-  updateDestination: (id: number, body: { name: string; url: string; rumble?: boolean; rumble_category?: string }) =>
+  updateDestination: (
+    id: number,
+    body: { name: string; url: string; youtube?: boolean; rumble?: boolean; rumble_category?: string },
+  ) =>
     patch<Destination>(`/api/destinations/${id}`, body),
   rumble: () => request<{ categories: string[]; licence: string }>("/api/rumble"),
   deleteDestination: (id: number) => remove(`/api/destinations/${id}`),
