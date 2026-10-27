@@ -60,6 +60,27 @@ def test_the_upload_page_is_filled_in_step_by_step(page, tmp_path):
     assert page.url.startswith(PAGE.split("?")[0])  # the terms link inside the checkbox's label wasn't followed
 
 
+def test_a_file_chosen_before_the_page_was_ready_is_chosen_again(page, tmp_path, monkeypatch):
+    monkeypatch.setattr(rumble_upload, "START_WAIT_S", 2)
+    video, thumbnail = files(tmp_path)
+    job = RumbleUpload(file=video, title="A Moment", description="", visibility="public", category="News",
+                       thumbnail=thumbnail)
+    # The page sets its upload up 3 seconds in: after the 2 the uploader gives it, before its second try.
+    link = rumble_upload.fill_in(page, job, lambda _: None, [False], page_url=PAGE + "?late=3000")
+    assert link.startswith("https://rumble.com/") and page.evaluate("window.sent.file") == "hl01-a-moment.mp4"
+
+
+def test_an_upload_that_never_starts_says_what_the_page_had(page, tmp_path, monkeypatch):
+    monkeypatch.setattr(rumble_upload, "START_WAIT_S", 1)
+    video, thumbnail = files(tmp_path)
+    job = RumbleUpload(file=video, title="A Moment", description="", visibility="public", category="News",
+                       thumbnail=thumbnail)
+    sent = [False]
+    with pytest.raises(RumbleUploadError, match="didn't start uploading the file.*script error: upload server unavailable"):
+        rumble_upload.fill_in(page, job, lambda _: None, sent, page_url=PAGE + "?broken=1")
+    assert sent == [False]  # never submitted: safe to try again
+
+
 def test_an_error_rumble_shows_is_what_the_upload_says(page, tmp_path):
     video, thumbnail = files(tmp_path)
     job = RumbleUpload(file=video, title="A Moment", description="", visibility="public", category="News",

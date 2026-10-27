@@ -2,7 +2,9 @@
 <!-- A stand-in for rumble.com/upload.php, built from its markup as read with `clipper rumble-upload-check --html`
      (Oct 26, 2026), with a script that behaves like the page's: the upload's percentage climbs once a file is
      chosen, the category list opens and fills its hidden value, and the three steps follow each other. What the
-     form was given is left in window.sent for the test. ?fail=<message> makes Submit show that error instead. -->
+     form was given is left in window.sent for the test. ?fail=<message> makes Submit show that error instead;
+     ?late=<ms> sets the upload up that long after the page loads, missing a file chosen before; ?broken=1 never
+     starts uploading, and logs a script error, as Rumble's page did on Oct 27, 2026. -->
 <html><head><meta charset="utf-8"><title>Upload videos at Rumble</title>
 <style>
   .hidden-upload, .form-radio input, .form-checkbox input { display: none; }
@@ -81,8 +83,9 @@
 <script>
   const $ = s => document.querySelector(s);
   window.sent = null;
+  const params = new URLSearchParams(location.search);
   let percent = 0;
-  $("#Filedata").addEventListener("change", e => {
+  const setUpUpload = () => $("#Filedata").addEventListener("change", e => {
     window.chosen = e.target.files[0].name;
     const timer = setInterval(() => {
       percent = Math.min(100, percent + 20);
@@ -90,6 +93,8 @@
       if (percent >= 100) clearInterval(timer);
     }, 200);
   });
+  if (params.get("broken")) console.error("upload server unavailable");
+  else setTimeout(setUpUpload, Number(params.get("late") || 0));
   document.querySelectorAll(".select-container").forEach(box => {
     box.querySelector(".select-search-input").addEventListener("click", () => box.classList.add("open"));
     box.querySelectorAll(".select-option").forEach(option => option.addEventListener("click", () => {

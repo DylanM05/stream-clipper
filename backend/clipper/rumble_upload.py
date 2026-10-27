@@ -21,6 +21,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlparse
 
 from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
@@ -38,6 +39,8 @@ CATEGORIES = ("Automotive", "Cooking", "Entertainment", "Finance & Crypto", "Gam
 # "Personal Use" isn't monetized or searchable.
 LICENCE = "Rumble Only"
 UPLOAD_TIMEOUT_S = 12 * 3600  # full episodes can be tens of gigabytes
+SETTLE_S = 15  # for the page's scripts to finish loading
+START_WAIT_S = 30  # for the upload to start once the file is chosen
 STEP_WAIT_S = 30
 LINK_WAIT_S = 300
 SIGNED_OUT = ("The upload browser isn't signed in to Rumble. Open it, sign in at rumble.com with the account whose "
@@ -96,12 +99,14 @@ def upload(cdp_url: str, job: RumbleUpload, screenshots_dir: Path,
 def fill_in(page: Page, job: RumbleUpload, on_progress: Callable[[float], None], sent: list[bool],
             page_url: str = UPLOAD_PAGE) -> str:
     """Fill in the upload page and submit it, then return the new video's link. sent[0] turns True on submitting."""
+    seen = _watch(page)
     page.goto(page_url, wait_until="load", timeout=60_000)
     if "login" in page.url.lower() or page.locator("input[type=password]").filter(visible=True).count():
         raise RumbleUploadError(SIGNED_OUT)
+    _settle(page)
 
     log.info("Rumble: choosing %s", job.file.name)
-    page.locator("#Filedata").set_input_files(str(job.file), timeout=60_000)
+    _choose_file(page, job.file, seen)
     page.locator("#title").fill(job.title)
     page.locator("#description").fill(job.description)
     _choose_category(page, job.category)
@@ -111,7 +116,9 @@ def fill_in(page: Page, job: RumbleUpload, on_progress: Callable[[float], None],
     try:
         page.locator("#form2 .licensingOptions").wait_for(state="visible", timeout=STEP_WAIT_S * 1000)
     except PlaywrightTimeoutError:
-        raise RumbleUploadError(_errors(page) or "Rumble didn't go on from the video's details to the licensing step") from None
+        raise RumbleUploadError(
+            (_errors(page) or "Rumble didn't go on from the video's details to the licensing step") + _noticed(seen)
+        ) from None
 
     licence = page.locator("#form2 .licensingOptions .wight-box").filter(has_text=LICENCE)
     licence.locator("a.greenLink").click(timeout=30_000)  # not the box's link to the terms
@@ -126,6 +133,62 @@ def fill_in(page: Page, job: RumbleUpload, on_progress: Callable[[float], None],
     link = _new_link(page)
     log.info("Rumble: uploaded %s", link)
     return link
+
+
+def _watch(page: Page) -> list[str]:
+    """What goes wrong on the page as it's filled in, for an error to say: its script errors, and requests that
+    failed or were refused (by address, without the query, which can hold tokens)."""
+    seen: list[str] = []
+
+    def where(url: str) -> str:
+        parsed = urlparse(url)
+        return f"{parsed.netloc}{parsed.path}"[:120]
+
+    page.on("console", lambda m: seen.append(f"script error: {m.text[:200]}") if m.type == "error" else None)
+    page.on("requestfailed", lambda r: seen.append(f"{r.method} {where(r.url)} failed ({r.failure})"))
+    page.on("response", lambda r: seen.append(f"{r.request.method} {where(r.url)} answered {r.status}") if r.status >= 400 else None)
+    return seen
+
+
+def _noticed(seen: list[str]) -> str:
+    return f". The page also had: {'; '.join(seen[-6:])}" if seen else ""
+
+
+def _settle(page: Page) -> None:
+    """Give the page's scripts time to set up after it loads: one that isn't ready misses a file chosen too soon."""
+    try:
+        page.wait_for_load_state("networkidle", timeout=SETTLE_S * 1000)
+    except PlaywrightTimeoutError:
+        pass  # pages that keep polling never go quiet
+    page.wait_for_timeout(2000)
+
+
+def _choose_file(page: Page, file: Path, seen: list[str]) -> None:
+    """Choose the video and wait for Rumble to start uploading it, choosing it again once if it doesn't. On Oct 27,
+    2026 the page made its thumbnails from a file chosen right after it loaded, but never started uploading it."""
+    chooser = page.locator("#Filedata")
+    for _ in range(2):
+        chooser.set_input_files(str(file), timeout=60_000)
+        if _upload_started(page):
+            return
+        log.info("Rumble: the upload didn't start; choosing the file again")
+        # The same file chosen again isn't a change, so the page wouldn't hear of it: empty the chooser first (from a
+        # script, which tells the page nothing).
+        chooser.evaluate("el => { el.value = ''; }")
+    raise RumbleUploadError("Rumble didn't start uploading the file" + (_noticed(seen) or ", and the page showed no error"))
+
+
+def _upload_started(page: Page) -> bool:
+    """Whether the first step shows the upload going: a percentage, or some of its progress bar. (The second
+    step's percentage reads 0% from the start, so it's no sign.)"""
+    deadline = time.monotonic() + START_WAIT_S
+    while time.monotonic() < deadline:
+        texts = page.locator("#form .num_percent").all_inner_texts()
+        widths = page.locator("#form .green_percent").evaluate_all("bars => bars.map(b => b.style.width)")
+        if any(re.search(r"\d+\s*%", t) for t in texts) or any(w not in ("", "0", "0%", "0px") for w in widths):
+            return True
+        page.wait_for_timeout(1000)
+    return False
 
 
 def _choose_category(page: Page, category: str) -> None:
