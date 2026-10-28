@@ -2,6 +2,10 @@
 
 Ideas agreed on but not built yet, newest first.
 
+## Fix uploading to Rumble
+
+Uploads to Rumble go through its upload page in the upload browser (rumble_upload.py). The first real one, a Short on Oct 27, 2026, failed with "Please select or drag a video": the page made its thumbnails from the file but never started uploading it, likely because the file was chosen before the page's upload script was ready. Commit 85b92c5 waits for the page to settle and for the upload's percentage to show, chooses the file again once if nothing starts, and otherwise names the page's script errors and failed requests in the error. Still to do: deploy it, retry that upload (or a private test one), and if it fails again, go by what the new error says.
+
 ## Desktop layout
 
 A layout for the app on a computer, keeping the phone layout as it is, at the same address. It could show more on a big screen, such as stats and an overview of the upload queue. Everything has to keep working the same on both. Planned next, after Rumble uploads are working (Oct 2026).
