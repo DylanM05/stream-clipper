@@ -109,6 +109,7 @@ class ClipOut(BaseModel):
     playlist_id: str
     youtube_url: str
     rumble_url: str
+    reuploading: bool  # rendering again, to be uploaded again once it's done (reupload)
     thumbnail_status: str  # "" (none), queued, making, done or failed
     thumbnail_url: str  # "" until there's one
     thumbnail_hint: str
@@ -586,7 +587,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
             **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "thumbnail_plan", "thumbnail_redraw",
-                                       "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+                                       "reupload", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+            reuploading=bool(clip.reupload),
             thumbnail_prompt=plan_prompt(clip.thumbnail_plan),
             thumbnail_redrawing=bool(clip.thumbnail_redraw) and clip.thumbnail_status in ("queued", "making"),
             vod_title=vod.title or vod.url,
@@ -710,6 +712,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 Path(path).unlink(missing_ok=True)
         clip.video_path = clip.short_path = ""
         clip.paused = False
+        clip.reupload = ""  # taken back: it isn't to go up again by itself
 
     # --- Session ---
 
@@ -1483,6 +1486,36 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         clip.status, clip.uploaded_at, clip.updated_at = "rendered" if rendered else "approved", None, utcnow()
         if not rendered:
             clip.reviewed_at = utcnow()
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
+
+    @app.post("/api/clips/{clip_id}/reupload")
+    def reupload(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+        """Render an uploaded clip again, then upload it again wherever the app uploaded it, with the same visibility:
+        for an upload that went wrong on the site's side, like a video YouTube won't play. The broken one stays up
+        until it's deleted there."""
+        clip, vod = get_clip(s, clip_id)
+        if clip.status != "uploaded":
+            raise HTTPException(409, "Only an uploaded clip can be uploaded again")
+        if vod.cleaned_at or not vod.workspace:
+            raise HTTPException(409, "This stream's video files were deleted, so it can't be rendered again")
+        jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id).order_by(col(UploadJob.id))).all()
+        if any(j.status in ("queued", "uploading") for j in jobs):
+            raise HTTPException(409, "One of its uploads is still going. Wait for it to finish first.")
+        done = {(j.which, j.site): j.visibility for j in jobs if j.status == "done"}  # the latest of each
+        if not done:
+            raise HTTPException(409, "The app didn't upload it, so there's nothing to repeat. Tap Not uploaded yet, "
+                                     "then upload it again.")
+        clip.reupload = json.dumps([[which, site, visibility] for (which, site), visibility in done.items()])
+        if any(site == "youtube" for _, site in done):
+            clip.youtube_url = ""
+        if any(site == "rumble" for _, site in done):
+            clip.rumble_url = ""
+        cancel_retries(s, clip)
+        clip.status, clip.error, clip.uploaded_at = "approved", "", None
+        clip.reviewed_at = clip.updated_at = utcnow()
         s.add(clip)
         s.commit()
         s.refresh(clip)

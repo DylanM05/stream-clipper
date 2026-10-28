@@ -41,7 +41,12 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
 
   return (
     <Screen title="Upload" subtitle={clip.title} onBack={() => goBack("approved")}>
-      {!rendered && <ErrorNote>This clip isn't rendered yet. Come back once it shows as ready.</ErrorNote>}
+      {clip.reuploading && (
+        <p className="mb-4 rounded-xl bg-sky-500/10 p-3 text-sm text-sky-200 ring-1 ring-sky-500/20">
+          Rendering again, to be uploaded again: it goes up by itself, where it went before, once it's rendered.
+        </p>
+      )}
+      {!rendered && !clip.reuploading && <ErrorNote>This clip isn't rendered yet. Come back once it shows as ready.</ErrorNote>}
 
       <Step n={1} title="Channel">
         <DestinationSelect
@@ -153,6 +158,18 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
             >
               Not uploaded yet
             </Button>
+            <Button
+              onClick={() =>
+                confirm("Render this clip again and upload it again wherever the app uploaded it, with the same visibility?") &&
+                act(() => api.reupload(clip.id), "Rendering it again. It uploads again by itself once that's done.")
+              }
+            >
+              Render and upload again
+            </Button>
+            <p className="text-xs text-zinc-500">
+              For an upload that's broken on the site, like a video YouTube won't play (“An error occurred”). Delete the
+              broken one there yourself, so there aren't two.
+            </p>
           </div>
         ) : (
           <div className="space-y-2">

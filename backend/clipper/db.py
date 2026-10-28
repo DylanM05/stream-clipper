@@ -236,6 +236,9 @@ class ClipRecord(SQLModel, table=True):
     thumbnail_error: str = ""
     thumbnail_plan: str = ""
     thumbnail_redraw: str = ""
+    # Uploads to make again once it's rendered again, after one went wrong on the site's side (a video YouTube
+    # won't play): JSON [[which, site, visibility], ...]; "" for none.
+    reupload: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

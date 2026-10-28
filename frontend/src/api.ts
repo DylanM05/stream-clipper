@@ -74,6 +74,7 @@ export interface Clip {
   playlist_id: string; // a playlist on that channel, or ""
   youtube_url: string;
   rumble_url: string; // once it's up on Rumble too
+  reuploading: boolean; // rendering again, to be uploaded again where it went once it's done
   thumbnail_status: "" | "queued" | "making" | "done" | "failed";
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
@@ -342,6 +343,7 @@ export const api = {
   resumeClip: (id: number) => post<Clip>(`/api/clips/${id}/resume`),
   markUploaded: (id: number, youtube_url: string) => changed(post<Clip>(`/api/clips/${id}/uploaded`, { youtube_url })),
   unmarkUploaded: (id: number) => changed(post<Clip>(`/api/clips/${id}/not-uploaded`)),
+  reupload: (id: number) => changed(post<Clip>(`/api/clips/${id}/reupload`)),
   transcript: (id: number) => request<Line[]>(`/api/clips/${id}/transcript`),
 
   studio: () => request<StudioStatus>("/api/studio"),

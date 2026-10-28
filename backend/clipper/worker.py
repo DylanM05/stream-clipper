@@ -505,7 +505,20 @@ class Worker:
             return
         if rendered:
             self._auto_thumbnail(clip_id)
+            self._reupload(clip_id)
             self._auto_upload(clip_id)
+
+    def _reupload(self, clip_id: int) -> None:
+        """Queue the uploads a clip rendered again for its broken ones (app.reupload) is to make again."""
+        with Session(self.engine) as s:
+            clip = s.get(ClipRecord, clip_id)
+            if not clip.reupload or clip.status != "rendered":
+                return
+            for which, site, visibility in json.loads(clip.reupload):
+                s.add(UploadJob(clip_id=clip_id, which=which, site=site, visibility=visibility))
+            clip.reupload = ""
+            s.add(clip)
+            s.commit()
 
     def _render_check(self, clip_id: int) -> Callable[[float], None]:
         """A progress callback that stops a render (by raising Paused) once it's paused, or the clip is
