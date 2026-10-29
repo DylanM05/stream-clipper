@@ -21,6 +21,23 @@ export function goBack(fallback: string) {
   else go(fallback);
 }
 
+// --- Screen size: the desktop layout from Tailwind's lg breakpoint (64rem, 1024px) up ---
+
+const DESKTOP = "(min-width: 64rem)";
+
+/** Whether the desktop layout is showing. Parts only it shows aren't rendered on a phone, so they don't load anything there. */
+export function useDesktop(): boolean {
+  const [desktop, setDesktop] = useState(() => matchMedia(DESKTOP).matches);
+  useEffect(() => {
+    const query = matchMedia(DESKTOP);
+    const onChange = () => setDesktop(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return desktop;
+}
+
 // --- Data loading that refreshes on an interval while the page is visible ---
 
 export function usePoll<T>(load: () => Promise<T>, intervalMs: number, key: unknown = null) {
@@ -178,6 +195,20 @@ export function fileName(title: string): string {
 
 export function formatBytes(bytes: number): string {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+/** The middle value, or null for none. */
+export function median(values: (number | null)[]): number | null {
+  const sorted = values.filter((v): v is number => v !== null).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** The sum of the values there are, or null for none. */
+export function total(values: (number | null)[]): number | null {
+  const known = values.filter((v): v is number => v !== null);
+  return known.length ? known.reduce((a, b) => a + b, 0) : null;
 }
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

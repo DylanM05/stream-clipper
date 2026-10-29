@@ -45,6 +45,10 @@ def probe_duration(path: Path) -> float:
     return float(probe(path)["format"]["duration"])
 
 
+def has_audio(path: Path) -> bool:
+    return any(s.get("codec_type") == "audio" for s in probe(path).get("streams", []))
+
+
 def audio_frames(path: Path) -> Iterator[tuple[float | None, int]]:
     """The timestamp (None if it has none) and number of samples of each frame of the first audio stream.
     It decodes all of it: a minute or two for an 8-hour stream."""

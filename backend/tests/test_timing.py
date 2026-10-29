@@ -72,7 +72,7 @@ def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_p
     )]).model_dump_json(), encoding="utf-8")
     ws.audio_wav.write_bytes(b"the old soundtrack")
     # Where Claude picked them; hl03 has since been trimmed by hand.
-    write_json(ws.segments_json, [{"id": key, "start": 65, "end": 80} for key in ("hl01", "hl02", "hl03")]
+    write_json(ws.segments_json, [{"id": key, "start": 65, "end": 80} for key in ("hl01", "hl02", "hl03", "hl05")]
                + [{"id": "hl04", "start": 20, "end": 40}])
     with Session(get_engine(settings)) as s:
         vod = Vod(url="https://kick.com/q/videos/1", workspace="kick-1", status="ready", title="Q After Dark")
@@ -86,6 +86,8 @@ def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_p
                        make_short=True, short_path="/data/hl03-short.mp4"),
             ClipRecord(vod_id=vod.id, key="hl04", kind="highlight", start=20, end=40, title="Before the jump", status="rendered",
                        make_short=True, short_path="/data/hl04-short.mp4"),
+            # Claude's ends, but a part cut out in the app: edited by hand, so its cut doesn't drift off its words.
+            ClipRecord(vod_id=vod.id, key="hl05", kind="highlight", start=65, end=80, title="Cut", cuts="[[70, 72]]"),
         ]
         s.add_all(clips)
         s.commit()
@@ -112,6 +114,7 @@ def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_p
         "hl02": (68.0, 83.0, "approved"),  # moved, and rendering again
         "hl03": (67, 84, "approved"),  # trimmed by hand: kept, but its Short's captions render again
         "hl04": (20, 40, "rendered"),  # before the sound jumped: right as it was
+        "hl05": (65, 80, "proposed"),
     }
     assert "hl02  Ready to go" in out.split("upload them again")[1]
 

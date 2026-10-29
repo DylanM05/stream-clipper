@@ -59,6 +59,8 @@ export interface Clip {
   description: string;
   why: string;
   score: number;
+  manual: boolean; // made in the app, so it has no score from Claude
+  cuts: [number, number][]; // parts taken out of the middle, in the stream's seconds
   vertical_ok: boolean;
   make_short: boolean;
   status: ClipStatus;
@@ -94,11 +96,34 @@ export interface Line {
   start: number;
   end: number;
   text: string;
+  words?: [number, number, string][]; // start, end, text: asked for when snapping cuts to words
 }
 
 export type ClipPatch = Partial<
-  Pick<Clip, "title" | "description" | "start" | "end" | "make_short" | "destination_id" | "playlist_id">
+  Pick<Clip, "title" | "description" | "start" | "end" | "cuts" | "make_short" | "destination_id" | "playlist_id">
 >;
+
+/** A clip made in the app from any part of a stream. */
+export interface NewClip {
+  kind: "chapter" | "highlight";
+  start: number;
+  end: number;
+  cuts: [number, number][];
+  title: string;
+  description: string;
+  make_short: boolean;
+  destination_id: number | null;
+  playlist_id: string;
+  approve: boolean; // straight to rendering, rather than into the inbox
+}
+
+/** What a clip made in the app starts with. */
+export interface NewClipInfo {
+  title_pattern: string; // the show's pattern with the stream's date in it, and {title} for the part you write
+  title_room: number; // how long that part can be
+  destination_id: number | null;
+  playlist_id: string;
+}
 
 /** A playlist on a YouTube channel connected to the API. */
 export interface Playlist {
@@ -167,6 +192,7 @@ export interface StatsUpload {
   kind: Clip["kind"];
   which: "video" | "short";
   score: number;
+  manual: boolean;
   youtube_url: string;
   finished_at: string | null;
   views: number | null;
@@ -257,6 +283,21 @@ export interface ChannelVideo {
   first_seen_at: string;
 }
 
+/** Counts for the tab badges. */
+export interface Summary {
+  to_review: number;
+  to_upload: number; // rendered clips, whether or not their upload has started
+  videos_in_progress: number;
+}
+
+/** Space on the data disk, and how much the streams' files take. */
+export interface Storage {
+  free_gb: number | null;
+  total_gb: number | null;
+  videos_gb: number;
+  min_free_gb: number; // below this, new downloads wait for space
+}
+
 /** Settings changed from the app. */
 export interface AppSettings {
   download_limit_mbps: number; // 0 = no limit
@@ -313,11 +354,10 @@ export const api = {
   session: () => request<{ authenticated: boolean; password_required: boolean }>("/api/session"),
   login: (password: string) => post<void>("/api/login", { password }),
   logout: () => post<void>("/api/logout"),
-  summary: () => request<{ to_review: number; to_upload: number; videos_in_progress: number }>("/api/summary"),
+  summary: () => request<Summary>("/api/summary"),
   settings: () => request<AppSettings>("/api/settings"),
   updateSettings: (body: Partial<Omit<AppSettings, "timezone">>) => patch<AppSettings>("/api/settings", body),
-  storage: () =>
-    request<{ free_gb: number | null; total_gb: number | null; videos_gb: number; min_free_gb: number }>("/api/storage"),
+  storage: () => request<Storage>("/api/storage"),
   pauses: () => request<Pauses>("/api/pauses"),
   setPauses: (body: Partial<Pauses>) => patch<Pauses>("/api/pauses", body),
   notifications: () => request<{ ntfy: boolean; discord: boolean; links: boolean }>("/api/notifications"),
@@ -345,6 +385,19 @@ export const api = {
   unmarkUploaded: (id: number) => changed(post<Clip>(`/api/clips/${id}/not-uploaded`)),
   reupload: (id: number) => changed(post<Clip>(`/api/clips/${id}/reupload`)),
   transcript: (id: number) => request<Line[]>(`/api/clips/${id}/transcript`),
+
+  /** The stream's transcript: all of it, or from start to end, with each word's timing if asked. */
+  vodTranscript: (vodId: number, part?: { start: number; end: number; words?: boolean }) =>
+    request<Line[]>(
+      `/api/vods/${vodId}/transcript${part ? `?start=${part.start}&end=${part.end}${part.words ? "&words=true" : ""}` : ""}`,
+    ),
+  /** How loud the stream is across `count` parts of start to end, from 0 to 1. */
+  peaks: (vodId: number, start: number, end: number, count: number) =>
+    request<{ start: number; end: number; peaks: number[] }>(
+      `/api/vods/${vodId}/peaks?start=${start}&end=${end}&count=${count}`,
+    ),
+  newClipInfo: (vodId: number) => request<NewClipInfo>(`/api/vods/${vodId}/new-clip`),
+  makeClip: (vodId: number, body: NewClip) => changed(post<Clip>(`/api/vods/${vodId}/clips`, body)),
 
   studio: () => request<StudioStatus>("/api/studio"),
   openStudioBrowser: () => post<{ opened: boolean }>("/api/studio/open"),
@@ -414,6 +467,8 @@ export const api = {
 
 export const media = {
   proxy: (vodId: number) => `/media/vods/${vodId}/proxy.mp4`,
+  /** A small still of the stream, for the editor's timeline. */
+  frame: (vodId: number, t: number) => `/media/vods/${vodId}/frame.jpg?t=${t.toFixed(1)}`,
   thumb: (c: Clip) => `/media/clips/${c.id}/thumb.jpg?t=${Math.round(c.start * 10)}`,
   file: (c: Clip, which: "video" | "short", download = false) =>
     `/media/clips/${c.id}/${which}.mp4?v=${encodeURIComponent(c.updated_at)}${download ? "&download=true" : ""}`,

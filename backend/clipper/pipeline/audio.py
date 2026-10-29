@@ -54,6 +54,40 @@ def load(ws: Workspace, start_s: float = 0, duration_s: float | None = None) -> 
     return samples[:pos]
 
 
+FULL_READ_SAMPLES = 32_000_000  # up to about half an hour is read whole; longer stretches are sampled
+
+
+def peaks(ws: Workspace, start_s: float, end_s: float, count: int) -> list[float]:
+    """How loud the soundtrack is across `count` equal parts of `start_s` to `end_s`, from 0 to 1: the loudest
+    sample in each, for drawing its waveform. Over a long stretch (zoomed out) each part's loudness is taken from
+    its first stretch of samples, so it stays quick; past the end of the soundtrack it's 0."""
+    with _open(ws) as w:
+        total = w.getnframes()
+        first = max(0, round(start_s * SAMPLE_RATE))
+        span = max(0, round(end_s * SAMPLE_RATE) - first)
+        if count <= 0 or span == 0:
+            return [0.0] * max(0, count)
+        per = span / count
+        found = []
+        if span <= FULL_READ_SAMPLES:
+            w.setpos(min(first, total))
+            data = np.abs(np.frombuffer(w.readframes(span), dtype="<i2").astype(np.int32))
+            for i in range(count):
+                part = data[int(i * per) : max(int(i * per) + 1, int((i + 1) * per))]
+                found.append(int(part.max()) if part.size else 0)
+        else:
+            chunk = max(1, min(int(per), FULL_READ_SAMPLES // count))
+            for i in range(count):
+                at = first + int(i * per)
+                if at >= total:
+                    found.append(0)
+                    continue
+                w.setpos(at)
+                part = np.frombuffer(w.readframes(chunk), dtype="<i2")
+                found.append(int(np.abs(part.astype(np.int32)).max()) if part.size else 0)
+    return [round(min(1.0, v / 32768), 3) for v in found]
+
+
 def _open(ws: Workspace) -> wave.Wave_read:
     w = wave.open(str(ws.audio_wav), "rb")
     if w.getnchannels() != 1 or w.getsampwidth() != 2 or w.getframerate() != SAMPLE_RATE:

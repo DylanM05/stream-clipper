@@ -1,22 +1,32 @@
 // Small shared building blocks: screen layout, status chips, buttons, toasts.
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import type { Clip, ClipStatus, Destination, Mode, UploadState, VodStatus } from "./api";
+import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VodStatus } from "./api";
 import { BackIcon } from "./icons";
 import { cn } from "./lib";
 
+/**
+ * A page: its title, then its content. On a phone it's one column above the tab bar; on a desktop, wide pages
+ * spread out (lists into two columns, from the xl breakpoint) and the rest stay a readable column.
+ */
 export function Screen(props: {
   title: string;
   subtitle?: ReactNode;
   onBack?: () => void;
   actions?: ReactNode;
+  wide?: boolean;
   children: ReactNode;
 }) {
   return (
-    <div className="mx-auto max-w-2xl px-4 pb-32 pt-[calc(env(safe-area-inset-top)+0.75rem)]">
-      <header className="mb-4 flex items-center gap-2">
+    <div
+      className={cn(
+        "mx-auto max-w-2xl px-4 pb-32 pt-[calc(env(safe-area-inset-top)+0.75rem)] lg:px-8 lg:pb-16 lg:pt-8",
+        props.wide && "lg:max-w-6xl",
+      )}
+    >
+      <header className="mb-4 flex items-center gap-2 lg:mb-6">
         {props.onBack && (
-          <button onClick={props.onBack} className="-ml-2 rounded-full p-2 active:bg-white/10" aria-label="Back">
+          <button onClick={props.onBack} className="-ml-2 rounded-full p-2 hover:bg-white/5 active:bg-white/10" aria-label="Back">
             <BackIcon className="size-6" />
           </button>
         )}
@@ -119,11 +129,12 @@ export function Button(props: {
   type?: "button" | "submit";
   children: ReactNode;
 }) {
+  // Hover only applies where there's a mouse (Tailwind puts it behind @media (hover: hover)), and not when disabled.
   const tones = {
-    primary: "bg-violet-600 text-white active:bg-violet-700",
-    approve: "bg-emerald-600 text-white active:bg-emerald-700",
-    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 active:bg-red-500/20",
-    plain: "bg-zinc-800 text-zinc-100 active:bg-zinc-700",
+    primary: "bg-violet-600 text-white enabled:hover:bg-violet-500 active:bg-violet-700",
+    approve: "bg-emerald-600 text-white enabled:hover:bg-emerald-500 active:bg-emerald-700",
+    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 enabled:hover:bg-red-500/15 active:bg-red-500/20",
+    plain: "bg-zinc-800 text-zinc-100 enabled:hover:bg-zinc-700/80 active:bg-zinc-700",
   };
   return (
     <button
@@ -167,6 +178,79 @@ export function DestinationSelect(props: {
   );
 }
 
+// --- Pieces of the desktop's overview and stats ---
+
+/** One headline number: what it counts, the number, and a line about it. A link if it leads somewhere. */
+export function StatTile(props: { label: string; value: ReactNode; note?: ReactNode; href?: string }) {
+  const body = (
+    <>
+      <p className="truncate text-xs font-medium text-zinc-400">{props.label}</p>
+      <p className="mt-1 text-2xl font-semibold tracking-tight">{props.value}</p>
+      {props.note && <p className="mt-0.5 truncate text-xs text-zinc-500">{props.note}</p>}
+    </>
+  );
+  const tile = "block min-w-0 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5";
+  return props.href ? (
+    <a href={props.href} className={cn(tile, "hover:bg-zinc-800/70 hover:ring-white/10")}>
+      {body}
+    </a>
+  ) : (
+    <div className={tile}>{body}</div>
+  );
+}
+
+/** A titled box on the overview, with an optional link to the page it summarises. */
+export function Panel(props: { title: string; link?: { href: string; label: string }; children: ReactNode }) {
+  return (
+    <section className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
+      <header className="flex items-baseline gap-2 px-4 pb-2 pt-3.5">
+        <h2 className="flex-1 text-sm font-bold">{props.title}</h2>
+        {props.link && (
+          <a href={props.link.href} className="text-xs font-semibold text-violet-300 hover:text-violet-200">
+            {props.link.label}
+          </a>
+        )}
+      </header>
+      {props.children}
+    </section>
+  );
+}
+
+/** How full the data disk is. Amber once it's getting near the point where downloads wait, red past it. */
+export function DiskMeter({ storage }: { storage: Storage }) {
+  const { free_gb: free, total_gb: size, videos_gb: videos, min_free_gb: min } = storage;
+  if (free === null || !size) return <p className="text-xs text-zinc-500">Streams use {videos} GB.</p>;
+  const low = free < min;
+  const near = !low && free < min * 2;
+  const [fill, track] = low
+    ? ["bg-red-400", "bg-red-400/15"]
+    : near
+      ? ["bg-amber-400", "bg-amber-400/15"]
+      : ["bg-violet-500", "bg-violet-500/15"];
+  return (
+    <div>
+      <div className="flex items-baseline justify-between gap-2 text-xs">
+        <span className="font-semibold text-zinc-300">{free} GB free</span>
+        <span className="text-zinc-500">of {size} GB</span>
+      </div>
+      <div
+        className={cn("mt-1.5 h-1.5 overflow-hidden rounded-full", track)}
+        role="meter"
+        aria-label="Data disk used"
+        aria-valuemin={0}
+        aria-valuemax={size}
+        aria-valuenow={size - free}
+      >
+        <div className={cn("h-full rounded-full", fill)} style={{ width: `${Math.min(100, ((size - free) / size) * 100)}%` }} />
+      </div>
+      <p className={cn("mt-1.5 text-xs", low ? "text-red-300" : near ? "text-amber-300" : "text-zinc-500")}>
+        {low ? `Below ${min} GB free: new downloads wait for space.` : `Streams use ${videos} GB.`}
+        {near && ` Downloads wait below ${min} GB.`}
+      </p>
+    </div>
+  );
+}
+
 export function ErrorNote({ children }: { children: ReactNode }) {
   return <p className="rounded-xl bg-red-500/10 p-3 text-sm text-red-300 ring-1 ring-red-500/20">{children}</p>;
 }
@@ -191,7 +275,8 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={show}>
       {children}
-      <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col items-center gap-2 px-4">
+      {/* Above the tab bar on a phone; in the bottom-right corner on a desktop, out of the way of the page. */}
+      <div className="pointer-events-none fixed inset-x-0 bottom-[calc(5.5rem+env(safe-area-inset-bottom))] z-50 flex flex-col items-center gap-2 px-4 lg:items-end lg:px-6">
         {toasts.map((t) => (
           <div
             key={t.id}
@@ -200,7 +285,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
             <span className="flex-1">{t.text}</span>
             {t.action && (
               <button
-                className="font-semibold text-violet-300"
+                className="font-semibold text-violet-300 hover:text-violet-200"
                 onClick={() => {
                   t.action!.run();
                   dismiss(t.id);

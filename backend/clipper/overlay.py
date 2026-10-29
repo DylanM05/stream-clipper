@@ -96,13 +96,14 @@ def _even(x, y, w, h) -> tuple[int, int, int, int]:
     return x2, y2, (int(x) + int(w) - x2) // 2 * 2, (int(y) + int(h) - y2) // 2 * 2
 
 
-def filter_graph(overlay: Overlay) -> str:
-    """ffmpeg filter graph from the clip ([0:v]) and the overlay image ([1:v]) to the 1920x1080 picture [v]."""
+def filter_graph(overlay: Overlay, video: str = "[0:v]") -> str:
+    """ffmpeg filter graph from the clip (`video`, the input's own unless parts were cut out of it) and the
+    overlay image ([1:v]) to the 1920x1080 picture [v]."""
     if overlay.screen:
         x, y, w, h = overlay.screen
         # The clip fills the screen (black around it if it isn't 16:9), and the frame goes over it, which also
         # covers its corners where a screen is rounded.
-        return (f"[0:v]scale={w}:{h}:force_original_aspect_ratio=decrease,"
+        return (f"{video}scale={w}:{h}:force_original_aspect_ratio=decrease,"
                 f"pad={WIDTH}:{HEIGHT}:{x}+({w}-iw)/2:{y}+({h}-ih)/2:black,setsar=1[clip];"
                 "[clip][1:v]overlay=0:0[v]")
     x, y, w, h = overlay.box
@@ -112,6 +113,6 @@ def filter_graph(overlay: Overlay) -> str:
     px, py = overlay.position or (x, y)
     px, py = min(max(0, px), WIDTH - sw) // 2 * 2, min(max(0, py), HEIGHT - sh) // 2 * 2
     resize = f",scale={sw}:{sh}" if (sw, sh) != (w, h) else ""
-    return (f"[0:v]scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
+    return (f"{video}scale={WIDTH}:{HEIGHT}:force_original_aspect_ratio=decrease,"
             f"pad={WIDTH}:{HEIGHT}:(ow-iw)/2:(oh-ih)/2:black,setsar=1[clip];"
             f"[1:v]crop={w}:{h}:{x}:{y}{resize}[design];[clip][design]overlay={px}:{py}[v]")

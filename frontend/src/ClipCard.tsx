@@ -1,6 +1,7 @@
 import { useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { media, type Clip } from "./api";
 import { CheckIcon, PhoneIcon, XIcon } from "./icons";
+import { keptLength } from "./editor/edit";
 import { clock, cn, go, length } from "./lib";
 import { ClipStatusChip, KIND_LABEL } from "./ui";
 
@@ -37,11 +38,11 @@ export function ClipCard(props: {
         className="relative touch-pan-y bg-zinc-900"
         style={{ transform: `translateX(${swipe.dx}px)`, transition: swipe.dx === 0 ? "transform 0.2s" : "none" }}
       >
-        <button onClick={() => go(`clip/${clip.id}`)} className="flex w-full gap-3 p-3 text-left active:bg-white/[0.03]">
+        <button onClick={() => go(`clip/${clip.id}`)} className="flex w-full gap-3 p-3 text-left hover:bg-white/[0.02] active:bg-white/[0.03]">
           <div className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-zinc-800">
             <img src={media.thumb(clip)} alt="" loading="lazy" className="size-full object-cover" />
             <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
-              {length(clip.end - clip.start)}
+              {length(clip.cuts?.length ? keptLength(clip) : clip.end - clip.start)}
             </span>
           </div>
           <div className="min-w-0 flex-1">
@@ -52,8 +53,10 @@ export function ClipCard(props: {
                   · <PhoneIcon className="size-3" /> Short
                 </span>
               )}
-              {clip.kind !== "whole" && (
-                <span className="ml-auto tabular-nums text-zinc-500">score {clip.score.toFixed(2)}</span>
+              {clip.manual ? (
+                <span className="ml-auto text-zinc-500">made by you</span>
+              ) : (
+                clip.kind !== "whole" && <span className="ml-auto tabular-nums text-zinc-500">score {clip.score.toFixed(2)}</span>
               )}
             </div>
             <h3 className="mt-1 line-clamp-2 text-[15px] font-semibold leading-snug">{clip.title}</h3>
@@ -71,14 +74,14 @@ export function ClipCard(props: {
           <div className="flex border-t border-white/5">
             <button
               onClick={props.onReject}
-              className="flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-zinc-400 active:bg-white/5"
+              className="flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium text-zinc-400 hover:bg-white/[0.03] hover:text-red-300 active:bg-white/5"
             >
               <XIcon className="size-4" /> Reject
             </button>
             <div className="w-px bg-white/5" />
             <button
               onClick={props.onApprove}
-              className="flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-semibold text-emerald-300 active:bg-white/5"
+              className="flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/10 active:bg-white/5"
             >
               <CheckIcon className="size-4" /> Approve
             </button>

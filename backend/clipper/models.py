@@ -104,7 +104,7 @@ class Segmentation(BaseModel):
 
 
 class Clip(BaseModel):
-    id: str  # ch01, hl03, ... or "full"
+    id: str  # ch01, hl03, my01, ... or "full"
     kind: Literal["chapter", "highlight", "whole"]  # "whole": the entire video, posted as it is
     start: float
     end: float
@@ -115,7 +115,9 @@ class Clip(BaseModel):
     vertical_ok: bool = False
     llm_start: str
     llm_end: str
+    cuts: list[tuple[float, float]] = []  # parts taken out of the middle in the app (cuts.py), in the stream's seconds
 
     @property
     def duration(self) -> float:
-        return self.end - self.start
+        """How long it comes out: start to end, less the cuts."""
+        return self.end - self.start - sum(b - a for a, b in self.cuts)

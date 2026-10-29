@@ -3,9 +3,11 @@
 import logging
 import re
 import unicodedata
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from .. import cuts as cuts_
 from .. import ffmpeg
 from ..config import Settings
 from ..models import Clip, Word
@@ -48,20 +50,23 @@ def render_landscape(
     on_progress: Callable[[float], None] | None = None,
     overlay: Overlay | None = None,
 ) -> None:
-    """With the show's `overlay`, the video comes out 1920x1080 with it on (overlay.py)."""
+    """With the show's `overlay`, the video comes out 1920x1080 with it on (overlay.py). Parts cut out of the
+    clip in the app are left out, and what's either side of each joined."""
     tmp = out.with_name(out.stem + ".tmp.mp4")
-    video = (
-        ["-i", str(overlay.path.resolve()), "-filter_complex", filter_graph(overlay), "-map", "[v]"]
-        if overlay else ["-map", "0:v:0"]
-    )
+    overlay_input = ["-i", str(overlay.path.resolve())] if overlay else []
+    if clip.cuts:
+        audio = ffmpeg.has_audio(source)
+        graph = _cut_graph(clip, audio)
+        if overlay:
+            graph += ";" + filter_graph(overlay, video="[vc]")
+        maps = ["-map", "[v]" if overlay else "[vc]", *(["-map", "[a]"] if audio else [])]
+        streams = [*overlay_input, "-filter_complex", graph, *maps, *_video_args(settings), *_audio_codec()]
+    else:
+        video = [*overlay_input, "-filter_complex", filter_graph(overlay), "-map", "[v]"] if overlay else ["-map", "0:v:0"]
+        streams = [*video, "-map", "0:a:0?", *_video_args(settings), *_audio_args(clip)]
     _encode(
         settings,
-        lambda hwaccel: [
-            *_input_args(source, clip, hwaccel),
-            *video, "-map", "0:a:0?",
-            *_video_args(settings), *_audio_args(clip),
-            "-movflags", "+faststart", str(tmp),
-        ],
+        lambda hwaccel: [*_input_args(source, clip, hwaccel), *streams, "-movflags", "+faststart", str(tmp)],
         on_progress=on_progress,
         duration=clip.duration,
     )
@@ -92,9 +97,16 @@ def render_short(
     top = round((SHORT_H - height) / 2 if video_top is None else video_top * SHORT_H)
     captions = out.with_name(out.stem + ".ass")
     margin = 520 if crop else max(60, SHORT_H - top - height - CAPTION_GAP)  # 520 under a centred video
-    write_text(captions, build_ass(words, clip.start, clip.end, font=settings.caption_font, margin=margin))
+    if clip.cuts:  # the captions follow the video as it comes out, with the cuts closed up
+        ass = build_ass(kept_words(words, clip), 0, clip.duration, font=settings.caption_font, margin=margin)
+    else:
+        ass = build_ass(words, clip.start, clip.end, font=settings.caption_font, margin=margin)
+    write_text(captions, ass)
+    audio = ffmpeg.has_audio(source) if clip.cuts else False
+    joined = _cut_graph(clip, audio) + ";" if clip.cuts else ""
+    picture = "[vc]" if clip.cuts else "[0:v]"
     if crop:
-        video = "[0:v]crop=ih*9/16:ih,scale=1080:1920"
+        video = f"{picture}crop=ih*9/16:ih,scale=1080:1920"
     else:
         blurred = (
             "[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
@@ -104,8 +116,12 @@ def render_short(
         # The image goes over the blur (which shows through any transparent parts) and stays for every frame.
         back = f"{blurred}[blur];[1:v]scale=1080:1920,setsar=1[image];[blur][image]overlay=0:0[back]" if background else f"{blurred}[back]"
         y = "(H-h)/2" if video_top is None else str(top)
-        video = f"[0:v]split=2[bg][fg];{back};[fg]scale={width}:-2[front];[back][front]overlay=(W-w)/2:{y}"
-    graph = f"{video},subtitles=filename={captions.name},setsar=1[v]"
+        video = f"{picture}split=2[bg][fg];{back};[fg]scale={width}:-2[front];[back][front]overlay=(W-w)/2:{y}"
+    graph = f"{joined}{video},subtitles=filename={captions.name},setsar=1[v]"
+    if clip.cuts:
+        sound_map, sound = (["-map", "[a]"], _audio_codec()) if audio else ([], [])
+    else:
+        sound_map, sound = ["-map", "0:a:0?"], _audio_args(clip)
     tmp = out.with_name(out.stem + ".tmp.mp4")
     # Runs inside the clips folder so the subtitle file can be named without ffmpeg's filter-path escaping.
     _encode(
@@ -113,8 +129,8 @@ def render_short(
         lambda hwaccel: [
             *_input_args(source, clip, hwaccel),
             *(["-i", str(background.resolve())] if background else []),
-            "-filter_complex", graph, "-map", "[v]", "-map", "0:a:0?",
-            *_video_args(settings), *_audio_args(clip),
+            "-filter_complex", graph, "-map", "[v]", *sound_map,
+            *_video_args(settings), *sound,
             "-movflags", "+faststart", tmp.name,
         ],
         cwd=out.parent,
@@ -184,6 +200,20 @@ def render_thumbnail(video: Path, t: float, out: Path) -> None:
     tmp.replace(out)
 
 
+def render_frame(video: Path, t: float, out: Path, height: int = 72) -> None:
+    """A small still for the editor's timeline. The editor asks for several at once, so each is written under a
+    name of its own until it's done."""
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex}.tmp.jpg")
+    try:
+        ffmpeg.run(["-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1", "-vf", f"scale=-2:{height}", "-q:v", "6", str(tmp)])
+        if not tmp.exists():  # past the end of the video: ffmpeg finds no frame, and says so only in its log
+            raise ffmpeg.FFmpegError(f"No frame at {t:.1f} s")
+        tmp.replace(out)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
 def slugify(text: str, max_len: int = 50) -> str:
     ascii_text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
     slug = re.sub(r"[^a-z0-9]+", "-", ascii_text.lower()).strip("-")
@@ -210,8 +240,9 @@ def _encode(
 def _input_args(source: Path, clip: Clip, hwaccel: str | None) -> list[str]:
     hw = ["-hwaccel", hwaccel] if hwaccel else []
     # -ss before -i seeks quickly, and stays frame-accurate because the clip is re-encoded. -t is before -i
-    # too, so it limits this input even when another (a Short's background) follows.
-    return [*hw, "-ss", f"{clip.start:.3f}", "-t", f"{clip.duration:.3f}", "-i", str(source)]
+    # too, so it limits this input even when another (a Short's background) follows. It's the whole stretch from
+    # start to end, cuts and all: they're taken out by the filters.
+    return [*hw, "-ss", f"{clip.start:.3f}", "-t", f"{clip.end - clip.start:.3f}", "-i", str(source)]
 
 
 def _video_args(settings: Settings) -> list[str]:
@@ -222,6 +253,50 @@ def _video_args(settings: Settings) -> list[str]:
 
 
 def _audio_args(clip: Clip) -> list[str]:
+    return ["-af", _fades(clip), *_audio_codec()]
+
+
+def _fades(clip: Clip) -> str:
+    """The sound fades in and out at the ends of the clip, so it doesn't start or stop with a click."""
     fade_out = max(0.0, clip.duration - 0.25)
-    return ["-af", f"afade=t=in:d=0.15,afade=t=out:st={fade_out:.3f}:d=0.25",
-            "-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+    return f"afade=t=in:d=0.15,afade=t=out:st={fade_out:.3f}:d=0.25"
+
+
+def _audio_codec() -> list[str]:
+    return ["-c:a", "aac", "-b:a", "192k", "-ar", "48000"]
+
+
+JOIN_FADE_S = 0.01  # each side of a join fades this quickly, so the sound doesn't click where it jumps
+
+
+def _cut_graph(clip: Clip, audio: bool) -> str:
+    """Filters that take the parts of the clip that stay and join them: the picture to [vc], and with `audio`
+    the sound, faded at the clip's ends, to [a]. Times count from the clip's start, where the input begins."""
+    parts = [(a - clip.start, b - clip.start) for a, b in cuts_.kept(clip.start, clip.end, clip.cuts)]
+    n = len(parts)
+    chains = ["[0:v]split=" + str(n) + "".join(f"[vp{i}]" for i in range(n))]
+    chains += [f"[vp{i}]trim=start={a:.3f}:end={b:.3f},setpts=PTS-STARTPTS[v{i}]" for i, (a, b) in enumerate(parts)]
+    if audio:
+        chains.append("[0:a]asplit=" + str(n) + "".join(f"[ap{i}]" for i in range(n)))
+        chains += [
+            f"[ap{i}]atrim=start={a:.3f}:end={b:.3f},asetpts=PTS-STARTPTS,"
+            f"afade=t=in:d={JOIN_FADE_S},afade=t=out:st={max(0.0, b - a - JOIN_FADE_S):.3f}:d={JOIN_FADE_S}[a{i}]"
+            for i, (a, b) in enumerate(parts)
+        ]
+    inputs = "".join(f"[v{i}]" + (f"[a{i}]" if audio else "") for i in range(n))
+    chains.append(f"{inputs}concat=n={n}:v=1:a={int(audio)}[vc]" + ("[ac]" if audio else ""))
+    if audio:
+        chains.append(f"[ac]{_fades(clip)}[a]")
+    return ";".join(chains)
+
+
+def kept_words(words: list[Word], clip: Clip) -> list[Word]:
+    """The clip's words, timed as it comes out: from 0 at its start, with the cuts closed up. A word that runs
+    into a cut is cut short with it."""
+    found, at = [], 0.0
+    for a, b in cuts_.kept(clip.start, clip.end, clip.cuts):
+        for w in words:
+            if w.end > a and w.start < b:
+                found.append(Word(start=max(w.start, a) - a + at, end=min(w.end, b) - a + at, text=w.text))
+        at += b - a
+    return found

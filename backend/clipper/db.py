@@ -239,6 +239,10 @@ class ClipRecord(SQLModel, table=True):
     # Uploads to make again once it's rendered again, after one went wrong on the site's side (a video YouTube
     # won't play): JSON [[which, site, visibility], ...]; "" for none.
     reupload: str = ""
+    # Parts taken out of the middle in the app's editor (cuts.py): JSON [[start, end], ...] in the stream's
+    # seconds, inside start-end; "" for none. The video jumps over them.
+    cuts: str = ""
+    manual: bool = False  # made in the app rather than picked by Claude, so its score means nothing
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

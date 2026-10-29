@@ -61,11 +61,12 @@ class Band:
 
 
 def score_bands(rows: list[tuple[UploadJob, ClipRecord]]) -> list[Band]:
-    """Median views by Claude's score, for chapters and highlights with numbers."""
+    """Median views by Claude's score, for chapters and highlights with numbers. Clips made in the app have no
+    score from Claude, so they're left out."""
     bands = []
     upper = 2.0
     for low, label in BANDS:
-        jobs = [j for j, c in rows if c.kind != "whole" and low <= c.score < upper and j.views is not None]
+        jobs = [j for j, c in rows if c.kind != "whole" and not c.manual and low <= c.score < upper and j.views is not None]
         upper = low
         bands.append(Band(
             label, len(jobs),

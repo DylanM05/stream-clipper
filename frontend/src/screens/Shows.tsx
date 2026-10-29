@@ -41,11 +41,12 @@ export function Shows() {
       title="Shows"
       subtitle="Titles, context and channels to watch."
       actions={<Button tone="primary" onClick={() => go("shows/new")}>New show</Button>}
+      wide
     >
       {error && <ErrorNote>{error}</ErrorNote>}
       <button
         onClick={() => go("shows/youtube")}
-        className="mb-4 flex w-full items-center gap-3 rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 active:bg-zinc-800/70"
+        className="mb-4 flex w-full items-center gap-3 rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
       >
         <UploadIcon className="size-5 text-zinc-400" />
         <span className="flex-1">
@@ -68,7 +69,7 @@ export function Shows() {
           </p>
         </div>
       )}
-      <div className="space-y-3">
+      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
         {shows?.map((show) => {
           const pattern = hasClips(show.mode) ? show.title_template : show.episode_template || show.title_template;
           const goesTo = [
@@ -79,7 +80,7 @@ export function Shows() {
             <button
               key={show.id}
               onClick={() => go(`shows/${show.id}`)}
-              className="block w-full rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 active:bg-zinc-800/70"
+              className="block w-full rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
             >
               <div className="flex items-center gap-2">
                 <h3 className="min-w-0 flex-1 truncate font-semibold">{show.name}</h3>

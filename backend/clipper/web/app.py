@@ -1,5 +1,6 @@
 """JSON API for the review app, plus media streaming and the built phone app."""
 
+import gzip
 import html
 import ipaddress
 import json
@@ -9,6 +10,7 @@ import re
 import shutil
 import time
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -21,7 +23,7 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import ffmpeg, notify, stats
+from .. import cuts, ffmpeg, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
@@ -32,7 +34,7 @@ from ..monitor import ChannelUrlError, parse_channel
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
-from ..pipeline import render
+from ..pipeline import audio, render
 from ..rumble_upload import CATEGORIES as RUMBLE_CATEGORIES, LICENCE as RUMBLE_LICENCE
 from ..workspace import Workspace, remove
 from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
@@ -94,6 +96,8 @@ class ClipOut(BaseModel):
     description: str
     why: str
     score: float
+    manual: bool  # made in the app, so it has no score from Claude
+    cuts: list[tuple[float, float]]  # parts taken out of the middle, in the stream's seconds (cuts.py)
     vertical_ok: bool
     make_short: bool
     status: str
@@ -138,6 +142,28 @@ class Line(BaseModel):
     start: float
     end: float
     text: str
+
+
+class NewClip(BaseModel):
+    """A clip made in the app from any part of a stream."""
+
+    kind: Literal["chapter", "highlight"]
+    start: float
+    end: float
+    cuts: list[tuple[float, float]] = Field(default=[], max_length=500)
+    title: str = Field(max_length=100)
+    description: str = Field(default="", max_length=5000)
+    make_short: bool = False  # highlights only
+    destination_id: int | None = None
+    playlist_id: str = Field(default="", max_length=64)
+    approve: bool = False  # straight to rendering, rather than into the inbox
+
+
+class NewClipInfo(BaseModel):
+    title_pattern: str  # the show's pattern for clips, with the stream's date in it and {title} for the part you write
+    title_room: int  # how long that part can be, for the whole title to fit YouTube's 100 characters
+    destination_id: int | None  # the show's channel for clips
+    playlist_id: str
 
 
 class NewVod(BaseModel):
@@ -286,6 +312,7 @@ class StatsUpload(BaseModel):
     kind: str
     which: str
     score: float
+    manual: bool  # made in the app: no score from Claude
     youtube_url: str
     finished_at: str | None
     views: int | None
@@ -433,6 +460,7 @@ class ClipPatch(BaseModel):
     start: float | None = None
     end: float | None = None
     make_short: bool | None = None
+    cuts: list[tuple[float, float]] | None = Field(default=None, max_length=500)  # parts taken out, in the stream's seconds
     destination_id: int | None = None
     playlist_id: str | None = Field(default=None, max_length=64)  # cleared when the channel changes, unless given
 
@@ -487,6 +515,17 @@ def file_name(title: str) -> str:
     """A download name from the title. YouTube Studio pre-fills the title from the file name."""
     name = re.sub(r'[\\/:*?"<>|\x00-\x1f]+', " ", title)
     return " ".join(name.split()).strip(" .") or "clip"
+
+
+@lru_cache(maxsize=4)
+def _transcript(path: str, _modified: float) -> Transcript:
+    """A stream's transcript, kept parsed while the file stays the same: a long stream's takes a moment to read,
+    and the editor asks for parts of it as it pans."""
+    return Transcript.model_validate_json(Path(path).read_text(encoding="utf-8"))
+
+
+def load_transcript(path: Path) -> Transcript:
+    return _transcript(str(path), path.stat().st_mtime)
 
 
 def _size(path: str) -> int:
@@ -587,7 +626,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
             **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "thumbnail_plan", "thumbnail_redraw",
-                                       "reupload", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+                                       "reupload", "cuts", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+            cuts=cuts.parse(clip.cuts),
             reuploading=bool(clip.reupload),
             thumbnail_prompt=plan_prompt(clip.thumbnail_plan),
             thumbnail_redrawing=bool(clip.thumbnail_redraw) and clip.thumbnail_status in ("queued", "making"),
@@ -681,6 +721,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not clip:
             raise HTTPException(404, "No such clip")
         return clip, s.get(Vod, clip.vod_id)
+
+    def checked_cuts(
+        kind: str, vod: Vod, start: float, end: float, cut_list: list[cuts.Cut], make_short: bool,
+    ) -> tuple[float, float, list[cuts.Cut]]:
+        """A clip's ends and the parts cut out of it, tidied (cuts.tidy) and checked."""
+        start, end, cut_list = cuts.tidy(start, end, cut_list)
+        if cut_list and kind == "whole":
+            raise HTTPException(422, "A full episode goes up as the stream is, so parts can't be cut out of it")
+        length = cuts.kept_length(start, end, cut_list)
+        if start < 0 or end - start < 1 or length < 1 or (vod.duration and end > vod.duration + 0.5):
+            raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
+        if make_short and length > MAX_SHORT_S:
+            raise HTTPException(422, "Shorts can be at most 3 minutes long")
+        return start, end, cut_list
 
     def set_status(s: Session, clip: ClipRecord, vod: Vod, status: str) -> ClipOut:
         clip.status = status
@@ -1310,11 +1364,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             changes["title"] = " ".join((changes["title"] or "").split())
             if not changes["title"]:
                 raise HTTPException(422, "The title can't be empty")
-        start, end = changes.get("start", clip.start), changes.get("end", clip.end)
-        if start < 0 or end - start < 1 or (vod.duration and end > vod.duration + 0.5):
-            raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
-        if changes.get("make_short", clip.make_short) and end - start > MAX_SHORT_S:
-            raise HTTPException(422, "Shorts can be at most 3 minutes long")
+        cut_list = changes.pop("cuts", None)
+        start, end, cut_list = checked_cuts(
+            clip.kind, vod, changes.get("start", clip.start), changes.get("end", clip.end),
+            cuts.parse(clip.cuts) if cut_list is None else cut_list, changes.get("make_short", clip.make_short),
+        )
+        changes.update(start=start, end=end, cuts=cuts.dump(cut_list))
         check_destinations(s, changes.get("destination_id"))
         if changes.get("destination_id", clip.destination_id) != clip.destination_id:
             changes.setdefault("playlist_id", "")  # a playlist belongs to its channel
@@ -1325,7 +1380,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             setattr(clip, k, v)
         clip.updated_at = utcnow()
         # New cut points or a new Short mean a new render; titles and channels don't change the video.
-        if changed.keys() & {"start", "end", "make_short"} and clip.status in ("approved", "rendering", "rendered", "failed"):
+        if changed.keys() & {"start", "end", "cuts", "make_short"} and clip.status in ("approved", "rendering", "rendered", "failed"):
             clip.status, clip.reviewed_at = "approved", utcnow()
         s.add(clip)
         s.commit()
@@ -1555,6 +1610,93 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             if seg.text and seg.end > clip.start - 60 and seg.start < clip.end + 60
         ]
 
+    # --- The editor: a stream's transcript, waveform and frames, and clips made from any part of it ---
+
+    @app.get("/api/vods/{vod_id}/transcript")
+    def vod_transcript(
+        vod_id: int, request: Request, start: float | None = None, end: float | None = None, words: bool = False,
+        s: Session = Depends(db),
+    ) -> Response:
+        """The stream's transcript lines, all of them or those between `start` and `end`, with each word's timing
+        as [start, end, text] if `words` (to snap cuts to). Compressed when the browser takes that: all of a long
+        stream's lines come to several hundred KB."""
+        vod = found(s, Vod, vod_id, "video")
+        ws = workspace(vod)
+        lo = float("-inf") if start is None else start
+        hi = float("inf") if end is None else end
+        lines = []
+        if ws.transcript_json.exists():
+            for seg in load_transcript(ws.transcript_json).segments:
+                if seg.text.strip() and seg.end > lo and seg.start < hi:
+                    line = {"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()}
+                    if words:
+                        line["words"] = [[round(w.start, 2), round(w.end, 2), w.text.strip()] for w in seg.words if w.text.strip()]
+                    lines.append(line)
+        body = json.dumps(lines, ensure_ascii=False, separators=(",", ":")).encode()
+        if len(body) > 2000 and "gzip" in request.headers.get("accept-encoding", ""):
+            return Response(gzip.compress(body, 5), media_type="application/json",
+                            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+        return Response(body, media_type="application/json")
+
+    @app.get("/api/vods/{vod_id}/peaks")
+    def vod_peaks(
+        vod_id: int, start: float = Query(ge=0), end: float = Query(gt=0), count: int = Query(default=1000, ge=1, le=4000),
+        s: Session = Depends(db),
+    ) -> dict:
+        """How loud the stream is across `count` parts of `start` to `end` (0 to 1), to draw its waveform."""
+        vod = found(s, Vod, vod_id, "video")
+        ws = workspace(vod)
+        if end <= start:
+            raise HTTPException(422, "The end has to be after the start")
+        if not ws.audio_wav.exists():
+            raise HTTPException(404, "The stream's soundtrack isn't there: it's deleted with its video files")
+        return {"start": start, "end": end, "peaks": audio.peaks(ws, start, end, count)}
+
+    @app.get("/api/vods/{vod_id}/new-clip")
+    def new_clip_info(vod_id: int, s: Session = Depends(db)) -> NewClipInfo:
+        """What a clip made in the app starts with: the show's title pattern (with the stream's date, as Claude's
+        clips have it) and its channel and playlist for clips."""
+        vod = found(s, Vod, vod_id, "video")
+        show = s.get(Show, vod.show_id) if vod.show_id else None
+        template = show.title_template if show else "{title}"
+        ws = workspace(vod)
+        meta = ws.meta() if ws.meta_json.exists() else {}
+        day = titles.format_date(titles.stream_date(meta, vod.created_at.date(), settings.timezone, settings.day_starts_at))
+        return NewClipInfo(
+            title_pattern=titles.apply(template, "{title}", day),
+            title_room=titles.room_for_title(template, day),
+            destination_id=show.clip_destination_id if show else None,
+            playlist_id=show.clip_playlist_id if show else "",
+        )
+
+    @app.post("/api/vods/{vod_id}/clips", status_code=201)
+    def make_clip(vod_id: int, body: NewClip, s: Session = Depends(db)) -> ClipOut:
+        """A clip made in the app from any part of the stream: into the inbox, or with `approve` straight to
+        rendering. It's marked as made by hand (manual), since it has no score from Claude."""
+        vod = found(s, Vod, vod_id, "video")
+        if vod.cleaned_at:
+            raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
+        if vod.status != "ready" or not vod.workspace:
+            raise HTTPException(409, "Clips can be made once the video is ready")
+        title = " ".join(body.title.split())
+        if not title:
+            raise HTTPException(422, "The title can't be empty")
+        make_short = body.make_short and body.kind == "highlight"
+        start, end, cut_list = checked_cuts(body.kind, vod, body.start, body.end, body.cuts, make_short)
+        check_destinations(s, body.destination_id)
+        keys = set(s.exec(select(ClipRecord.key).where(ClipRecord.vod_id == vod.id)))
+        number = next(n for n in range(1, len(keys) + 2) if f"my{n:02d}" not in keys)
+        clip = ClipRecord(
+            vod_id=vod.id, key=f"my{number:02d}", kind=body.kind, start=start, end=end, cuts=cuts.dump(cut_list),
+            title=title, description=body.description.strip(), vertical_ok=body.kind == "highlight", make_short=make_short,
+            destination_id=body.destination_id, playlist_id=body.playlist_id if body.destination_id else "",
+            manual=True, status="approved" if body.approve else "proposed", reviewed_at=utcnow() if body.approve else None,
+        )
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
+
     # --- Thumbnails (thumbnails.py), made by the worker, which has Claude ---
 
     @app.get("/api/thumbnails")
@@ -1637,7 +1779,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bands=[StatsBand(**vars(b)) for b in stats.score_bands([(j, c) for j, c, _ in rows])],
             uploads=[
                 StatsUpload(job_id=j.id, clip_id=c.id, show_id=v.show_id, title=c.title, kind=c.kind, which=j.which,
-                            score=c.score, youtube_url=j.youtube_url, finished_at=iso(j.finished_at), views=j.views,
+                            score=c.score, manual=c.manual, youtube_url=j.youtube_url, finished_at=iso(j.finished_at), views=j.views,
                             likes=j.likes, comments=j.comments, views_day1=j.views_day1, views_week1=j.views_week1)
                 for j, c, v in rows
             ],
@@ -1662,6 +1804,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not path.exists():
             raise HTTPException(404, "The preview copy isn't ready yet")
         return FileResponse(path, media_type="video/mp4")
+
+    @app.get("/media/vods/{vod_id}/frame.jpg")
+    def vod_frame(vod_id: int, t: float = Query(ge=0), s: Session = Depends(db)) -> FileResponse:
+        """A small still of the stream at `t`, to the tenth of a second, for the editor's timeline. Kept once
+        made, and deleted with the stream's files."""
+        vod = found(s, Vod, vod_id, "video")
+        ws = workspace(vod)
+        if not ws.proxy_mp4.exists():
+            raise HTTPException(404, "The preview copy isn't ready yet")
+        tenths = round(min(t, max(0.0, vod.duration - 0.5) if vod.duration else t) * 10)
+        out = ws.frames_dir / f"{tenths}.jpg"
+        if not out.exists():
+            try:
+                render.render_frame(ws.proxy_mp4, tenths / 10, out)
+            except ffmpeg.FFmpegError as e:
+                raise HTTPException(404, "No frame there") from e
+        return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800, immutable"})
 
     @app.get("/media/clips/{clip_id}/thumb.jpg")
     def thumbnail(clip_id: int, s: Session = Depends(db)) -> FileResponse:

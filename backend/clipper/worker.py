@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import ffmpeg, notify, rumble_upload, stats, thumbnails, titles
+from . import cuts, ffmpeg, notify, rumble_upload, stats, thumbnails, titles
 from .config import Settings
 from .db import (
     CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine,
@@ -476,6 +476,7 @@ class Worker:
                 pipeline_clip = Clip(
                     id=clip.key, kind=clip.kind, start=clip.start, end=clip.end, title=clip.title,
                     description=clip.description, score=clip.score, llm_start="", llm_end="",
+                    cuts=cuts.parse(clip.cuts),
                 )
                 video = ws.clips_dir / f"{stem}.mp4"
                 render.render_landscape(source, pipeline_clip, video, settings, on_progress=check, overlay=overlay)
