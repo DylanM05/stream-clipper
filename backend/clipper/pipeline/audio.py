@@ -1,6 +1,8 @@
 """Extract the soundtrack as 16 kHz mono WAV, the format Whisper and the loudness analysis both use."""
 
 import logging
+import os
+import threading
 import wave
 
 import numpy as np
@@ -54,38 +56,57 @@ def load(ws: Workspace, start_s: float = 0, duration_s: float | None = None) -> 
     return samples[:pos]
 
 
-FULL_READ_SAMPLES = 32_000_000  # up to about half an hour is read whole; longer stretches are sampled
+OVERVIEW_RATE = 50  # loudness readings a second in the overview of a whole soundtrack
+_overview_lock = threading.Lock()
+
+
+def overview(ws: Workspace) -> np.ndarray:
+    """How loud the soundtrack is, 50 readings a second: each the loudest sample in its fiftieth of a second, as a
+    byte from 0 to 255. Worked out once, a minute of sound at a time, and kept beside the soundtrack (a byte each, so
+    an 8-hour stream's is under 1.5 MB), and again if the soundtrack is extracted again."""
+    with _overview_lock:
+        if not ws.peaks_u8.exists() or ws.peaks_u8.stat().st_mtime < ws.audio_wav.stat().st_mtime:
+            block = SAMPLE_RATE // OVERVIEW_RATE
+            levels = []
+            with _open(ws) as w:
+                while frames := w.readframes(SAMPLE_RATE * 60):
+                    data = np.abs(np.frombuffer(frames, dtype="<i2").astype(np.int32))
+                    whole = len(data) // block * block
+                    loudest = data[:whole].reshape(-1, block).max(axis=1)
+                    if whole < len(data):
+                        loudest = np.append(loudest, data[whole:].max())
+                    # Rounded up, so a sound that's there never shows as silence.
+                    levels.append(np.minimum(255, (loudest * 255 + 32767) // 32768).astype(np.uint8))
+            tmp = ws.peaks_u8.with_name("peaks.tmp.u8")
+            (np.concatenate(levels) if levels else np.zeros(0, np.uint8)).tofile(tmp)
+            os.replace(tmp, ws.peaks_u8)
+    return np.fromfile(ws.peaks_u8, dtype=np.uint8)
 
 
 def peaks(ws: Workspace, start_s: float, end_s: float, count: int) -> list[float]:
     """How loud the soundtrack is across `count` equal parts of `start_s` to `end_s`, from 0 to 1: the loudest
-    sample in each, for drawing its waveform. Over a long stretch (zoomed out) each part's loudness is taken from
-    its first stretch of samples, so it stays quick; past the end of the soundtrack it's 0."""
-    with _open(ws) as w:
-        total = w.getnframes()
-        first = max(0, round(start_s * SAMPLE_RATE))
-        span = max(0, round(end_s * SAMPLE_RATE) - first)
-        if count <= 0 or span == 0:
-            return [0.0] * max(0, count)
-        per = span / count
-        found = []
-        if span <= FULL_READ_SAMPLES:
-            w.setpos(min(first, total))
-            data = np.abs(np.frombuffer(w.readframes(span), dtype="<i2").astype(np.int32))
-            for i in range(count):
-                part = data[int(i * per) : max(int(i * per) + 1, int((i + 1) * per))]
-                found.append(int(part.max()) if part.size else 0)
-        else:
-            chunk = max(1, min(int(per), FULL_READ_SAMPLES // count))
-            for i in range(count):
-                at = first + int(i * per)
-                if at >= total:
-                    found.append(0)
-                    continue
-                w.setpos(at)
-                part = np.frombuffer(w.readframes(chunk), dtype="<i2")
-                found.append(int(np.abs(part.astype(np.int32)).max()) if part.size else 0)
-    return [round(min(1.0, v / 32768), 3) for v in found]
+    sound in each, for drawing its waveform; past the end of the soundtrack it's 0. From the overview, unless the
+    parts are shorter than its readings (zoomed right in), when that short stretch's own samples are read."""
+    span = end_s - start_s
+    if count <= 0 or span <= 0:
+        return [0.0] * max(0, count)
+    if span * OVERVIEW_RATE >= count:
+        levels, rate, scale = overview(ws), OVERVIEW_RATE, 255
+        offset = start_s * rate  # where start_s is in the readings
+    else:  # shorter than count / 50 seconds: at most 80 s, a couple of MB of samples
+        with _open(ws) as w:
+            first = min(w.getnframes(), max(0, int(start_s * SAMPLE_RATE)))
+            w.setpos(first)
+            samples = np.frombuffer(w.readframes(int(np.ceil(span * SAMPLE_RATE)) + 1), dtype="<i2")
+        levels, rate, scale = np.abs(samples.astype(np.int32)), SAMPLE_RATE, 32768
+        offset = start_s * rate - first
+    per = span * rate / count
+    found = []
+    for i in range(count):
+        a = max(0, int(offset + i * per))
+        part = levels[a : max(a + 1, int(np.ceil(offset + (i + 1) * per)))]
+        found.append(round(min(1.0, int(part.max()) / scale), 3) if part.size else 0.0)
+    return found
 
 
 def _open(ws: Workspace) -> wave.Wave_read:

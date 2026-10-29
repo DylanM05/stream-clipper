@@ -201,12 +201,15 @@ def render_thumbnail(video: Path, t: float, out: Path) -> None:
 
 
 def render_frame(video: Path, t: float, out: Path, height: int = 72) -> None:
-    """A small still for the editor's timeline. The editor asks for several at once, so each is written under a
-    name of its own until it's done."""
+    """A small still for the editor's timeline, from the keyframe at or before `t` (the preview has one every 2 s),
+    which needs no decoding up to `t` and is close enough for a strip of stills. One thread, so a few at once don't
+    take the server's CPU. The editor asks for several at once, so each is written under a name of its own until
+    it's done."""
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(f"{out.stem}.{uuid.uuid4().hex}.tmp.jpg")
     try:
-        ffmpeg.run(["-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1", "-vf", f"scale=-2:{height}", "-q:v", "6", str(tmp)])
+        ffmpeg.run(["-threads", "1", "-noaccurate_seek", "-ss", f"{t:.3f}", "-i", str(video), "-an", "-sn", "-frames:v", "1",
+                    "-vf", f"scale=-2:{height}", "-q:v", "6", str(tmp)])
         if not tmp.exists():  # past the end of the video: ffmpeg finds no frame, and says so only in its log
             raise ffmpeg.FFmpegError(f"No frame at {t:.1f} s")
         tmp.replace(out)

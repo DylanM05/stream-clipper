@@ -21,6 +21,8 @@ const LANES_H = GRIP_H + FILM_H + WAVE_H + TEXT_H;
 const SNAP_PX = 8;
 const TILE_W = Math.round((FILM_H * 16) / 9);
 const WORDS_SPAN_S = 600; // words are fetched once the view is this short or shorter
+const KEYFRAME_S = 2; // the preview copy has a keyframe every 2 s, and a still comes from the one at or before its time
+const SETTLE_MS = 250; // stills are asked for once the view has stayed put this long
 const WORD_PX_PER_S = 25; // and shown instead of whole lines from this zoom
 const MAX_BLOCKS = 800;
 const WAVE_IN = "#a78bfa"; // violet-400: the parts that stay
@@ -108,6 +110,7 @@ export function Timeline(props: {
   const visibleWords = useMemo(() => words.filter((w) => w.end > view.from && w.start < view.to), [words, view.from, view.to]);
   const showWords = pps >= WORD_PX_PER_S && visibleWords.length > 0;
   const peaks = usePeaks(props.vodId, view, length, width);
+  const settled = useSettled(view, SETTLE_MS);
 
   // --- Snapping, to the playhead, the clip's ends and cuts, and the transcript's lines and words ---
 
@@ -253,7 +256,7 @@ export function Timeline(props: {
           <>
             <Ruler view={view} width={width} />
             <div className="absolute inset-x-0" style={{ top: RULER_H + GRIP_H, height: FILM_H }}>
-              <Filmstrip vodId={props.vodId} view={view} width={width} length={length} />
+              <Filmstrip vodId={props.vodId} view={view} settled={settled} width={width} length={length} />
             </div>
             <div className="absolute inset-x-0" style={{ top: RULER_H + GRIP_H + FILM_H, height: WAVE_H }}>
               <Waveform peaks={peaks} view={view} width={width} geometry={g} />
@@ -447,12 +450,26 @@ const Ruler = memo(function Ruler({ view, width }: { view: View; width: number }
   );
 });
 
-const Filmstrip = memo(function Filmstrip({ vodId, view, width, length }: { vodId: number; view: View; width: number; length: number }) {
+/** The view once it's stayed put for `ms`, so things that cost a request each wait for zooming and panning to stop. */
+function useSettled(view: View, ms: number): View {
+  const [settled, setSettled] = useState(view);
+  useEffect(() => {
+    const timer = setTimeout(() => setSettled(view), ms);
+    return () => clearTimeout(timer);
+  }, [view, ms]);
+  return settled;
+}
+
+/** Stills along the stream. Which ones is worked out from the `settled` view, so zooming and panning don't ask for
+ * dozens on the way; they're placed by the live view, so they move with it meanwhile. */
+const Filmstrip = memo(function Filmstrip(props: { vodId: number; view: View; settled: View; width: number; length: number }) {
+  const { vodId, view, settled, width, length } = props;
   const pps = width / (view.to - view.from);
-  // Round steps, so panning and zooming back reuse stills already fetched.
-  const step = stepAtLeast(Math.max(0.5, TILE_W / pps));
+  // Round steps (and never closer than the keyframes, which is all a still can show), so panning and zooming back
+  // reuse stills already fetched.
+  const step = stepAtLeast(Math.max(KEYFRAME_S, TILE_W / (width / (settled.to - settled.from))));
   const tiles = [];
-  for (let k = Math.floor(view.from / step); k * step < Math.min(view.to, length); k++) {
+  for (let k = Math.floor(settled.from / step); k * step < Math.min(settled.to, length); k++) {
     const t = k * step;
     tiles.push(
       <img
@@ -460,6 +477,7 @@ const Filmstrip = memo(function Filmstrip({ vodId, view, width, length }: { vodI
         src={media.frame(vodId, t)}
         alt=""
         draggable={false}
+        decoding="async"
         onError={(e) => (e.currentTarget.style.visibility = "hidden")}
         className="absolute top-0 h-full object-cover"
         style={{ left: (t - view.from) * pps, width: Math.max(TILE_W, step * pps) }}

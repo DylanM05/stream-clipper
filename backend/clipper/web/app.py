@@ -1,5 +1,6 @@
 """JSON API for the review app, plus media streaming and the built phone app."""
 
+import asyncio
 import gzip
 import html
 import ipaddress
@@ -8,7 +9,9 @@ import logging
 import mimetypes
 import re
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
@@ -29,7 +32,6 @@ from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
     get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, utcnow,
 )
-from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
@@ -517,15 +519,42 @@ def file_name(title: str) -> str:
     return " ".join(name.split()).strip(" .") or "clip"
 
 
-@lru_cache(maxsize=4)
-def _transcript(path: str, _modified: float) -> Transcript:
-    """A stream's transcript, kept parsed while the file stays the same: a long stream's takes a moment to read,
-    and the editor asks for parts of it as it pans."""
-    return Transcript.model_validate_json(Path(path).read_text(encoding="utf-8"))
+# A transcript line, light to keep: start, end, text, and its words as (start, end, text).
+TranscriptLine = tuple[float, float, str, tuple[tuple[float, float, str], ...]]
 
 
-def load_transcript(path: Path) -> Transcript:
-    return _transcript(str(path), path.stat().st_mtime)
+@lru_cache(maxsize=2)
+def _transcript_lines(path: str, _modified: float) -> tuple[TranscriptLine, ...]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return tuple(
+        (round(seg["start"], 2), round(seg["end"], 2), seg["text"].strip(),
+         tuple((round(w["start"], 2), round(w["end"], 2), w["text"].strip()) for w in seg.get("words") or () if w["text"].strip()))
+        for seg in data["segments"] if seg["text"].strip()
+    )
+
+
+_transcript_lock = threading.Lock()
+
+
+def transcript_lines(path: Path) -> tuple[TranscriptLine, ...]:
+    """A stream's transcript lines, kept while the file stays the same: the editor asks for parts of a long one as it
+    pans. Read as plain JSON, which is quicker and smaller than the full models, and only once at a time, so the
+    editor's first requests don't each parse it."""
+    with _transcript_lock:
+        return _transcript_lines(str(path), path.stat().st_mtime)
+
+
+FRAME_JOBS = 2  # stills made at once for the editor's timeline; the rest wait their turn
+
+
+def packed(request: Request, data) -> Response:
+    """JSON, compressed when the browser takes that and it's worth it: the editor's transcript and waveform add up
+    on a slow connection."""
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(body) > 2000 and "gzip" in request.headers.get("accept-encoding", ""):
+        return Response(gzip.compress(body, 5), media_type="application/json",
+                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(body, media_type="application/json")
 
 
 def _size(path: str) -> int:
@@ -556,6 +585,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await call_next(request)
 
     # --- Helpers ---
+
+    def looked_up(read):
+        """What `read` finds in the database, with the connection given back straight away. Media can take minutes to
+        send (a preview streams for as long as it's watched): holding a connection all that time left none for the
+        rest of the app once a few were streaming, and every request waited (30 s, then failed)."""
+        with Session(engine) as s:
+            return read(s)
+
+    # Stills for the timeline are made on threads of their own, a couple at a time, so a burst of them (zooming the
+    # timeline asks for dozens) can't take the threads every other request needs.
+    frame_pool = ThreadPoolExecutor(max_workers=FRAME_JOBS, thread_name_prefix="frames")
+    frame_slots = asyncio.Semaphore(FRAME_JOBS)
 
     def workspace(vod: Vod) -> Workspace:
         if not vod.workspace:
@@ -1525,8 +1566,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
 
     @app.get("/media/upload-jobs/{job_id}/screenshot.png")
-    def upload_screenshot(job_id: int, s: Session = Depends(db)) -> FileResponse:
-        job = found(s, UploadJob, job_id, "upload")
+    def upload_screenshot(job_id: int) -> FileResponse:
+        job = looked_up(lambda s: found(s, UploadJob, job_id, "upload"))
         if not job.screenshot or not Path(job.screenshot).exists():
             raise HTTPException(404, "No screenshot")
         return FileResponse(job.screenshot, media_type="image/png")
@@ -1603,11 +1644,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace(vod)
         if clip.kind == "whole" or not ws.transcript_json.exists():
             return []
-        transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
         return [
-            Line(start=seg.start, end=seg.end, text=seg.text)
-            for seg in transcript.segments
-            if seg.text and seg.end > clip.start - 60 and seg.start < clip.end + 60
+            Line(start=a, end=b, text=text)
+            for a, b, text, _ in transcript_lines(ws.transcript_json)
+            if b > clip.start - 60 and a < clip.end + 60
         ]
 
     # --- The editor: a stream's transcript, waveform and frames, and clips made from any part of it ---
@@ -1615,42 +1655,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/vods/{vod_id}/transcript")
     def vod_transcript(
         vod_id: int, request: Request, start: float | None = None, end: float | None = None, words: bool = False,
-        s: Session = Depends(db),
     ) -> Response:
         """The stream's transcript lines, all of them or those between `start` and `end`, with each word's timing
         as [start, end, text] if `words` (to snap cuts to). Compressed when the browser takes that: all of a long
         stream's lines come to several hundred KB."""
-        vod = found(s, Vod, vod_id, "video")
-        ws = workspace(vod)
+        ws = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video")))
         lo = float("-inf") if start is None else start
         hi = float("inf") if end is None else end
         lines = []
         if ws.transcript_json.exists():
-            for seg in load_transcript(ws.transcript_json).segments:
-                if seg.text.strip() and seg.end > lo and seg.start < hi:
-                    line = {"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip()}
-                    if words:
-                        line["words"] = [[round(w.start, 2), round(w.end, 2), w.text.strip()] for w in seg.words if w.text.strip()]
-                    lines.append(line)
-        body = json.dumps(lines, ensure_ascii=False, separators=(",", ":")).encode()
-        if len(body) > 2000 and "gzip" in request.headers.get("accept-encoding", ""):
-            return Response(gzip.compress(body, 5), media_type="application/json",
-                            headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
-        return Response(body, media_type="application/json")
+            for a, b, text, said in transcript_lines(ws.transcript_json):
+                if b > lo and a < hi:
+                    lines.append({"start": a, "end": b, "text": text, **({"words": said} if words else {})})
+        return packed(request, lines)
 
     @app.get("/api/vods/{vod_id}/peaks")
     def vod_peaks(
-        vod_id: int, start: float = Query(ge=0), end: float = Query(gt=0), count: int = Query(default=1000, ge=1, le=4000),
-        s: Session = Depends(db),
-    ) -> dict:
+        vod_id: int, request: Request, start: float = Query(ge=0), end: float = Query(gt=0),
+        count: int = Query(default=1000, ge=1, le=4000),
+    ) -> Response:
         """How loud the stream is across `count` parts of `start` to `end` (0 to 1), to draw its waveform."""
-        vod = found(s, Vod, vod_id, "video")
-        ws = workspace(vod)
+        ws = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video")))
         if end <= start:
             raise HTTPException(422, "The end has to be after the start")
         if not ws.audio_wav.exists():
             raise HTTPException(404, "The stream's soundtrack isn't there: it's deleted with its video files")
-        return {"start": start, "end": end, "peaks": audio.peaks(ws, start, end, count)}
+        return packed(request, {"start": start, "end": end, "peaks": audio.peaks(ws, start, end, count)})
 
     @app.get("/api/vods/{vod_id}/new-clip")
     def new_clip_info(vod_id: int, s: Session = Depends(db)) -> NewClipInfo:
@@ -1788,43 +1818,46 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- Media ---
 
     @app.get("/media/clips/{clip_id}/thumbnail.jpg")
-    def clip_thumbnail(clip_id: int, download: bool = False, s: Session = Depends(db)) -> FileResponse:
-        clip, _ = get_clip(s, clip_id)
+    def clip_thumbnail(clip_id: int, download: bool = False) -> FileResponse:
+        clip, _ = looked_up(lambda s: get_clip(s, clip_id))
         if not clip.thumbnail_path or not Path(clip.thumbnail_path).is_file():
             raise HTTPException(404, "No thumbnail")
         name = f"{file_name(clip.title)} (thumbnail).jpg"
         return FileResponse(clip.thumbnail_path, media_type="image/jpeg", filename=name if download else None)
 
     @app.get("/media/vods/{vod_id}/proxy.mp4")
-    def proxy(vod_id: int, s: Session = Depends(db)) -> FileResponse:
-        vod = s.get(Vod, vod_id)
-        if not vod:
-            raise HTTPException(404, "No such video")
-        path = workspace(vod).proxy_mp4
+    def proxy(vod_id: int) -> FileResponse:
+        path = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video"))).proxy_mp4
         if not path.exists():
             raise HTTPException(404, "The preview copy isn't ready yet")
         return FileResponse(path, media_type="video/mp4")
 
     @app.get("/media/vods/{vod_id}/frame.jpg")
-    def vod_frame(vod_id: int, t: float = Query(ge=0), s: Session = Depends(db)) -> FileResponse:
+    async def vod_frame(vod_id: int, request: Request, t: float = Query(ge=0)) -> Response:
         """A small still of the stream at `t`, to the tenth of a second, for the editor's timeline. Kept once
-        made, and deleted with the stream's files."""
-        vod = found(s, Vod, vod_id, "video")
+        made, and deleted with the stream's files. One the browser stopped wanting while it waited (the timeline
+        moved on) isn't made."""
+        vod = await run_in_threadpool(looked_up, lambda s: found(s, Vod, vod_id, "video"))
         ws = workspace(vod)
         if not ws.proxy_mp4.exists():
             raise HTTPException(404, "The preview copy isn't ready yet")
         tenths = round(min(t, max(0.0, vod.duration - 0.5) if vod.duration else t) * 10)
         out = ws.frames_dir / f"{tenths}.jpg"
         if not out.exists():
-            try:
-                render.render_frame(ws.proxy_mp4, tenths / 10, out)
-            except ffmpeg.FFmpegError as e:
-                raise HTTPException(404, "No frame there") from e
+            async with frame_slots:
+                if await request.is_disconnected():
+                    return Response(status_code=204)
+                if not out.exists():
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(
+                            frame_pool, render.render_frame, ws.proxy_mp4, tenths / 10, out)
+                    except ffmpeg.FFmpegError as e:
+                        raise HTTPException(404, "No frame there") from e
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800, immutable"})
 
     @app.get("/media/clips/{clip_id}/thumb.jpg")
-    def thumbnail(clip_id: int, s: Session = Depends(db)) -> FileResponse:
-        clip, vod = get_clip(s, clip_id)
+    def thumbnail(clip_id: int) -> FileResponse:
+        clip, vod = looked_up(lambda s: get_clip(s, clip_id))
         ws = workspace(vod)
         t = clip.start + min(3.0, (clip.end - clip.start) * 0.2)
         out = ws.thumbs_dir / f"{clip.key}-{int(t * 10)}.jpg"
@@ -1834,8 +1867,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/media/clips/{clip_id}/{which}.mp4")
-    def clip_file(clip_id: int, which: str, download: bool = False, s: Session = Depends(db)) -> FileResponse:
-        clip, _ = get_clip(s, clip_id)
+    def clip_file(clip_id: int, which: str, download: bool = False) -> FileResponse:
+        clip, _ = looked_up(lambda s: get_clip(s, clip_id))
         path = {"video": clip.video_path, "short": clip.short_path}.get(which)
         if not path or not Path(path).exists():
             raise HTTPException(404, "Not rendered yet")

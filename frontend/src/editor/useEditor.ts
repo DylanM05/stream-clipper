@@ -181,11 +181,19 @@ export function useEditor(source: Source, desktop: boolean) {
     return () => cancelAnimationFrame(frame);
   }, [playing]);
 
+  // Dragging asks for a new spot many times a second. While the video is still getting to the last one, only the
+  // newest is kept and gone to once it's there: each seek can fetch from the server, and on a slow connection
+  // they'd pile up.
+  const pendingSeek = useRef<number | null>(null);
+  const wanted = useRef(0); // the last spot asked for
   const seek = useCallback((t: number) => {
     const v = video.current;
     const to = clamp(t, 0, length);
+    wanted.current = to;
     setNow(to);
-    if (v) v.currentTime = to;
+    if (!v) return;
+    if (v.seeking) pendingSeek.current = to;
+    else v.currentTime = to;
   }, [length]);
   const play = () => void video.current?.play();
   const pause = () => video.current?.pause();
@@ -204,17 +212,21 @@ export function useEditor(source: Source, desktop: boolean) {
       play();
     } else pause();
   };
+  /** Where the playhead is, or is on its way to: steps pressed while the video is still seeking count from there. */
+  const position = () => {
+    const v = video.current;
+    return v && !v.seeking && pendingSeek.current === null ? v.currentTime : wanted.current;
+  };
   // Jump back or ahead while watching. It keeps playing, even past the end of a preview.
   const skip = (seconds: number) => {
-    const v = video.current;
-    if (!v) return;
+    if (!video.current) return;
     stopAt.current = null;
-    seek(v.currentTime + seconds);
+    seek(position() + seconds);
   };
   /** Frame by frame, paused. Counted in whole frames, so stepping doesn't drift. */
   const step = (frames: number) => {
     pause();
-    seek((Math.round((video.current?.currentTime ?? now) * FPS) + frames) / FPS);
+    seek((Math.round(position() * FPS) + frames) / FPS);
   };
   const setRate = (r: number) => {
     setRateState(r);
@@ -248,7 +260,14 @@ export function useEditor(source: Source, desktop: boolean) {
     },
     onPlay: () => setPlaying(true),
     onPause: () => setPlaying(false),
-    onSeeked: () => video.current && setNow(video.current.currentTime),
+    onSeeked: () => {
+      const v = video.current;
+      if (!v) return;
+      const next = pendingSeek.current;
+      pendingSeek.current = null;
+      if (next !== null && Math.abs(next - v.currentTime) > 0.001) v.currentTime = next;
+      else setNow(v.currentTime);
+    },
     onError: () => setVideoError(true),
   };
 

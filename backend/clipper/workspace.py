@@ -80,6 +80,11 @@ class Workspace:
         return self.root / "thumbs"
 
     @property
+    def peaks_u8(self) -> Path:
+        """The soundtrack's loudness, 50 readings a second, for the editor's waveform (audio.overview)."""
+        return self.root / "peaks.u8"
+
+    @property
     def frames_dir(self) -> Path:
         """Stills for the editor's timeline, made from the preview copy as they're asked for."""
         return self.thumbs_dir / "frames"
@@ -94,7 +99,7 @@ class Workspace:
     def delete_media(self) -> int:
         """Delete the big files (source, preview, audio, renders, the editor's stills) and return how many bytes that freed. The
         transcript and Claude's picks stay, and so does a source that was added from elsewhere by its path."""
-        targets = [self.proxy_mp4, self.audio_wav, self.clips_dir, self.frames_dir,
+        targets = [self.proxy_mp4, self.audio_wav, self.peaks_u8, self.clips_dir, self.frames_dir,
                    *self.root.glob("audio.tmp.*"), *self.root.glob("proxy.tmp.*")]
         if self.meta_json.exists() and self.source.resolve().parent == self.root.resolve():
             targets += self.root.glob("source.*")

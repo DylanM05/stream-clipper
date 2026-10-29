@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import os
 import shutil
 import wave
 from pathlib import Path
@@ -143,17 +144,37 @@ def write_wav(path: Path, samples: np.ndarray) -> None:
         w.writeframes(samples.astype("<i2").tobytes())
 
 
-def test_the_waveform_is_the_loudest_sample_of_each_part(tmp_path, monkeypatch):
+def test_the_waveform_is_the_loudest_sound_of_each_part(tmp_path):
     ws = Workspace.open(tmp_path, "vod")
     sr = audio.SAMPLE_RATE
     samples = np.zeros(sr * 4, dtype=np.int16)
     samples[sr : 2 * sr] = 16384  # half volume in the second second
     samples[3 * sr + 10] = -32768  # one full-volume spike in the fourth
+    samples[2 * sr + 5] = 3  # a whisper: rounded up, so it isn't silence
     write_wav(ws.audio_wav, samples)
-    assert audio.peaks(ws, 0, 4, 4) == [0.0, 0.5, 0.0, 1.0]
+    # From the overview, a byte per fiftieth of a second.
+    assert audio.peaks(ws, 0, 4, 4) == pytest.approx([0.0, 0.5, 0.004, 1.0], abs=0.003)
     assert audio.peaks(ws, 3, 6, 3) == [1.0, 0.0, 0.0]  # past the end it's quiet
-    monkeypatch.setattr(audio, "FULL_READ_SAMPLES", 100)  # sampled, as for a long stretch
-    assert audio.peaks(ws, 0, 4, 4)[:2] == [0.0, 0.5]
+    # Zoomed right in, from the samples themselves.
+    assert audio.peaks(ws, 0.95, 1.05, 100)[:5] == [0.0] * 5 and audio.peaks(ws, 0.95, 1.05, 100)[-5:] == [0.5] * 5
+    # 3.0005 s is sample 8 of the fourth second, so the spike (sample 10) is in the second of these 2-sample parts.
+    assert audio.peaks(ws, 3.0005, 3.001, 4) == [0.0, 1.0, 0.0, 0.0]
+
+
+def test_the_waveforms_overview_is_made_once_kept_small_and_made_again_for_a_new_soundtrack(tmp_path):
+    ws = Workspace.open(tmp_path, "vod")
+    write_wav(ws.audio_wav, np.full(audio.SAMPLE_RATE * 60, 8192, dtype=np.int16))
+    audio.peaks(ws, 0, 60, 10)
+    assert ws.peaks_u8.stat().st_size == 60 * audio.OVERVIEW_RATE  # a byte a reading
+    made = ws.peaks_u8.stat().st_mtime_ns
+    audio.peaks(ws, 0, 30, 10)
+    assert ws.peaks_u8.stat().st_mtime_ns == made  # kept
+    os.utime(ws.audio_wav, ns=(made + 10**9, made + 10**9))  # extracted again (timing-check --fix does)
+    write_wav(ws.audio_wav, np.full(audio.SAMPLE_RATE * 60, 32767, dtype=np.int16))
+    os.utime(ws.audio_wav, ns=(made + 10**9, made + 10**9))
+    assert audio.peaks(ws, 0, 60, 2) == [1.0, 1.0]
+    ws.delete_media()
+    assert not ws.peaks_u8.exists()
 
 
 # --- API -----------------------------------------------------------------------------------
@@ -278,8 +299,8 @@ def test_the_waveform_from_the_api(client, settings):
     vod_id, ws = add_vod(settings)
     assert client.get(f"/api/vods/{vod_id}/peaks", params={"start": 0, "end": 2, "count": 2}).status_code == 404
     write_wav(ws.audio_wav, np.full(audio.SAMPLE_RATE * 2, 8192, dtype=np.int16))
-    assert client.get(f"/api/vods/{vod_id}/peaks", params={"start": 0, "end": 2, "count": 2}).json() == {
-        "start": 0, "end": 2, "peaks": [0.25, 0.25]}
+    waveform = client.get(f"/api/vods/{vod_id}/peaks", params={"start": 0, "end": 2, "count": 2}).json()
+    assert waveform["start"] == 0 and waveform["end"] == 2 and waveform["peaks"] == pytest.approx([0.25, 0.25], abs=0.003)
     assert client.get(f"/api/vods/{vod_id}/peaks", params={"start": 2, "end": 1}).status_code == 422
 
 
