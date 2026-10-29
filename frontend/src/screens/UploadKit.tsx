@@ -217,10 +217,12 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   const toast = useToast();
   const { data: jobs, refresh } = usePoll(() => api.uploads(clip.id), 4000, clip.id);
   const [visibility, setVisibility] = useState<Visibility>(() => loadSetting("clipper.uploadVisibility", "public"));
-  // Where the channel's uploads go, unless something else is picked for this upload.
+  // Where the clip's uploads go (its show's choice, or else its channel's), unless something else is picked for this
+  // upload.
   const [picked, setPicked] = useState<Sites | null>(null);
   useEffect(() => setPicked(null), [destination?.id]);
-  const where: Sites = picked ?? (destination ? sitesOf(destination) : "youtube");
+  const where: Sites = picked ?? clip.upload_to ?? (destination ? sitesOf(destination) : "youtube");
+  const rumbleToo = !!destination?.rumble || (clip.upload_to ?? "youtube") !== "youtube";
   const sites: Site[] = where === "both" ? ["youtube", "rumble"] : [where];
   // The sites a file can start going to: not ones it's already queued for or uploading to.
   const startable = (which: UploadJob["which"]) =>
@@ -228,7 +230,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   const ready = clip.status === "rendered" || clip.status === "uploaded";
   const toText = (which: UploadJob["which"]) => {
     const to = startable(which);
-    return destination?.rumble && to.length ? ` to ${to.map((s) => SITE_LABEL[s]).join(" and ")}` : "";
+    return rumbleToo && to.length ? ` to ${to.map((s) => SITE_LABEL[s]).join(" and ")}` : "";
   };
 
   const run = async (work: () => Promise<unknown>, done?: string) => {
@@ -272,7 +274,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
         </>
       )}
       {destination?.api_error && <p className="text-xs text-red-300">{destination.api_error}</p>}
-      {destination?.rumble && (
+      {rumbleToo && (
         <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
           {(Object.keys(WHERE_LABEL) as Sites[]).map((w) => (
             <button

@@ -402,8 +402,8 @@ function RumbleOption({ destination, onChanged }: { destination: Destination; on
         </>
       )}
       <p className="text-xs text-zinc-500">
-        Shows that upload by themselves post there. On a clip's Upload page it's what's picked to start with, and you can
-        pick another for that upload.
+        Shows post there unless they pick otherwise for their clips or full episodes. On a clip's Upload page it's what's
+        picked to start with, and you can pick another for that upload.
       </p>
     </div>
   );
@@ -441,6 +441,8 @@ const BLANK: ShowFields = {
   episode_destination_id: null,
   clip_playlist_id: "",
   episode_playlist_id: "",
+  clip_sites: "",
+  episode_sites: "",
   max_chapters: 5,
   max_shorts: 5,
   auto_episode: "review",
@@ -571,6 +573,12 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               value={fields.episode_playlist_id}
               onChange={(episode_playlist_id) => set({ episode_playlist_id })}
             />
+            <SitesChoice
+              channel={destinations?.find((d) => d.id === fields.episode_destination_id)}
+              value={fields.episode_sites}
+              onChange={(episode_sites) => set({ episode_sites })}
+              what="full episodes"
+            />
           </Field>
         )}
         {hasClips(fields.mode) && (
@@ -586,6 +594,12 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               onChange={(clip_playlist_id) => set({ clip_playlist_id })}
             />
             {fields.clip_playlist_id && <p className="mt-2 text-xs text-zinc-500">Shorts never go in a playlist.</p>}
+            <SitesChoice
+              channel={destinations?.find((d) => d.id === fields.clip_destination_id)}
+              value={fields.clip_sites}
+              onChange={(clip_sites) => set({ clip_sites })}
+              what="clips"
+            />
           </Field>
         )}
       </div>
@@ -785,6 +799,39 @@ const GAP_LABEL: Record<string, string> = { "0": "Off", "1": "1h", "2": "2h", "3
 const autoUploads = (f: ShowFields) =>
   (hasEpisode(f.mode) && f.auto_episode === "upload") ||
   (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload" || f.auto_upload_score > 0));
+
+/**
+ * After a show's channel: whether its uploads there go to YouTube, Rumble or both. Until it's picked for the show,
+ * it goes by the channel's own setting (under YouTube channels), shown as what's picked.
+ */
+function SitesChoice(props: { channel?: Destination; value: Sites | ""; onChange: (v: Sites | "") => void; what: string }) {
+  const { channel, value } = props;
+  if (!channel) return null;
+  const sites = value || sitesOf(channel);
+  return (
+    <div className="mt-2 space-y-1.5">
+      <span className="block text-xs text-zinc-500">Post its {props.what} on</span>
+      <Segmented options={SITES_LABEL} value={sites} onChange={props.onChange} />
+      <p className="text-xs text-zinc-500">
+        {value ? (
+          <>
+            Picked for this show.{" "}
+            <button type="button" onClick={() => props.onChange("")} className="font-semibold text-violet-300">
+              Go by the channel's setting
+            </button>
+          </>
+        ) : (
+          "As the channel is set. Pick one to choose for this show."
+        )}
+      </p>
+      {sites !== "youtube" && (
+        <p className="text-xs text-zinc-500">
+          On Rumble, they go to the account the upload browser is signed in to, in the channel's category ({channel.rumble_category}).
+        </p>
+      )}
+    </div>
+  );
+}
 
 function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
   const keys = Object.keys(props.options) as T[];

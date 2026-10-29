@@ -5,6 +5,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { api, media, type Line } from "../api";
 import { cn } from "../lib";
+import { startAt, useClock, useSettled, type Clock } from "./clock";
 import {
   clamp, cutAt, keptLength, MIN_CLIP_S, round2, shifted, stepAtLeast, timecode, tidy, type Geometry, type Range,
 } from "./edit";
@@ -21,10 +22,17 @@ const LANES_H = GRIP_H + FILM_H + WAVE_H + TEXT_H;
 const SNAP_PX = 8;
 const TILE_W = Math.round((FILM_H * 16) / 9);
 const WORDS_SPAN_S = 600; // words are fetched once the view is this short or shorter
-const KEYFRAME_S = 2; // the preview copy has a keyframe every 2 s, and a still comes from the one at or before its time
+// Seconds between stills. Never under 2 (the preview has a keyframe every 2 s, which is all a still can show), and from
+// 10 up, multiples of 10: the worker makes a still every 10 s of each stream in one pass, so a zoomed-out timeline
+// only asks for ones that are there already.
+const STILL_STEPS = [2, 4, 10, 20, 30, 60, 120, 300, 600, 1200, 1800, 3600, 7200];
 const SETTLE_MS = 250; // stills are asked for once the view has stayed put this long
 const WORD_PX_PER_S = 25; // and shown instead of whole lines from this zoom
-const MAX_BLOCKS = 800;
+// The transcript lane shows lines or words only while there's room for them, a few pixels each; zoomed out further,
+// hundreds of slivers too thin to read only cost the browser time on every frame of a zoom.
+const MIN_BLOCK_PX = 6;
+const PEEK_W = 128; // the still shown over the ruler, of the moment under the pointer
+const PEEK_STEP_S = 10; // the worker's every-10-s stills, which are there already
 const WAVE_IN = "#a78bfa"; // violet-400: the parts that stay
 const WAVE_OUT = "#52525b"; // zinc-600: outside the clip
 const WAVE_CUT = "rgba(248,113,113,0.35)"; // red-400, faint: cut out
@@ -48,7 +56,7 @@ export function Timeline(props: {
   onZoom: (factor: number, anchor: number) => void;
   geometry: Geometry;
   editable: boolean;
-  now: number;
+  clock: Clock; // the playhead's time
   lines: Line[];
   selection: Range | null;
   onSelection: (r: Range | null) => void;
@@ -60,14 +68,14 @@ export function Timeline(props: {
   live: { begin: () => void; move: (g: Geometry) => void; end: () => void };
   onEdge: (edge: "start" | "end") => void; // the last edge moved, which , and . nudge
 }) {
-  const { view, geometry: g, length, now } = props;
+  const { view, geometry: g, length, clock } = props;
   const root = useRef<HTMLDivElement>(null);
   const [width, setWidth] = useState(0);
   const span = view.to - view.from;
   const pps = width / span || 1; // pixels per second
   const x = (t: number) => (t - view.from) * pps;
   const timeAt = (clientX: number) => {
-    const r = root.current!.getBoundingClientRect();
+    const r = (bounds.current ??= root.current!.getBoundingClientRect());
     return clamp(view.from + (clientX - r.left) / pps, 0, length);
   };
 
@@ -111,10 +119,13 @@ export function Timeline(props: {
   const showWords = pps >= WORD_PX_PER_S && visibleWords.length > 0;
   const peaks = usePeaks(props.vodId, view, length, width);
   const settled = useSettled(view, SETTLE_MS);
+  // Where the timeline is on the page, measured when the pointer comes onto it or presses, not on its every move.
+  const bounds = useRef<DOMRect | null>(null);
 
   // --- Snapping, to the playhead, the clip's ends and cuts, and the transcript's lines and words ---
 
   const [snapAt, setSnapAt] = useState<number | null>(null);
+  const [peek, setPeek] = useState<number | null>(null);
   const snap = (t: number, e: { altKey: boolean }, from: Geometry, skip: Skip = {}): number => {
     if (!props.snapOn || e.altKey) {
       setSnapAt(null);
@@ -126,7 +137,7 @@ export function Timeline(props: {
       const d = Math.abs(c - t);
       if (d < distance) [best, distance] = [c, d];
     };
-    consider(now);
+    consider(clock.get());
     if (!skip.start) consider(from.start);
     if (!skip.end) consider(from.end);
     from.cuts.forEach(([a, b], i) => i !== skip.cut && (consider(a), consider(b)));
@@ -141,6 +152,7 @@ export function Timeline(props: {
   const drag = useRef<Drag | null>(null);
   const onPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0) return;
+    bounds.current = root.current!.getBoundingClientRect();
     const hit = (e.target as HTMLElement).closest<HTMLElement>("[data-hit]");
     const what = hit?.dataset.hit ?? "lane";
     if (what === "cut-remove") return; // its own button
@@ -173,9 +185,17 @@ export function Timeline(props: {
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
     const d = drag.current;
-    if (!d) return;
+    if (!d) {
+      // Over the ruler, a still of the moment under the pointer, so you can see where you'd land.
+      const onRuler = !!(e.target as HTMLElement).closest("[data-hit=ruler]");
+      setPeek(onRuler ? timeAt(e.clientX) : null);
+      return;
+    }
     const t = timeAt(e.clientX);
-    if (d.kind === "scrub") props.onSeek(t);
+    if (d.kind === "scrub") {
+      setPeek(t);
+      props.onSeek(t);
+    }
     else if (d.kind === "start") {
       const next = tidy({ ...d.g0, start: clamp(snap(t, e, d.g0, { start: true }), 0, d.g0.end - MIN_CLIP_S) });
       props.live.move(next);
@@ -218,6 +238,7 @@ export function Timeline(props: {
     const d = drag.current;
     drag.current = null;
     setSnapAt(null);
+    if (d?.kind === "scrub") setPeek(null);
     if (!d) return;
     if (d.kind !== "scrub" && d.kind !== "select") props.live.end();
     if (d.kind === "select" && !d.moved) {
@@ -250,6 +271,8 @@ export function Timeline(props: {
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
+        onPointerEnter={() => (bounds.current = root.current!.getBoundingClientRect())}
+        onPointerLeave={() => !drag.current && setPeek(null)}
         onDoubleClick={onDoubleClick}
       >
         {width > 0 && (
@@ -262,7 +285,7 @@ export function Timeline(props: {
               <Waveform peaks={peaks} view={view} width={width} geometry={g} />
             </div>
             <div className="absolute inset-x-0" style={{ top: RULER_H + GRIP_H + FILM_H + WAVE_H, height: TEXT_H }}>
-              <TextLane blocks={showWords ? visibleWords : visibleLines} view={view} width={width} now={now} words={showWords} />
+              <LiveTextLane clock={clock} blocks={showWords ? visibleWords : visibleLines} view={view} width={width} words={showWords} />
             </div>
 
             {/* Outside the clip, dimmed */}
@@ -363,17 +386,39 @@ export function Timeline(props: {
               <div className="pointer-events-none absolute w-px border-l border-dashed border-amber-300" style={{ top: 0, height: RULER_H + LANES_H, left: x(snapAt) }} />
             )}
 
-            {/* The playhead */}
-            {now >= view.from && now <= view.to && (
-              <div className="pointer-events-none absolute top-0 w-0" style={{ left: x(now), height: RULER_H + LANES_H }}>
-                <div className="absolute -left-[5px] top-0 size-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-white" />
-                <div className="absolute -left-px top-0 h-full w-0.5 bg-white" />
-              </div>
-            )}
+            <Playhead clock={clock} view={view} pps={pps} />
+            {peek !== null && <Peek vodId={props.vodId} at={peek} left={x(peek)} width={width} length={length} />}
           </>
         )}
       </div>
-      <Overview length={length} view={view} geometry={g} now={now} onView={props.onView} />
+      <Overview length={length} view={view} geometry={g} clock={clock} onView={props.onView} />
+    </div>
+  );
+}
+
+/** The playhead: the one part of the timeline that moves every frame while playing, so the only part redrawn then. */
+function Playhead({ clock, view, pps }: { clock: Clock; view: View; pps: number }) {
+  const t = useClock(clock);
+  if (t < view.from || t > view.to) return null;
+  return (
+    <div className="pointer-events-none absolute top-0 w-0" style={{ left: (t - view.from) * pps, height: RULER_H + LANES_H }}>
+      <div className="absolute -left-[5px] top-0 size-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-white" />
+      <div className="absolute -left-px top-0 h-full w-0.5 bg-white" />
+    </div>
+  );
+}
+
+/** Over the ruler, where the pointer is: a still of that moment (the worker's, every 10 s) and its time. While
+ * scrubbing it's there at once, before the video gets there, which on a slow connection takes a moment. */
+function Peek({ vodId, at, left, width, length }: { vodId: number; at: number; left: number; width: number; length: number }) {
+  const still = Math.min(Math.floor(at / PEEK_STEP_S) * PEEK_STEP_S, Math.max(0, Math.floor((length - 1) / PEEK_STEP_S) * PEEK_STEP_S));
+  return (
+    <div
+      className="pointer-events-none absolute z-10 overflow-hidden rounded-md bg-black shadow-xl ring-1 ring-white/20"
+      style={{ top: RULER_H + 2, left: clamp(left - PEEK_W / 2, 0, Math.max(0, width - PEEK_W)), width: PEEK_W }}
+    >
+      <img src={media.frame(vodId, still)} alt="" className="block aspect-video w-full object-cover" />
+      <span className="block bg-black/80 py-0.5 text-center font-mono text-[11px] tabular-nums text-white">{timecode(at, 1)}</span>
     </div>
   );
 }
@@ -450,24 +495,14 @@ const Ruler = memo(function Ruler({ view, width }: { view: View; width: number }
   );
 });
 
-/** The view once it's stayed put for `ms`, so things that cost a request each wait for zooming and panning to stop. */
-function useSettled(view: View, ms: number): View {
-  const [settled, setSettled] = useState(view);
-  useEffect(() => {
-    const timer = setTimeout(() => setSettled(view), ms);
-    return () => clearTimeout(timer);
-  }, [view, ms]);
-  return settled;
-}
-
 /** Stills along the stream. Which ones is worked out from the `settled` view, so zooming and panning don't ask for
  * dozens on the way; they're placed by the live view, so they move with it meanwhile. */
 const Filmstrip = memo(function Filmstrip(props: { vodId: number; view: View; settled: View; width: number; length: number }) {
   const { vodId, view, settled, width, length } = props;
   const pps = width / (view.to - view.from);
-  // Round steps (and never closer than the keyframes, which is all a still can show), so panning and zooming back
-  // reuse stills already fetched.
-  const step = stepAtLeast(Math.max(KEYFRAME_S, TILE_W / (width / (settled.to - settled.from))));
+  // Round steps, so panning and zooming back reuse stills already fetched.
+  const wanted = TILE_W / (width / (settled.to - settled.from));
+  const step = STILL_STEPS.find((s) => s >= wanted) ?? STILL_STEPS[STILL_STEPS.length - 1];
   const tiles = [];
   for (let k = Math.floor(settled.from / step); k * step < Math.min(settled.to, length); k++) {
     const t = k * step;
@@ -521,10 +556,19 @@ function Waveform({ peaks, view, width, geometry }: { peaks: Peaks | null; view:
   return <canvas ref={canvas} className="block h-full w-full" />;
 }
 
-const TextLane = memo(function TextLane(props: { blocks: { start: number; end: number; text: string }[]; view: View; width: number; now: number; words: boolean }) {
+type Block = { start: number; end: number; text: string };
+
+/** The transcript lane, with the line (or word) being played picked out. Only that, not the playhead's every move,
+ * redraws it. */
+function LiveTextLane(props: { clock: Clock; blocks: Block[]; view: View; width: number; words: boolean }) {
+  const current = useClock(props.clock, (t) => startAt(props.blocks, t));
+  return <TextLane blocks={props.blocks} view={props.view} width={props.width} current={current} words={props.words} />;
+}
+
+const TextLane = memo(function TextLane(props: { blocks: Block[]; view: View; width: number; current: number; words: boolean }) {
   const { view, width } = props;
   const pps = width / (view.to - view.from);
-  if (props.blocks.length > MAX_BLOCKS) {
+  if (props.blocks.length * MIN_BLOCK_PX > width) {
     return <p className="px-2 pt-1.5 text-[10px] text-zinc-500">Zoom in to see the transcript here.</p>;
   }
   return (
@@ -532,7 +576,7 @@ const TextLane = memo(function TextLane(props: { blocks: { start: number; end: n
       {props.blocks.map((b) => {
         const left = (b.start - view.from) * pps;
         const w = Math.max(1, (b.end - b.start) * pps - 1);
-        const current = props.now >= b.start && props.now < b.end;
+        const current = b.start === props.current;
         return (
           <div
             key={`${b.start}-${b.end}`}
@@ -554,7 +598,7 @@ const TextLane = memo(function TextLane(props: { blocks: { start: number; end: n
 
 /** The whole stream, with where the clip is and the stretch in view. Drag the view's box to move it, or click to
  * go somewhere. */
-function Overview(props: { length: number; view: View; geometry: Geometry; now: number; onView: (v: View) => void }) {
+function Overview(props: { length: number; view: View; geometry: Geometry; clock: Clock; onView: (v: View) => void }) {
   const bar = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x0: number; v0: View } | null>(null);
   const { length, view, geometry: g } = props;
@@ -585,11 +629,16 @@ function Overview(props: { length: number; view: View; geometry: Geometry; now: 
       onPointerUp={() => (drag.current = null)}
     >
       <div className="absolute inset-y-0.5 rounded-sm bg-violet-500/70" style={{ left: pct(g.start), width: `max(2px, calc(${pct(g.end)} - ${pct(g.start)}))` }} />
-      <div className="absolute inset-y-0 w-px bg-white/80" style={{ left: pct(props.now) }} />
+      <OverviewPlayhead clock={props.clock} pct={pct} />
       <div
         className="absolute inset-y-0 rounded-sm border border-white/60 bg-white/10"
         style={{ left: pct(view.from), width: `max(4px, calc(${pct(view.to)} - ${pct(view.from)}))` }}
       />
     </div>
   );
+}
+
+function OverviewPlayhead({ clock, pct }: { clock: Clock; pct: (t: number) => string }) {
+  const t = useClock(clock);
+  return <div className="absolute inset-y-0 w-px bg-white/80" style={{ left: pct(t) }} />;
 }

@@ -8,10 +8,13 @@
 - `clipper channel-check <url>` shows what the worker sees on a watched channel.
 - `clipper rumble-upload-check` shows what Rumble's upload page asks for, in the upload browser.
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
+- `clipper deploy-wait` and `clipper deploy-done` let a deploy restart the worker between uploads (deploy/deploy.sh).
 """
 
 import json
 import logging
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -294,6 +297,63 @@ def timing_check(
                         typer.echo(f"      {clip.key}  {clip.title[:70]}")
         if not vods:
             typer.echo("No finished videos" + (" with those ids." if vod_ids else "."))
+
+
+HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended
+
+
+@app.command("deploy-wait")
+def deploy_wait(
+    max_hours: Annotated[float, typer.Option(help="Give up waiting after this long.")] = 12,
+    every: Annotated[float, typer.Option(help="Seconds between checks.")] = 30,
+) -> None:
+    """Before a deploy restarts the worker: hold new uploads, and wait for one going up through the upload browser
+    (YouTube Studio or Rumble) to finish, since those can't carry on after a restart and would need checking by hand.
+    Everything else picks up by itself: videos and renders start their step again, and uploads through the YouTube
+    API carry on where they were. The hold lapses by itself 15 minutes after the last check, so a deploy that stops
+    partway can't leave uploads held; deploy-done ends it."""
+    from sqlmodel import Session, col, select
+
+    from .db import DEPLOY_HOLD, UploadJob, get_engine, set_app_setting, utcnow
+
+    engine = get_engine(get_settings())
+    deadline = time.monotonic() + max_hours * 3600
+    while True:
+        with Session(engine) as s:
+            set_app_setting(s, DEPLOY_HOLD, (utcnow() + HOLD_FOR).isoformat())
+            s.commit()
+            going = s.exec(select(UploadJob).where(
+                UploadJob.status == "uploading", col(UploadJob.method).not_in(("api",)),
+            )).all()
+        if not going:
+            typer.echo("No upload is going through the upload browser: the worker can restart. New uploads are held.")
+            return
+        if time.monotonic() > deadline:
+            _end_hold(engine)
+            typer.echo(f"Still uploading after {max_hours:g} hours; not restarting the worker under it.", err=True)
+            raise typer.Exit(1)
+        jobs = ", ".join(f"{j.site} upload {j.id} at {round(j.progress * 100)}%" for j in going)
+        typer.echo(f"Waiting for {jobs} to finish (new uploads are held meanwhile)")
+        time.sleep(every)
+
+
+@app.command("deploy-done")
+def deploy_done() -> None:
+    """Let uploads start again after a deploy (see deploy-wait)."""
+    from .db import get_engine
+
+    _end_hold(get_engine(get_settings()))
+    typer.echo("Uploads can start again.")
+
+
+def _end_hold(engine) -> None:
+    from sqlmodel import Session
+
+    from .db import DEPLOY_HOLD, set_app_setting
+
+    with Session(engine) as s:
+        set_app_setting(s, DEPLOY_HOLD, "")
+        s.commit()
 
 
 @app.command()

@@ -1,5 +1,7 @@
 // Types and calls for the backend API (backend/clipper/web/app.py).
 
+import type { Sites } from "./lib";
+
 export type VodStatus =
   | "queued"
   | "downloading"
@@ -74,6 +76,7 @@ export interface Clip {
   destination_name: string;
   destination_url: string;
   playlist_id: string; // a playlist on that channel, or ""
+  upload_to: Sites; // where its uploads go unless one is sent elsewhere: its show's choice, or else its channel's
   youtube_url: string;
   rumble_url: string; // once it's up on Rumble too
   reuploading: boolean; // rendering again, to be uploaded again where it went once it's done
@@ -240,6 +243,8 @@ export interface Show {
   episode_destination_id: number | null;
   clip_playlist_id: string; // on the clips' channel; "" for none
   episode_playlist_id: string;
+  clip_sites: Sites | ""; // where uploads to the clips' channel go; "" goes by the channel's own setting
+  episode_sites: Sites | "";
   max_chapters: number; // offered per stream, best first; the rest are extras
   max_shorts: number;
   auto_episode: Auto;

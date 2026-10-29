@@ -1,7 +1,9 @@
 """Cut the clips with ffmpeg on the GPU (NVENC): every clip in 16:9, and highlights also as 9:16 Shorts with captions."""
 
 import logging
+import os
 import re
+import shutil
 import unicodedata
 import uuid
 from collections.abc import Callable
@@ -200,7 +202,43 @@ def render_thumbnail(video: Path, t: float, out: Path) -> None:
     tmp.replace(out)
 
 
-def render_frame(video: Path, t: float, out: Path, height: int = 72) -> None:
+STILL_EVERY_S = 10  # the pass over a whole stream makes a still this often, for the editor's zoomed-out timeline
+STILL_BLOCK_S = 60  # zoomed in, stills are made a minute's worth (every 2 s) at a time
+STILL_HEIGHT = 72
+
+
+def render_stills(video: Path, out_dir: Path, every: float, start: float = 0, length: float | None = None,
+                  height: int = STILL_HEIGHT) -> int:
+    """Stills of `video` every `every` seconds, from `start` for `length` seconds or to the end, in one pass that
+    decodes only keyframes: each the first keyframe in its `every` seconds (the preview has one at least every 2 s).
+    One pass, because every run of ffmpeg first reads the video's whole index, which for an 8-hour preview takes
+    about 180 MB and a moment of CPU. Named by their moment in tenths of a second, as the editor's timeline asks for
+    them. Returns how many it made."""
+    out_dir.mkdir(parents=True, exist_ok=True)
+    tmp = out_dir / f".stills-{uuid.uuid4().hex}"
+    tmp.mkdir()
+    try:
+        span = ["-ss", f"{start:.3f}", *(["-t", f"{length:.3f}"] if length else [])]
+        # -copyts keeps the stream's own times, which select and showinfo then see; showinfo logs each still's time,
+        # in the order they're written.
+        log_text = ffmpeg.run([
+            "-threads", "1", "-skip_frame", "nokey", "-copyts", *span, "-i", str(video), "-an", "-sn",
+            "-vf", f"select='lt(mod(t,{every:g}),2)',showinfo,scale=-2:{height}", "-fps_mode", "passthrough",
+            "-q:v", "6", str(tmp / "%06d.jpg"),
+        ])
+        made: set[int] = set()
+        for n, when in re.findall(r"\bn:\s*(\d+)\s+pts:\s*-?\d+\s+pts_time:(-?[\d.]+)", log_text):
+            moment = int(float(when) // every * every * 10)
+            image = tmp / f"{int(n) + 1:06d}.jpg"
+            if moment not in made and image.exists():
+                os.replace(image, out_dir / f"{moment}.jpg")
+                made.add(moment)
+        return len(made)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def render_frame(video: Path, t: float, out: Path, height: int = STILL_HEIGHT) -> None:
     """A small still for the editor's timeline, from the keyframe at or before `t` (the preview has one every 2 s),
     which needs no decoding up to `t` and is close enough for a strip of stills. One thread, so a few at once don't
     take the server's CPU. The editor asks for several at once, so each is written under a name of its own until

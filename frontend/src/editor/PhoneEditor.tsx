@@ -6,11 +6,12 @@ import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, TrashIc
 import { clamp, clock, cn, go, goBack, length } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL } from "../ui";
+import { startAt, useClock, type Clock } from "./clock";
 import { MAX_SHORT_S, type Range } from "./edit";
 import type { Editor } from "./useEditor";
 
 export function PhoneEditor({ ed }: { ed: Editor }) {
-  const { clip, draft, setDraft, now, playing, duration, editable, destinations, busy, dirty, needsRender } = ed;
+  const { clip, draft, setDraft, playing, duration, editable, destinations, busy, dirty, needsRender } = ed;
   const making = ed.source.mode === "new";
   const vodTitle = clip ? clip.vod_title : ed.source.mode === "new" ? ed.source.vod.title || ed.source.vod.url : "";
 
@@ -47,7 +48,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
             </p>
           )}
           <span className="absolute left-2 top-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-xs tabular-nums">
-            {clock(now, true)}
+            <PlayheadTime clock={ed.clock} />
           </span>
         </div>
         {editable && (
@@ -55,7 +56,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
             start={draft.start}
             end={draft.end}
             cuts={draft.cuts}
-            now={now}
+            clock={ed.clock}
             max={ed.length}
             onStart={(t) => ed.setStart(t, false)}
             onEnd={(t) => ed.setEnd(t, false)}
@@ -118,8 +119,8 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
 
         {editable && (
           <>
-            <CutPoint label="Start" value={draft.start} onNudge={(d) => ed.setStart(draft.start + d)} onHere={() => ed.setStart(now, true, making)} />
-            <CutPoint label="End" value={draft.end} onNudge={(d) => ed.setEnd(draft.end + d)} onHere={() => ed.setEnd(now, true, making)} />
+            <CutPoint label="Start" value={draft.start} onNudge={(d) => ed.setStart(draft.start + d)} onHere={() => ed.setStart(ed.clock.get(), true, making)} />
+            <CutPoint label="End" value={draft.end} onNudge={(d) => ed.setEnd(draft.end + d)} onHere={() => ed.setEnd(ed.clock.get(), true, making)} />
           </>
         )}
 
@@ -240,7 +241,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
               lines={ed.lines}
               start={draft.start}
               end={draft.end}
-              now={now}
+              clock={ed.clock}
               onPlay={(l) => ed.playRange(l.start, l.end + 0.3)}
               onStartHere={(l) => ed.setStart(l.start - 0.3)}
               onEndHere={(l) => ed.setEnd(l.end + 0.6)}
@@ -331,7 +332,9 @@ function StreamTranscript({ ed }: { ed: Editor }) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const found = q.length >= 2 ? ed.lines.filter((l) => l.text.toLowerCase().includes(q)).slice(0, 60) : null;
-  const around = ed.lines.filter((l) => l.end > ed.now - 60 && l.start < ed.now + 120).slice(0, 80);
+  // Recentred every half minute of the playhead, rather than on its every move.
+  const near = useClock(ed.clock, (t) => Math.floor(t / 30) * 30);
+  const around = ed.lines.filter((l) => l.end > near - 60 && l.start < near + 120).slice(0, 80);
   return (
     <div className="space-y-2">
       <input
@@ -347,7 +350,7 @@ function StreamTranscript({ ed }: { ed: Editor }) {
           lines={found ?? around}
           start={ed.draft.start}
           end={ed.draft.end}
-          now={ed.now}
+          clock={ed.clock}
           onPlay={(l) => ed.playRange(l.start, l.end + 0.3)}
           onStartHere={(l) => ed.setStart(l.start - 0.3, true, true)}
           onEndHere={(l) => ed.setEnd(l.end + 0.6, true, true)}
@@ -397,13 +400,13 @@ function TrimBar(props: {
   start: number;
   end: number;
   cuts: Range[];
-  now: number;
+  clock: Clock;
   max: number;
   onStart: (t: number) => void;
   onEnd: (t: number) => void;
   onSeek: (t: number) => void;
 }) {
-  const { start, end, now, max } = props;
+  const { start, end, max } = props;
   const track = useRef<HTMLDivElement>(null);
   const dragging = useRef<"start" | "end" | null>(null);
   const windowFor = (s: number, e: number) => {
@@ -462,9 +465,7 @@ function TrimBar(props: {
             }}
           />
         ))}
-        {now >= view.from && now <= view.to && (
-          <div className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-white" style={{ left: pct(now) }} />
-        )}
+        <TrimPlayhead clock={props.clock} view={view} pct={pct} />
         {(["start", "end"] as const).map((which) => (
           <div
             key={which}
@@ -491,13 +492,14 @@ function Transcript(props: {
   lines: Line[];
   start: number;
   end: number;
-  now: number;
+  clock: Clock;
   onPlay: (l: Line) => void;
   onStartHere: (l: Line) => void;
   onEndHere: (l: Line) => void;
   heading?: string;
 }) {
   const mini = "rounded-md bg-zinc-800 px-2 py-1 text-[11px] font-semibold text-zinc-300 active:bg-zinc-700";
+  const playing = useClock(props.clock, (t) => startAt(props.lines, t));
   return (
     <section>
       <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
@@ -506,7 +508,7 @@ function Transcript(props: {
       <ol className="divide-y divide-white/5 overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-white/5">
         {props.lines.map((l) => {
           const inside = l.end > props.start && l.start < props.end;
-          const current = props.now >= l.start && props.now < l.end;
+          const current = l.start === playing;
           return (
             <li key={l.start} className={cn("flex items-start gap-2 px-3 py-2", current && "bg-violet-500/15")}>
               <button onClick={() => props.onPlay(l)} className={cn("flex-1 text-left", !inside && "opacity-40")}>
@@ -523,4 +525,16 @@ function Transcript(props: {
       </ol>
     </section>
   );
+}
+
+/** The playhead's time over the video, to the tenth: redrawn when that changes, not with the whole editor. */
+function PlayheadTime({ clock: playhead }: { clock: Clock }) {
+  return <>{useClock(playhead, (t) => clock(t, true))}</>;
+}
+
+/** The playhead on the trim strip, the one part of it that moves while playing. */
+function TrimPlayhead(props: { clock: Clock; view: { from: number; to: number }; pct: (t: number) => string }) {
+  const now = useClock(props.clock);
+  if (now < props.view.from || now > props.view.to) return null;
+  return <div className="pointer-events-none absolute inset-y-0 w-0.5 -translate-x-1/2 bg-white" style={{ left: props.pct(now) }} />;
 }

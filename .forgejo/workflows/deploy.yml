@@ -1,0 +1,31 @@
+# Every push is built into the app's image and tested in it; a push to main is then deployed to the server
+# (deploy/deploy.sh). It runs on the runner deploy/install-runner.sh sets up on the server.
+name: Test and deploy
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  test-and-deploy:
+    runs-on: clipper-server
+    env:
+      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+      TOKEN: ${{ github.token }}
+      SHA: ${{ github.sha }}
+    steps:
+      - name: Check out
+        # Plain git, as actions/checkout does it, so the server needs nothing more than git and Docker.
+        run: |
+          git init -q .
+          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
+          git -c http.extraHeader="$auth" fetch -q --depth 1 "$REPO_URL" "$SHA"
+          git checkout -qf FETCH_HEAD
+          git clean -qfdx
+
+      - name: Build and test
+        run: deploy/test.sh "$SHA"
+
+      - name: Deploy
+        if: github.ref == 'refs/heads/main'
+        run: deploy/deploy.sh "$CLIPPER_DEPLOY_DIR" "$SHA"

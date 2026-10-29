@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, media, type Clip, type ClipPatch, type Line, type NewClipInfo, type Vod } from "../api";
 import { go, goBack, loadSetting, saveSetting, usePoll } from "../lib";
 import { useToast } from "../ui";
+import { createClock } from "./clock";
 import {
   clamp, cutAt, FPS, keptLength, MAX_SHORT_S, MIN_CLIP_S, round2, sameCuts, sameGeometry, shifted, tidy, withCut,
   withEnd, withoutCut, withStart, type Geometry, type Range,
@@ -131,7 +132,9 @@ export function useEditor(source: Source, desktop: boolean) {
   // --- The preview video ---
 
   const video = useRef<HTMLVideoElement>(null);
-  const [now, setNow] = useState(draft.start);
+  // The playhead's time: a clock that what shows it subscribes to (clock.ts), not state, so playing doesn't redraw
+  // the whole editor every frame.
+  const [clock] = useState(() => createClock(draft.start));
   const [playing, setPlaying] = useState(false);
   const [videoError, setVideoError] = useState(false);
   const [rate, setRateState] = useState(1);
@@ -154,8 +157,11 @@ export function useEditor(source: Source, desktop: boolean) {
     saveSetting("clipper.previewMuted", muted);
   }, [volume, muted]);
 
-  // While playing, follow the playhead every frame: jump over cut parts, loop at the clip's end if looping, and
-  // stop at the end of a preview.
+  // What the frame loop needs of the timeline (set further down), without starting it again each time it changes.
+  const follow = useRef<{ desktop: boolean; view: View; setView: (v: View) => void } | null>(null);
+
+  // While playing, follow the playhead every frame: jump over cut parts, loop at the clip's end if looping, stop at
+  // the end of a preview, and on a desktop, page the timeline along when the playhead runs off it.
   useEffect(() => {
     if (!playing) return;
     let frame = 0;
@@ -173,13 +179,19 @@ export function useEditor(source: Source, desktop: boolean) {
           stopAt.current = null;
         }
         prev = t;
-        setNow(t);
+        clock.set(t);
+        const f = follow.current;
+        if (f?.desktop && (t > f.view.to || t < f.view.from)) {
+          const span = f.view.to - f.view.from;
+          f.view = { from: t - span * 0.1, to: t + span * 0.9 };
+          f.setView(f.view);
+        }
       }
       frame = requestAnimationFrame(tick);
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [playing]);
+  }, [playing, clock]);
 
   // Dragging asks for a new spot many times a second. While the video is still getting to the last one, only the
   // newest is kept and gone to once it's there: each seek can fetch from the server, and on a slow connection
@@ -190,11 +202,11 @@ export function useEditor(source: Source, desktop: boolean) {
     const v = video.current;
     const to = clamp(t, 0, length);
     wanted.current = to;
-    setNow(to);
+    clock.set(to);
     if (!v) return;
     if (v.seeking) pendingSeek.current = to;
     else v.currentTime = to;
-  }, [length]);
+  }, [length, clock]);
   const play = () => void video.current?.play();
   const pause = () => video.current?.pause();
   const playRange = (from: number, to: number) => {
@@ -266,15 +278,13 @@ export function useEditor(source: Source, desktop: boolean) {
       const next = pendingSeek.current;
       pendingSeek.current = null;
       if (next !== null && Math.abs(next - v.currentTime) > 0.001) v.currentTime = next;
-      else setNow(v.currentTime);
+      else clock.set(v.currentTime);
     },
     onError: () => setVideoError(true),
   };
 
   // --- Editing the clip's ends and cuts ---
 
-  const nowRef = useRef(now);
-  nowRef.current = now;
   // Changing a cut point plays the few seconds around it, so you hear exactly where it lands. `push` moves the
   // whole clip along when the new point is past its other end (setting it from the transcript or the playhead).
   const setStart = (t: number, preview = true, push = false) => {
@@ -308,7 +318,7 @@ export function useEditor(source: Source, desktop: boolean) {
     const from = clamp(v.from, 0, Math.max(0, length - span));
     setViewState({ from, to: from + span });
   }, [length]);
-  const zoom = (factor: number, anchor = nowRef.current) => {
+  const zoom = (factor: number, anchor = clock.get()) => {
     setViewState((v) => {
       const span = clamp((v.to - v.from) * factor, MIN_SPAN, length);
       const at = clamp(anchor, v.from, v.to);
@@ -319,14 +329,7 @@ export function useEditor(source: Source, desktop: boolean) {
   };
   const fitClip = () => setView(viewAround(draftRef.current.start, draftRef.current.end, length));
   const fitAll = () => setView({ from: 0, to: length });
-  // Page along with the playhead while playing, as editing apps do.
-  useEffect(() => {
-    if (!desktop || !playing) return;
-    if (now > view.to || now < view.from) {
-      const span = view.to - view.from;
-      setView({ from: now - span * 0.1, to: now + span * 0.9 });
-    }
-  }, [desktop, playing, now, view, setView]);
+  follow.current = { desktop, view, setView };
 
   // --- The transcript, and the channels to upload to ---
 
@@ -421,7 +424,7 @@ export function useEditor(source: Source, desktop: boolean) {
     // history
     commit, live, undo, redo, canUndo: past.current.length > 0, canRedo: future.current.length > 0,
     // playback
-    video, videoProps, now, playing, videoError, rate, setRate, loop, setLoop, volume, setVolume, muted, setMuted,
+    video, videoProps, clock, playing, videoError, rate, setRate, loop, setLoop, volume, setVolume, muted, setMuted,
     volumeAdjustable, seek, play, pause, playRange, playClip, togglePlay, skip, step, faster,
     // edits
     setStart, setEnd, cutOut, restoreCut, trimTo, moveBy, previewJoin,

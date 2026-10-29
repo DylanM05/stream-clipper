@@ -2,9 +2,25 @@
 
 Ideas agreed on but not built yet, newest first.
 
+## User experience pass
+
+Go through the whole app, on a phone and on a computer, and make sure everything works properly and is smooth to use (Oct 29, 2026).
+
+## Security review
+
+Make sure everything is secure and no secrets are exposed (Oct 29, 2026).
+
+## Back button after approving clips
+
+After approving clips one after another in the clip editor, Back steps back through every clip approved instead of to where you started, so you have to go back through all of them. It should go straight back (Oct 29, 2026).
+
+## Release on GitHub, selfh.st and r/selfhosted
+
+Get the project ready to publish on GitHub, then post it to selfh.st and r/selfhosted (Oct 29, 2026).
+
 ## Fix uploading to Rumble
 
-Uploads to Rumble go through its upload page in the upload browser (rumble_upload.py). The first real one, a Short on Oct 27, 2026, failed with "Please select or drag a video": the page made its thumbnails from the file but never started uploading it, likely because the file was chosen before the page's upload script was ready. Commit 85b92c5 waits for the page to settle and for the upload's percentage to show, chooses the file again once if nothing starts, and otherwise names the page's script errors and failed requests in the error. Still to do: deploy it, retry that upload (or a private test one), and if it fails again, go by what the new error says.
+Uploads to Rumble go through its upload page in the upload browser (rumble_upload.py). The first real one, a Short on Oct 27, 2026, failed with "Please select or drag a video"; commit 85b92c5 waits for the page to settle and chooses the file again if the upload doesn't start. The next, a full show on Oct 28, failed before uploading anything with "Cannot transfer files larger than 50Mb to a browser not co-located with the server": Playwright sent the file's bytes over its connection to the browser, which it refuses past 50 MB. Uploads now hand the browser the file by its path (studio.connect, is_local), which both containers see under /data; YouTube Studio uploads had the same limit and get the same fix. Still to do: deploy it, retry that upload (it also tries again by itself at 12:01 AM), and if it fails again, go by what the new error says.
 
 ## Intro on videos (on hold, Oct 27, 2026)
 

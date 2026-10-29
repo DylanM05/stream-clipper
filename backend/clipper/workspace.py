@@ -86,8 +86,14 @@ class Workspace:
 
     @property
     def frames_dir(self) -> Path:
-        """Stills for the editor's timeline, made from the preview copy as they're asked for."""
+        """Stills for the editor's timeline, made from the preview copy: one every 10 s by the worker in one pass
+        (render.render_stills), and closer together as they're asked for."""
         return self.thumbs_dir / "frames"
+
+    @property
+    def stills_done(self) -> Path:
+        """Marks the pass over the whole preview making a still every 10 s as finished."""
+        return self.frames_dir / "every-10s.done"
 
     def meta(self) -> dict:
         return read_json(self.meta_json)

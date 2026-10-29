@@ -304,18 +304,58 @@ def test_the_waveform_from_the_api(client, settings):
     assert client.get(f"/api/vods/{vod_id}/peaks", params={"start": 2, "end": 1}).status_code == 422
 
 
+def make_preview(path: Path, seconds: int) -> None:
+    """A preview as the worker makes them: 30 frames a second, a keyframe every 2 s."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", str(seconds), "-c:v", "libx264", "-g", "60",
+                "-pix_fmt", "yuv420p", str(path)])
+
+
 @needs_ffmpeg
-def test_stills_for_the_timeline(client, settings):
+def test_stills_every_so_often_in_one_pass(tmp_path):
+    preview = tmp_path / "proxy.mp4"
+    make_preview(preview, 25)
+    assert render.render_stills(preview, tmp_path / "frames", 10) == 3
+    assert sorted(p.name for p in (tmp_path / "frames").glob("*.jpg")) == ["0.jpg", "100.jpg", "200.jpg"]
+    # A minute's worth, zoomed in: every keyframe, named by its moment in tenths of a second.
+    assert render.render_stills(preview, tmp_path / "close", 2, start=10, length=10) == 5
+    assert sorted(int(p.stem) for p in (tmp_path / "close").glob("*.jpg")) == [100, 120, 140, 160, 180]
+    assert not list((tmp_path / "close").glob(".stills-*"))  # tidied up
+
+
+@needs_ffmpeg
+def test_stills_for_the_timeline(client, settings, monkeypatch):
     vod_id, ws = add_vod(settings)
     assert client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 1}).status_code == 404  # no preview yet
-    ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p",
-                str(ws.proxy_mp4)])
-    frame = client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 2.04})
+    make_preview(ws.proxy_mp4, 25)
+    # Zoomed in: the minute around it in one run, on the 2 s grid of keyframes.
+    frame = client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 2.9})
     assert frame.status_code == 200 and frame.headers["content-type"] == "image/jpeg"
-    assert (ws.frames_dir / "20.jpg").exists() and not list(ws.frames_dir.glob("*.tmp.*"))
-    assert client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 900}).status_code in (200, 404)  # never a 500
+    assert {p.name for p in ws.frames_dir.glob("*.jpg")} >= {"20.jpg", "40.jpg", "120.jpg", "220.jpg"}
+    # Zoomed out, before the worker's pass: just the one.
+    (ws.frames_dir / "100.jpg").unlink()
+    assert client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 10}).status_code == 200
+    # Once the worker's pass is done, a zoomed-out still that isn't there isn't looked for.
+    ws.stills_done.write_text("3\n")
+    monkeypatch.setattr(render, "render_frame", lambda *a: pytest.fail("ran ffmpeg for a still the pass would have made"))
+    assert client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 900}).status_code == 404
     ws.delete_media()
     assert not ws.frames_dir.exists()
+
+
+@needs_ffmpeg
+def test_the_worker_makes_the_editors_overviews_once(settings):
+    from clipper.worker import Worker
+
+    vod_id, ws = add_vod(settings)
+    make_preview(ws.proxy_mp4, 25)
+    write_wav(ws.audio_wav, np.full(audio.SAMPLE_RATE * 25, 4096, dtype=np.int16))
+    worker = Worker(settings)
+    assert worker.prepare_next_for_editor() is True
+    assert ws.peaks_u8.exists() and ws.stills_done.read_text().strip() == "3"
+    assert (ws.frames_dir / "200.jpg").exists()
+    assert worker.prepare_next_for_editor() is False  # done
+    assert Worker(settings).prepare_next_for_editor() is False  # and a new worker sees it's done
 
 
 def test_clips_made_in_the_app_stay_out_of_the_score_comparison():

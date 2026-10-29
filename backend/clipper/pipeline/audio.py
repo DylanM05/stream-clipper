@@ -60,12 +60,17 @@ OVERVIEW_RATE = 50  # loudness readings a second in the overview of a whole soun
 _overview_lock = threading.Lock()
 
 
+def overview_ready(ws: Workspace) -> bool:
+    """Whether the overview is there, and newer than the soundtrack."""
+    return ws.peaks_u8.exists() and ws.peaks_u8.stat().st_mtime >= ws.audio_wav.stat().st_mtime
+
+
 def overview(ws: Workspace) -> np.ndarray:
     """How loud the soundtrack is, 50 readings a second: each the loudest sample in its fiftieth of a second, as a
     byte from 0 to 255. Worked out once, a minute of sound at a time, and kept beside the soundtrack (a byte each, so
     an 8-hour stream's is under 1.5 MB), and again if the soundtrack is extracted again."""
     with _overview_lock:
-        if not ws.peaks_u8.exists() or ws.peaks_u8.stat().st_mtime < ws.audio_wav.stat().st_mtime:
+        if not overview_ready(ws):
             block = SAMPLE_RATE // OVERVIEW_RATE
             levels = []
             with _open(ws) as w:

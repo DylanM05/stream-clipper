@@ -11,12 +11,16 @@ import {
 import { cn, go, goBack, loadSetting, saveSetting } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, useToast } from "../ui";
+import { indexAt, startAt, useClock, useSettled, type Clock } from "./clock";
 import { FPS, FRAME, MAX_SHORT_S, parseTimecode, round2, timecode, type Range } from "./edit";
 import { Timeline } from "./Timeline";
 import type { Editor } from "./useEditor";
 
 const RATES = [0.5, 1, 1.5, 2];
-const TRANSCRIPT_MAX = 400; // lines listed at once, around the playhead
+// The transcript lists this many lines around the playhead, and moves along only once the playhead's line comes within
+// MARGIN of either end, so playing and scrubbing don't rebuild the whole list.
+const TRANSCRIPT_WINDOW = 120;
+const TRANSCRIPT_MARGIN = 25;
 
 export function DesktopEditor({ ed }: { ed: Editor }) {
   const toast = useToast();
@@ -112,14 +116,14 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
         case "i":
           if (shift) ed.seek(ed.draft.start);
           else {
-            ed.setStart(ed.now, false, true);
+            ed.setStart(ed.clock.get(), false, true);
             edge.current = "start";
           }
           break;
         case "o":
           if (shift) ed.seek(ed.draft.end);
           else {
-            ed.setEnd(ed.now, false, true);
+            ed.setEnd(ed.clock.get(), false, true);
             edge.current = "end";
           }
           break;
@@ -210,9 +214,7 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
                   The preview is still being made, so this can't play yet. Read the transcript, or come back in a bit.
                 </p>
               )}
-              {draft.cuts.some(([a, b]) => ed.now >= a && ed.now < b) && !ed.playing && (
-                <span className="absolute right-2 top-2 rounded bg-red-500/80 px-1.5 py-0.5 text-xs font-semibold">Cut out</span>
-              )}
+              {!ed.playing && <CutBadge clock={ed.clock} cuts={draft.cuts} />}
             </div>
           </div>
           <Transport ed={ed} onEdge={(which) => (edge.current = which)} />
@@ -295,7 +297,7 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
           onZoom={ed.zoom}
           geometry={draft}
           editable={ed.editable}
-          now={ed.now}
+          clock={ed.clock}
           lines={ed.lines}
           selection={selection}
           onSelection={(r) => {
@@ -388,13 +390,24 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
   }
 }
 
+/** The playhead's time, to the hundredth: redrawn when that changes, not with the whole transport. */
+function Now({ clock }: { clock: Clock }) {
+  return <>{useClock(clock, (t) => timecode(t))}</>;
+}
+
+/** Over the paused video, when the playhead is in a part cut out of the clip. */
+function CutBadge({ clock, cuts }: { clock: Clock; cuts: Range[] }) {
+  const inCut = useClock(clock, (t) => cuts.some(([a, b]) => t >= a && t < b));
+  return inCut ? <span className="absolute right-2 top-2 rounded bg-red-500/80 px-1.5 py-0.5 text-xs font-semibold">Cut out</span> : null;
+}
+
 /** Under the viewer: the playhead's time, playing and stepping, the clip's ends to type in, speed and volume. */
 function Transport({ ed, onEdge }: { ed: Editor; onEdge: (which: "start" | "end") => void }) {
   const { draft } = ed;
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-t border-white/5 px-3 py-2">
       <span className="w-24 font-mono text-base tabular-nums text-zinc-100" title="Where the playhead is">
-        {timecode(ed.now)}
+        <Now clock={ed.clock} />
       </span>
       <div className="flex items-center gap-1">
         <IconButton title="Go to the start (⇧I)" onClick={() => ed.seek(draft.start)}>
@@ -427,8 +440,8 @@ function Transport({ ed, onEdge }: { ed: Editor; onEdge: (which: "start" | "end"
       </div>
       {ed.editable && (
         <div className="flex items-center gap-2 text-xs">
-          <TimeField label="In" value={draft.start} onSet={(t) => { ed.setStart(t, false, true); onEdge("start"); }} hint="Set to the playhead (I)" onHere={() => { ed.setStart(ed.now, false, true); onEdge("start"); }} />
-          <TimeField label="Out" value={draft.end} onSet={(t) => { ed.setEnd(t, false, true); onEdge("end"); }} hint="Set to the playhead (O)" onHere={() => { ed.setEnd(ed.now, false, true); onEdge("end"); }} />
+          <TimeField label="In" value={draft.start} onSet={(t) => { ed.setStart(t, false, true); onEdge("start"); }} hint="Set to the playhead (I)" onHere={() => { ed.setStart(ed.clock.get(), false, true); onEdge("start"); }} />
+          <TimeField label="Out" value={draft.end} onSet={(t) => { ed.setEnd(t, false, true); onEdge("end"); }} hint="Set to the playhead (O)" onHere={() => { ed.setEnd(ed.clock.get(), false, true); onEdge("end"); }} />
           <span className="text-zinc-500">
             Length <span className="font-mono tabular-nums text-zinc-200">{timecode(ed.duration)}</span>
           </span>
@@ -676,17 +689,19 @@ function TranscriptPanel({ ed }: { ed: Editor }) {
     () => (q.length >= 2 ? ed.lines.filter((l) => l.text.toLowerCase().includes(q)).slice(0, 200) : null),
     [q, ed.lines],
   );
-  // What's in the timeline's view, but no more than a few hundred lines either side of the playhead.
-  const { from, to } = ed.view;
-  const near = useMemo(() => {
-    const inView = ed.lines.filter((l) => l.end > from && l.start < to);
-    if (inView.length <= TRANSCRIPT_MAX) return inView;
-    const at = Math.max(0, inView.findIndex((l) => l.end > ed.now));
-    const first = Math.max(0, Math.min(at - TRANSCRIPT_MAX / 2, inView.length - TRANSCRIPT_MAX));
-    return inView.slice(first, first + TRANSCRIPT_MAX);
-  }, [ed.lines, from, to, Math.floor(ed.now / 30)]); // eslint-disable-line react-hooks/exhaustive-deps -- recentred every 30 s
+  // The lines around the playhead's line. The window moves only once the playhead has stayed put a moment (so a scrub
+  // across the stream rebuilds the list once, at the end, not at every step) and is near either end of it.
+  const at = useSettled(useClock(ed.clock, (t) => indexAt(ed.lines, t)), 200);
+  const first = useRef(0);
+  const last = Math.max(0, ed.lines.length - TRANSCRIPT_WINDOW);
+  if (at >= 0 && (at < first.current + TRANSCRIPT_MARGIN || at >= first.current + TRANSCRIPT_WINDOW - TRANSCRIPT_MARGIN)) {
+    first.current = Math.min(last, Math.max(0, at - Math.floor(TRANSCRIPT_WINDOW / 3)));
+  }
+  first.current = Math.min(first.current, last);
+  const start = first.current;
+  const near = useMemo(() => ed.lines.slice(start, start + TRANSCRIPT_WINDOW), [ed.lines, start]);
   const shown = found ?? near;
-  const current = shown.find((l) => ed.now >= l.start && ed.now < l.end)?.start;
+  const current = useClock(ed.clock, (t) => startAt(ed.lines, t));
 
   // Keep the line being played in sight, scrolling only the transcript's own box (not the details above it).
   useEffect(() => {

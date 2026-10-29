@@ -13,7 +13,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from functools import lru_cache
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -30,7 +30,7 @@ from .. import cuts, ffmpeg, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
-    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, utcnow,
+    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, sites_name, upload_sites, utcnow,
 )
 from ..monitor import ChannelUrlError, parse_channel
 from ..overlay import Overlay, save as save_overlay_image
@@ -56,6 +56,7 @@ SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
+Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
 ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")  # statuses with a render queued, running or done
 
 
@@ -113,6 +114,7 @@ class ClipOut(BaseModel):
     destination_name: str
     destination_url: str
     playlist_id: str
+    upload_to: str  # where its uploads go unless one is sent elsewhere: "youtube", "rumble" or "both" (db.upload_sites)
     youtube_url: str
     rumble_url: str
     reuploading: bool  # rendering again, to be uploaded again once it's done (reupload)
@@ -186,6 +188,8 @@ class ShowIn(BaseModel):
     episode_destination_id: int | None = None
     clip_playlist_id: str = Field(default="", max_length=64)
     episode_playlist_id: str = Field(default="", max_length=64)
+    clip_sites: Sites = ""
+    episode_sites: Sites = ""
     max_chapters: int = Field(default=5, ge=0, le=100)
     max_shorts: int = Field(default=5, ge=0, le=100)
     auto_episode: Auto = "review"
@@ -216,6 +220,8 @@ class ShowPatch(BaseModel):
     episode_destination_id: int | None = None
     clip_playlist_id: str | None = Field(default=None, max_length=64)
     episode_playlist_id: str | None = Field(default=None, max_length=64)
+    clip_sites: Sites | None = None  # "" goes by the channel's own setting
+    episode_sites: Sites | None = None
     max_chapters: int | None = Field(default=None, ge=0, le=100)
     max_shorts: int | None = Field(default=None, ge=0, le=100)
     auto_episode: Auto | None = None
@@ -419,6 +425,8 @@ class ShowOut(BaseModel):
     episode_destination_id: int | None
     clip_playlist_id: str
     episode_playlist_id: str
+    clip_sites: str
+    episode_sites: str
     max_chapters: int
     max_shorts: int
     auto_episode: str
@@ -544,7 +552,9 @@ def transcript_lines(path: Path) -> tuple[TranscriptLine, ...]:
         return _transcript_lines(str(path), path.stat().st_mtime)
 
 
-FRAME_JOBS = 2  # stills made at once for the editor's timeline; the rest wait their turn
+# Stills made at once for the editor's timeline, when the worker's one-every-10-s pass hasn't got them: each run of
+# ffmpeg reads the whole preview's index first (about 180 MB for 8 hours), so one at a time, and a minute's worth each.
+FRAME_JOBS = 1
 
 
 def packed(request: Request, data) -> Response:
@@ -593,10 +603,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with Session(engine) as s:
             return read(s)
 
-    # Stills for the timeline are made on threads of their own, a couple at a time, so a burst of them (zooming the
-    # timeline asks for dozens) can't take the threads every other request needs.
+    # Stills for the timeline are made on a thread of their own, and the waveform read on another, so a burst of
+    # either (zooming asks for dozens of stills) can't take the threads every other request needs.
     frame_pool = ThreadPoolExecutor(max_workers=FRAME_JOBS, thread_name_prefix="frames")
     frame_slots = asyncio.Semaphore(FRAME_JOBS)
+    waveform_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waveform")
 
     def workspace(vod: Vod) -> Workspace:
         if not vod.workspace:
@@ -664,6 +675,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         video_size, short_size = _size(clip.video_path), _size(clip.short_path)
         with Session(engine) as s:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
+            show = s.get(Show, vod.show_id) if vod.show_id else None
         thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
             **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "thumbnail_plan", "thumbnail_redraw",
@@ -680,6 +692,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             short_size=short_size,
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
+            upload_to=sites_name(upload_sites(show, clip.kind, dest)),
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
             upload_state=upload_state,
             next_upload=iso(next_upload),
@@ -1514,14 +1527,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/clips/{clip_id}/uploads", status_code=201)
     def start_upload(clip_id: int, body: UploadRequest, s: Session = Depends(db)) -> UploadJobOut:
-        clip, _ = get_clip(s, clip_id)
+        clip, vod = get_clip(s, clip_id)
         path = clip.short_path if body.which == "short" else clip.video_path
         if clip.status not in ("rendered", "uploaded") or not path or not Path(path).exists():
             raise HTTPException(409, "Render the clip before uploading it")
         if body.site == "rumble":
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
-            if not (dest and dest.rumble):
-                raise HTTPException(409, "Set its channel's uploads to go to Rumble (or both) under Shows → YouTube channels first")
+            show = s.get(Show, vod.show_id) if vod.show_id else None
+            if not (dest and (dest.rumble or "rumble" in upload_sites(show, clip.kind, dest))):
+                raise HTTPException(409, "Set its show's uploads, or its channel's under Shows → YouTube channels, to go to "
+                                         "Rumble (or both) first")
         busy = s.exec(select(UploadJob).where(
             UploadJob.clip_id == clip_id, UploadJob.which == body.which, UploadJob.site == body.site,
             col(UploadJob.status).in_(("queued", "uploading")),
@@ -1670,17 +1685,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return packed(request, lines)
 
     @app.get("/api/vods/{vod_id}/peaks")
-    def vod_peaks(
+    async def vod_peaks(
         vod_id: int, request: Request, start: float = Query(ge=0), end: float = Query(gt=0),
         count: int = Query(default=1000, ge=1, le=4000),
     ) -> Response:
-        """How loud the stream is across `count` parts of `start` to `end` (0 to 1), to draw its waveform."""
-        ws = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video")))
+        """How loud the stream is across `count` parts of `start` to `end` (0 to 1), to draw its waveform. Read on a
+        thread of its own: the first zoomed-out look at a stream the worker hasn't made the overview of yet makes it,
+        and requests meanwhile wait there rather than holding threads the rest of the app needs."""
+        ws = workspace(await run_in_threadpool(looked_up, lambda s: found(s, Vod, vod_id, "video")))
         if end <= start:
             raise HTTPException(422, "The end has to be after the start")
         if not ws.audio_wav.exists():
             raise HTTPException(404, "The stream's soundtrack isn't there: it's deleted with its video files")
-        return packed(request, {"start": start, "end": end, "peaks": audio.peaks(ws, start, end, count)})
+        peaks = await asyncio.get_running_loop().run_in_executor(waveform_pool, audio.peaks, ws, start, end, count)
+        return packed(request, {"start": start, "end": end, "peaks": peaks})
 
     @app.get("/api/vods/{vod_id}/new-clip")
     def new_clip_info(vod_id: int, s: Session = Depends(db)) -> NewClipInfo:
@@ -1841,18 +1859,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace(vod)
         if not ws.proxy_mp4.exists():
             raise HTTPException(404, "The preview copy isn't ready yet")
-        tenths = round(min(t, max(0.0, vod.duration - 0.5) if vod.duration else t) * 10)
-        out = ws.frames_dir / f"{tenths}.jpg"
+        # On the 2 s grid of the preview's keyframes, which is all a still can show.
+        moment = int(min(t, max(0.0, vod.duration - 0.5) if vod.duration else t) // 2 * 2)
+        out = ws.frames_dir / f"{moment * 10}.jpg"
+        coarse = moment % render.STILL_EVERY_S == 0
+        if not out.exists() and coarse and ws.stills_done.exists():
+            raise HTTPException(404, "No still there")  # the worker's pass made every one there is
         if not out.exists():
             async with frame_slots:
                 if await request.is_disconnected():
                     return Response(status_code=204)
                 if not out.exists():
+                    if coarse:  # zoomed out, before the worker's pass: just this one
+                        make = partial(render.render_frame, ws.proxy_mp4, moment, out)
+                    else:  # zoomed in: the minute around it, in one run
+                        block = moment // render.STILL_BLOCK_S * render.STILL_BLOCK_S
+                        make = partial(render.render_stills, ws.proxy_mp4, ws.frames_dir, 2, block, render.STILL_BLOCK_S)
                     try:
-                        await asyncio.get_running_loop().run_in_executor(
-                            frame_pool, render.render_frame, ws.proxy_mp4, tenths / 10, out)
+                        await asyncio.get_running_loop().run_in_executor(frame_pool, make)
                     except ffmpeg.FFmpegError as e:
-                        raise HTTPException(404, "No frame there") from e
+                        raise HTTPException(404, "No still there") from e
+                if not out.exists():
+                    raise HTTPException(404, "No still there")
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800, immutable"})
 
     @app.get("/media/clips/{clip_id}/thumb.jpg")

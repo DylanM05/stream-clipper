@@ -126,6 +126,10 @@ class Show(SQLModel, table=True):
     # YouTube playlists (PL… ids) on those channels that uploads are added to; empty means none.
     clip_playlist_id: str = ""
     episode_playlist_id: str = ""
+    # Where the uploads to those channels go: "youtube", "rumble" or "both" (see SITES); "" goes by the channel's own
+    # setting (Destination.youtube and .rumble).
+    clip_sites: str = ""
+    episode_sites: str = ""
     # How many of each stream's chapters and highlights are offered, best-scored first; the rest are extras.
     max_chapters: int = 5
     max_shorts: int = 5
@@ -293,6 +297,24 @@ class AppSetting(SQLModel, table=True):
     value: str
 
 
+# A show's choice of where uploads go, as UploadJob.site values.
+SITES = {"youtube": ["youtube"], "rumble": ["rumble"], "both": ["youtube", "rumble"]}
+
+
+def upload_sites(show: Show | None, kind: str, dest: Destination | None) -> list[str]:
+    """Where a clip's uploads go: its show's choice for full episodes or for clips (by `kind`), or else its channel's
+    own setting; YouTube when there's neither."""
+    chosen = (show.episode_sites if kind == "whole" else show.clip_sites) if show else ""
+    if chosen in SITES:
+        return SITES[chosen]
+    return dest.sites if dest else ["youtube"]
+
+
+def sites_name(sites: list[str]) -> str:
+    """["youtube", "rumble"] as "both", one of them as itself."""
+    return "both" if len(sites) > 1 else sites[0]
+
+
 def get_app_setting(s: Session, key: str) -> str | None:
     row = s.get(AppSetting, key)
     return row.value if row else None
@@ -307,6 +329,19 @@ def set_app_setting(s: Session, key: str, value: str) -> None:
 def is_paused(s: Session, part: str) -> bool:
     """Whether one of PAUSABLE is paused in the app."""
     return get_app_setting(s, f"paused_{part}") == "1"
+
+
+# A deploy holds new uploads until then (an ISO time), while it waits for one through the browser to finish
+# (cli deploy-wait). It lapses by itself, so a deploy that stops partway can't leave uploads held.
+DEPLOY_HOLD = "deploy_hold_until"
+
+
+def deploy_held(s: Session, now: datetime | None = None) -> bool:
+    until = get_app_setting(s, DEPLOY_HOLD)
+    try:
+        return bool(until) and datetime.fromisoformat(until) > (now or utcnow())
+    except ValueError:
+        return False
 
 
 def default_mode(url: str) -> str:

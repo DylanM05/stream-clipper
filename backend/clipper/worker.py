@@ -28,8 +28,8 @@ from sqlmodel import Session, col, or_, and_, select
 from . import cuts, ffmpeg, notify, rumble_upload, stats, thumbnails, titles
 from .config import Settings
 from .db import (
-    CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine,
-    is_paused, set_app_setting, utcnow,
+    CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show, get_app_setting,
+    get_engine, is_paused, set_app_setting, upload_sites, utcnow,
 )
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
@@ -107,6 +107,7 @@ class Worker:
         # A preview still being made for a video that stopped for another reason (e.g. Claude's usage limit)
         # carries on, and the video's next attempt picks it up rather than starting another.
         self._previews: dict[int, Preview] = {}
+        self._prepared: set[int] = set()  # videos the editor's overviews are made for (or couldn't be), this run
 
     def run(self) -> None:
         self.recover()
@@ -118,6 +119,7 @@ class Worker:
             threading.Thread(target=self._loop, args=(self.make_next_thumbnail, 10), name="thumbnails", daemon=True),
             threading.Thread(target=self._loop, args=(self.check_stats, STATS_EVERY_S), name="stats", daemon=True),
             threading.Thread(target=self._loop, args=(self.clean_up_next, 120), name="cleanup", daemon=True),
+            threading.Thread(target=self._loop, args=(self.prepare_next_for_editor, 300), name="editor", daemon=True),
         ]
         for t in threads:
             t.start()
@@ -578,7 +580,7 @@ class Worker:
                 return  # uploaded or tried before: what happens next is up to you
             if clip.destination_id:
                 dest = s.get(Destination, clip.destination_id)
-                for site in dest.sites if dest else ["youtube"]:
+                for site in upload_sites(show, clip.kind, dest):
                     s.add(UploadJob(clip_id=clip_id, which=which, site=site, visibility=show.auto_visibility))
                 s.commit()
                 return
@@ -610,7 +612,8 @@ class Worker:
                 s.add(failed)
             s.commit()
             job = None
-            if not is_paused(s, "uploads"):
+            # Not while a deploy is about to restart the worker (cli deploy-wait).
+            if not is_paused(s, "uploads") and not deploy_held(s):
                 now = utcnow()
                 job_id = next((jid for jid, turn in upload_turns(s, now).items() if turn.at <= now), None)
                 job = s.get(UploadJob, job_id) if job_id else None
@@ -855,6 +858,39 @@ class Worker:
         self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path),
                           thumbnail_idea=f"{idea.concept}{text}{people}", thumbnail_plan=idea.model_dump_json(),
                           thumbnail_redraw="")
+
+    def prepare_next_for_editor(self) -> bool:
+        """For a video ready to edit, newest first, make what the editor's zoomed-out timeline shows of it: the
+        soundtrack's loudness overview and a still every 10 s of the preview. Each is a pass over the whole stream,
+        so they're made here, once, rather than while the editor waits; stills for a zoomed-out view were each a run
+        of ffmpeg reading the whole preview's index (about 180 MB for 8 hours), which on a small server froze it.
+        Returns whether it made something."""
+        with Session(self.engine) as s:
+            vods = s.exec(
+                select(Vod.id, Vod.workspace)
+                .where(Vod.status == "ready", col(Vod.cleaned_at).is_(None), col(Vod.workspace).is_not(None))
+                .order_by(col(Vod.created_at).desc())
+            ).all()
+        for vod_id, folder in vods:
+            if vod_id in self._prepared:
+                continue
+            self._prepared.add(vod_id)
+            ws = Workspace(self.settings.vods_dir / folder)
+            made = False
+            try:
+                if ws.audio_wav.exists() and not audio.overview_ready(ws):
+                    audio.overview(ws)
+                    made = True
+                if ws.proxy_mp4.exists() and not ws.stills_done.exists():
+                    count = render.render_stills(ws.proxy_mp4, ws.frames_dir, render.STILL_EVERY_S)
+                    ws.stills_done.write_text(f"{count}\n", encoding="utf-8")
+                    log.info("Made the editor's overview of video %d (%d stills)", vod_id, count)
+                    made = True
+            except Exception as e:
+                log.warning("Couldn't make the editor's overview of video %d: %s", vod_id, e)
+            if made:
+                return True
+        return False
 
     def _channel_picture(self, name: str) -> tuple[str, str] | None:
         """For thumbnails: the picture of the YouTube channel a search for someone finds first. Uses the API key,
