@@ -40,18 +40,24 @@ export function useDesktop(): boolean {
 
 // --- Data loading that refreshes on an interval while the page is visible ---
 
+const STUCK_MS = 30000; // a refresh still out after this long is taken as lost, and another goes
+
 export function usePoll<T>(load: () => Promise<T>, intervalMs: number, key: unknown = null) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
   const loadRef = useRef(load);
   loadRef.current = load;
+  const sentAt = useRef(0); // when the refresh still out was sent; 0 when none is
 
   const refresh = useCallback(async () => {
+    sentAt.current = Date.now();
     try {
       setData(await loadRef.current());
       setError(undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      sentAt.current = 0;
     }
   }, []);
 
@@ -59,7 +65,10 @@ export function usePoll<T>(load: () => Promise<T>, intervalMs: number, key: unkn
     void refresh();
     if (!intervalMs) return;
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
+      // Not while the last one is still out: when the server is slow (a render keeping it busy), refreshes that
+      // overlap pile up and slow it down further, until nothing comes back at all.
+      const waiting = sentAt.current && Date.now() - sentAt.current < STUCK_MS;
+      if (document.visibilityState === "visible" && !waiting) void refresh();
     }, intervalMs);
     return () => clearInterval(timer);
   }, [refresh, intervalMs, key]);

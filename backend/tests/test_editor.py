@@ -1,12 +1,16 @@
 """The app's editor: parts cut out of clips, clips made from any part of a stream, and what the timeline shows."""
 
+import asyncio
 import gzip
 import json
 import os
 import shutil
+import threading
+import time
 import wave
 from pathlib import Path
 
+import httpx
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
@@ -341,6 +345,45 @@ def test_stills_for_the_timeline(client, settings, monkeypatch):
     assert client.get(f"/media/vods/{vod_id}/frame.jpg", params={"t": 900}).status_code == 404
     ws.delete_media()
     assert not ws.frames_dir.exists()
+
+
+@needs_ffmpeg
+def test_a_clips_picture_in_the_lists_is_made_once(client, settings, monkeypatch):
+    vod_id, ws = add_vod(settings)
+    make_preview(ws.proxy_mp4, 25)
+    clip_id = add_clip(settings, vod_id, start=4, end=20)
+    picture = client.get(f"/media/clips/{clip_id}/thumb.jpg")
+    assert picture.status_code == 200 and picture.headers["content-type"] == "image/jpeg"
+    late = add_clip(settings, vod_id, key="hl02", start=40, end=60)  # after the end of the preview
+    assert client.get(f"/media/clips/{late}/thumb.jpg").status_code == 404
+    monkeypatch.setattr(render, "render_thumbnail", lambda *a: pytest.fail("made the same picture again"))
+    assert client.get(f"/media/clips/{clip_id}/thumb.jpg").status_code == 200
+
+
+def test_a_list_of_new_clips_has_their_pictures_made_one_at_a_time(settings, monkeypatch):
+    vod_id, _ = add_vod(settings)
+    ids = [add_clip(settings, vod_id, key=f"hl{i:02}", start=60 * i, end=60 * i + 30) for i in range(1, 9)]
+    running, most, lock = [0], [0], threading.Lock()
+
+    def make(video, t, out):
+        with lock:
+            running[0] += 1
+            most[0] = max(most[0], running[0])
+        time.sleep(0.05)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_bytes(b"\xff\xd8\xff\xd9")
+        with lock:
+            running[0] -= 1
+
+    monkeypatch.setattr(render, "render_thumbnail", make)
+
+    async def ask_for_all():  # as a page of clips does, all at once
+        transport = httpx.ASGITransport(app=web_app.create_app(settings))
+        async with httpx.AsyncClient(transport=transport, base_url="http://app") as client:
+            return await asyncio.gather(*(client.get(f"/media/clips/{i}/thumb.jpg") for i in ids))
+
+    assert [r.status_code for r in asyncio.run(ask_for_all())] == [200] * len(ids)
+    assert most[0] == 1
 
 
 @needs_ffmpeg

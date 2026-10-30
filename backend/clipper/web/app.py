@@ -603,8 +603,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         with Session(engine) as s:
             return read(s)
 
-    # Stills for the timeline are made on a thread of their own, and the waveform read on another, so a burst of
-    # either (zooming asks for dozens of stills) can't take the threads every other request needs.
+    # Stills for the timeline and clips' pictures are made on a thread of their own, and the waveform read on another,
+    # so a burst of either (zooming asks for dozens of stills) can't take the threads every other request needs.
     frame_pool = ThreadPoolExecutor(max_workers=FRAME_JOBS, thread_name_prefix="frames")
     frame_slots = asyncio.Semaphore(FRAME_JOBS)
     waveform_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waveform")
@@ -1884,14 +1884,24 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800, immutable"})
 
     @app.get("/media/clips/{clip_id}/thumb.jpg")
-    def thumbnail(clip_id: int) -> FileResponse:
-        clip, vod = looked_up(lambda s: get_clip(s, clip_id))
+    async def thumbnail(clip_id: int, request: Request) -> Response:
+        """A clip's picture in the lists. Made one at a time, with the timeline's stills: a list of new clips asks for
+        all of theirs at once, and each run of ffmpeg reads the stream's whole index (180 MB for 8 hours), so a few
+        dozen together took the server's memory. One the browser stopped wanting while it waited isn't made."""
+        clip, vod = await run_in_threadpool(looked_up, lambda s: get_clip(s, clip_id))
         ws = workspace(vod)
         t = clip.start + min(3.0, (clip.end - clip.start) * 0.2)
         out = ws.thumbs_dir / f"{clip.key}-{int(t * 10)}.jpg"
         if not out.exists():
-            video = ws.proxy_mp4 if ws.proxy_mp4.exists() else ws.source
-            render.render_thumbnail(video, t, out)
+            async with frame_slots:
+                if await request.is_disconnected():
+                    return Response(status_code=204)
+                if not out.exists():
+                    video = ws.proxy_mp4 if ws.proxy_mp4.exists() else ws.source
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(frame_pool, render.render_thumbnail, video, t, out)
+                    except ffmpeg.FFmpegError as e:
+                        raise HTTPException(404, "No picture there") from e
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/media/clips/{clip_id}/{which}.mp4")

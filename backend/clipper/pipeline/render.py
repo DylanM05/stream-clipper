@@ -196,9 +196,13 @@ def gpu_proxy(settings: Settings) -> bool:
 
 
 def render_thumbnail(video: Path, t: float, out: Path) -> None:
+    """A clip's picture for the app's lists. One thread, so it doesn't take the server's CPU from a render."""
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_name(out.stem + ".tmp.jpg")
-    ffmpeg.run(["-ss", f"{t:.3f}", "-i", str(video), "-frames:v", "1", "-vf", "scale=480:-2", "-q:v", "4", str(tmp)])
+    ffmpeg.run(["-threads", "1", "-ss", f"{t:.3f}", "-i", str(video), "-an", "-sn", "-frames:v", "1",
+                "-vf", "scale=480:-2", "-q:v", "4", str(tmp)])
+    if not tmp.exists():  # past the end of the video: ffmpeg finds no frame, and says so only in its log
+        raise ffmpeg.FFmpegError(f"No frame at {t:.1f} s")
     tmp.replace(out)
 
 

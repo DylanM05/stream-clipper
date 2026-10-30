@@ -6,6 +6,9 @@ x-clipper: &clipper
     context: .
     dockerfile: backend/Dockerfile
   image: stream-clipper
+  # A small init process runs first and passes the signal to stop on. The worker, run first itself, ignored it, so a
+  # deploy waited 10 s for Docker to kill it, with the app down meanwhile. A render that was running starts again.
+  init: true
   env_file:
     - path: .env
       required: false
@@ -48,6 +51,7 @@ services:
   browser:
     build: ./browser
     image: stream-clipper-browser
+    init: true # the same: its start script ignored the signal to stop
     restart: unless-stopped
     shm_size: "1gb"
     environment:
