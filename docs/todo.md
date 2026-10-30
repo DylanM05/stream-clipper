@@ -32,3 +32,13 @@ A short intro (3–5 seconds; longer costs watch time) at the start of each vide
 ## Watching subreddits (on hold, Oct 25, 2026)
 
 Watch subreddits for their top videos (livestream fails, mostly) and queue them like videos from a watched channel.
+
+
+think of rebrand name
+make prompts for text spaces more generic.
+
+Get claude to explain and tell me exactly what prompts are being sent through this program to claude
+
+anything thats not generic in the prompts, assist in moving those details over to the specific show prompt, i will give you the current show prompt for that show and we can work on it together.
+
+the aim is to make it generic so when i release it, it works for everyone, but is still very customizable.

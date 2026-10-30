@@ -135,15 +135,30 @@ The switches on the Videos screen pause **Downloads**, **Processing** (preview c
 
 ### Automatic deploys
 
-A push to `main` on your Forgejo is tested and deployed to the server by itself, through Forgejo Actions (`.forgejo/workflows/deploy.yml`). A runner on the server builds the app's image from the pushed commit and runs the backend tests inside it, so they run on the same Ubuntu, Python and ffmpeg the app does. Building it also type-checks and builds the phone app. If that passes, `deploy/deploy.sh` brings the checkout the stack runs from up to that commit and restarts the stack. Pushes to other branches are only tested.
+A push to `main` on your Forgejo is tested, checked and deployed to the server by itself, through Forgejo Actions (`.forgejo/workflows/deploy.yml`). The app's image is built from the pushed commit on the server and the backend tests run inside it, so they run on the same Ubuntu, Python and ffmpeg the app does. Building it also type-checks and builds the phone app. Then the [security checks](#security-checks) run. If all that passes, `deploy/deploy.sh` brings the checkout the stack runs from up to that commit and restarts the stack. Pushes to other branches are only tested and checked.
 - **Between uploads:** a restart waits for an upload going up through the upload browser (YouTube Studio or Rumble) to finish, holding new uploads meanwhile, because those can't carry on after a restart. Everything else picks up by itself: videos and renders start their step again, and uploads through the YouTube API carry on where they were. Forgejo stops a job after 3 hours, so a deploy waits at most 2½ hours, then gives up and leaves the running version as it was. Run it again from the **Actions** tab once the upload is done.
 - **If it breaks:** after restarting, the deploy checks that the app answers and the worker is running. If not, it shows their last log lines, goes back to the commit it had, and rebuilds and restarts that. It also refuses to deploy over changes made by hand in the server's checkout.
 - **Set up, once:**
-  1. On the server, make sure the folder the stack runs from (the one with `.env`) is a clone of the repository on your Forgejo, on `main`, and that its owner is in the `docker` group.
-  2. In Forgejo, open the repository's **Settings → Actions → Runners**, click **Create new runner**, and copy the UUID and token it shows.
-  3. From that folder: `sudo deploy/install-runner.sh <uuid> <token>`. It installs Forgejo Runner (checking its download), sets it up for this repository to run jobs straight on the server as the folder's owner, and starts it as the `clipper-runner` service (`journalctl -u clipper-runner` for its log). The runner then shows as online in that settings page.
+  1. You need a [Forgejo Runner](https://forgejo.org/docs/latest/admin/actions/) on the same server as the stack. As it comes, it runs `ubuntu-latest` jobs in a container that uses the server's Docker, which is what this needs. It also has to take this repository's jobs, so it should be listed under the repository's **Settings → Actions → Runners**. A runner registered for just one other repository won't be listed: register it for your user or the whole instance instead.
+  2. On the server, make sure the folder the stack runs from (the one with `.env`) is a clone of the repository on your Forgejo, made over `http(s)://`, on `main`. The deploy fetches as the folder's owner, but without their SSH keys.
+  3. In the repository's **Settings → Actions → Variables**, add `CLIPPER_DEPLOY_DIR` with that folder's full path, such as `/home/you/stream-clipper`.
   4. Push to `main`, and follow the run under **Actions**.
-- **Who can run things on the server:** the runner runs jobs directly on the server, with access to Docker. So only people you'd give the server to should be able to push or open pull requests in this repository; keep registration closed on your Forgejo.
+- **How it reaches the stack:** the job's container doesn't have the stack's folder, so `deploy/ci-deploy.sh` runs the deploy in a second container that has it, at the same path. That container runs as the folder's owner, so what git writes there stays theirs, and on the server's network, to check that the app answers. Cancelling the job stops it too.
+- **Who can run things on the server:** jobs can use the server's Docker, which is as good as having root on it. So only people you'd give the server to should be able to push to this repository, and registration on your Forgejo should stay closed. Pull requests don't run the workflow.
+
+### Security checks
+
+Every push is also checked by `deploy/scan.sh`. Each scanner is pinned to an exact version and runs from its own image, so the server needs nothing more installed:
+- **Secrets** (gitleaks): passwords, tokens and keys committed in the code or anywhere in its history, since one that was deleted later is still in it. The log shows them redacted.
+- **Code** (bandit, shellcheck): risky Python, such as a shell command built from input, and mistakes in the shell scripts.
+- **Known vulnerabilities** (trivy), on every push and each Monday: in the Python packages as the app's image installs them, in the phone app's packages, and in the upload browser's image, Chromium included. It counts only high and critical ones that have a fix. It also checks the Dockerfiles for risky settings.
+
+A secret or a code finding stops the deploy. A vulnerability doesn't: it shows as a failed **Known vulnerabilities** job, since the running app has it already and a deploy may be what fixes it. (To have vulnerabilities stop deploys too, add `vulnerabilities` to the deploy job's `needs`.) To fix one:
+- **A Python package:** raise its minimum version in `backend/pyproject.toml`, adding it there if it comes in through another package. Changing that file also makes the image install every package fresh.
+- **A phone app package:** update it in `frontend/` (`npm update <package>`) and commit `package-lock.json`.
+- **The upload browser:** rebuild its image from scratch on the server, `docker compose build --pull --no-cache browser && docker compose up -d browser`.
+
+A finding that doesn't apply can be accepted, with a note on why: for bandit, a `# nosec B<number>` comment on the line; for shellcheck, `# shellcheck disable=SC<number>` on the line above; for gitleaks, its fingerprint in `.gitleaksignore`; for trivy, its ID in `.trivyignore`.
 
 ## Notifications
 

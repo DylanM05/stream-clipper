@@ -1,31 +1,62 @@
-# Every push is built into the app's image and tested in it; a push to main is then deployed to the server
-# (deploy/deploy.sh). It runs on the runner deploy/install-runner.sh sets up on the server.
+# Every push is built into the app's image and tested in it, and checked for secrets and risky code. If that passes, a
+# push to main is deployed to the server (deploy/deploy.sh). Every push, and each week for newly found ones, the app's
+# packages and images are also scanned for known vulnerabilities. That job doesn't hold up a deploy: the app that's
+# running has them already, and a deploy may be what fixes them.
+#
+# It runs on a Forgejo runner whose ubuntu-latest jobs run in a container that uses the server's Docker, as Forgejo's
+# runner sets them up by default. See "Automatic deploys" in the README.
 name: Test and deploy
 
 on:
   push:
   workflow_dispatch:
+  schedule:
+    - cron: "0 9 * * 1" # Mondays
 
 jobs:
-  test-and-deploy:
-    runs-on: clipper-server
-    env:
-      REPO_URL: ${{ github.server_url }}/${{ github.repository }}
-      TOKEN: ${{ github.token }}
-      SHA: ${{ github.sha }}
+  check:
+    name: Test and check
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
     steps:
-      - name: Check out
-        # Plain git, as actions/checkout does it, so the server needs nothing more than git and Docker.
-        run: |
-          git init -q .
-          auth="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)"
-          git -c http.extraHeader="$auth" fetch -q --depth 1 "$REPO_URL" "$SHA"
-          git checkout -qf FETCH_HEAD
-          git clean -qfdx
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the whole history, for the secrets check
+          persist-credentials: false
 
       - name: Build and test
-        run: deploy/test.sh "$SHA"
+        run: deploy/test.sh "$GITHUB_SHA"
 
-      - name: Deploy
-        if: github.ref == 'refs/heads/main'
-        run: deploy/deploy.sh "$CLIPPER_DEPLOY_DIR" "$SHA"
+      - name: Secrets
+        if: ${{ !cancelled() }}
+        run: deploy/scan.sh secrets
+
+      - name: Code
+        if: ${{ !cancelled() }}
+        run: deploy/scan.sh code
+
+  vulnerabilities:
+    name: Known vulnerabilities
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Packages and images
+        run: deploy/scan.sh vulnerabilities
+
+  deploy:
+    name: Deploy
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Deploy to the server
+        env:
+          DEPLOY_DIR: ${{ vars.CLIPPER_DEPLOY_DIR }}
+        run: deploy/ci-deploy.sh "$DEPLOY_DIR" "$GITHUB_SHA"

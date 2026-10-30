@@ -37,7 +37,7 @@ def fetch(
 
 def _register_local(path: Path, settings: Settings) -> Workspace:
     path = path.resolve()
-    digest = hashlib.sha1(f"{path}|{path.stat().st_size}".encode()).hexdigest()[:12]
+    digest = hashlib.sha1(f"{path}|{path.stat().st_size}".encode(), usedforsecurity=False).hexdigest()[:12]
     ws = Workspace.open(settings.vods_dir, f"local-{digest}")
     if not ws.meta_json.exists():
         write_json(ws.meta_json, {

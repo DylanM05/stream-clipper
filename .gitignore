@@ -26,3 +26,6 @@ Thumbs.db
 
 # A deploy in progress (deploy/deploy.sh)
 .deploy.lock
+
+# Scan results in progress (deploy/scan.sh)
+.scan/
