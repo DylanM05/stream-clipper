@@ -16,7 +16,7 @@ from sqlmodel import Field, Session, SQLModel, col, create_engine, select
 
 from .config import Settings
 
-# Video statuses, in pipeline order. "waiting" means it can't go on yet (Claude's usage limit, or not
+# Video statuses, in pipeline order. "waiting" means it can't go on yet (the AI's usage limit, or not
 # enough disk space); `error` says why, and it retries at retry_at.
 VOD_ACTIVE = ("downloading", "preparing", "transcribing", "analysing", "segmenting")
 VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
@@ -144,8 +144,9 @@ class Show(SQLModel, table=True):
     # The show's chapters and highlights go up at least this many hours after the last clip upload to the same
     # channel (schedule.py); 0 uploads each as soon as it's ready. Full episodes never wait.
     upload_gap_hours: float = 0
-    # Chapters and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
-    auto_thumbnails: bool = False
+    # Chapters (clips, in the app) and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
+    chapter_thumbnails: bool = False
+    episode_thumbnails: bool = False
     thumbnail_guidance: str = ""  # for Claude: what every thumbnail of the show must have, e.g. words on it
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
@@ -404,8 +405,24 @@ def _engine(db_path: str) -> Engine:
         cur.close()
 
     SQLModel.metadata.create_all(engine)
+    _rename_columns(engine)
     _add_missing_columns(engine)
     return engine
+
+
+# Columns renamed since a database was made, by (table, old name, new name): renamed in place, keeping their values.
+_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails")]
+# Columns that start out as a copy of another when they're added, by (table, column, copied from): one setting that
+# became two keeps doing what it did.
+_COPIED = {("show", "episode_thumbnails"): "chapter_thumbnails"}
+
+
+def _rename_columns(engine: Engine) -> None:
+    with engine.begin() as conn:
+        for table, old, new in _RENAMED:
+            have = {row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table}")')}
+            if old in have and new not in have:
+                conn.exec_driver_sql(f'ALTER TABLE "{table}" RENAME COLUMN "{old}" TO "{new}"')
 
 
 def _add_missing_columns(engine: Engine) -> None:
@@ -422,6 +439,8 @@ def _add_missing_columns(engine: Engine) -> None:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
                 )
+                if source := _COPIED.get((table.name, column.name)):
+                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = "{source}"')
 
 
 def _sql_literal(value) -> str:

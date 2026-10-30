@@ -42,9 +42,16 @@ class Settings(BaseSettings):
     timezone: str = "America/New_York"
     day_starts_at: int = Field(default=6, ge=0, le=12)
 
-    # Segmentation (Claude Code in headless mode, signed in with your subscription)
+    # The AI that picks the clips and writes preview titles and thumbnail ideas (ai.py), until it's changed in the
+    # app: "claude" (Claude Code, signed in with your Claude plan), "codex" (Codex, signed in with your ChatGPT plan)
+    # or "openrouter" (a model on OpenRouter, paid per use with openrouter_api_key). Each has its own model, also
+    # changeable in the app: llm_model is Claude's, and an empty codex_model is Codex's own default.
+    llm_provider: Literal["claude", "codex", "openrouter"] = "claude"
     claude_bin: str = "claude"
     llm_model: str = "opus"
+    codex_bin: str = "codex"
+    codex_model: str = ""
+    openrouter_model: str = "anthropic/claude-opus-5.5"
     llm_effort: str | None = "high"
     llm_timeout_s: int = 3600
     highlights_per_hour: float = 3.0
@@ -76,7 +83,8 @@ class Settings(BaseSettings):
     # Reads view counts (stats.py) of uploads to channels that aren't connected; connected ones use their sign-in.
     youtube_api_key: str = ""
 
-    # Thumbnails (thumbnails.py): Claude writes the idea, an image model on OpenRouter draws it from frames of the video.
+    # Thumbnails (thumbnails.py): the AI writes the idea, an image model on OpenRouter draws it from frames of the video.
+    # The key is also what the AI's work is paid with when it's a model on OpenRouter.
     openrouter_api_key: str = ""
     thumbnail_model: str = "google/gemini-2.5-flash-image"
 

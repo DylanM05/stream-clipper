@@ -60,7 +60,7 @@ const VOD_STATUS: Record<VodStatus, [string, string]> = {
   preparing: ["Making preview", "bg-sky-500/15 text-sky-300"],
   transcribing: ["Transcribing", "bg-sky-500/15 text-sky-300"],
   analysing: ["Analysing", "bg-sky-500/15 text-sky-300"],
-  segmenting: ["Claude is picking clips", "bg-violet-500/15 text-violet-300"],
+  segmenting: ["The AI is picking clips", "bg-violet-500/15 text-violet-300"],
   waiting: ["Waiting", "bg-amber-500/15 text-amber-300"],
   ready: ["Ready", "bg-emerald-500/15 text-emerald-300"],
   failed: ["Failed", "bg-red-500/15 text-red-300"],
@@ -101,7 +101,7 @@ function Chip({ tone, children }: { tone: string; children: ReactNode }) {
 }
 
 export const KIND_LABEL: Record<Clip["kind"], string> = {
-  chapter: "Chapter",
+  chapter: "Clip",
   highlight: "Highlight",
   whole: "Full episode",
 };

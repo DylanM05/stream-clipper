@@ -19,7 +19,7 @@ import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } fr
 import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
-const SAMPLE_TITLE = "Short title written by Claude";
+const SAMPLE_TITLE = "Short title written by the AI";
 const PLATFORM_NAME: Record<Channel["platform"], string> = {
   kick: "Kick",
   twitch: "Twitch",
@@ -64,7 +64,7 @@ export function Shows() {
           </div>
           <h2 className="mt-4 text-lg font-semibold">No shows yet</h2>
           <p className="mt-1 max-w-xs text-sm text-zinc-400">
-            A show sets the titles, context for Claude and upload channel for its videos, and can watch Kick, Twitch,
+            A show sets the titles, context for the AI and upload channel for its videos, and can watch Kick, Twitch,
             YouTube and Rumble channels for new streams, and X accounts for new videos.
           </p>
         </div>
@@ -451,7 +451,8 @@ const BLANK: ShowFields = {
   auto_upload_score: 0,
   auto_visibility: "public",
   upload_gap_hours: 0,
-  auto_thumbnails: false,
+  chapter_thumbnails: false,
+  episode_thumbnails: false,
   thumbnail_guidance: "",
   short_video_top: null,
   short_video_width: 1,
@@ -533,9 +534,9 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         <p className="mt-1.5 text-xs text-zinc-500">
           {
             {
-              segment: "Claude splits each stream into chapters and highlights.",
+              segment: "The AI splits each stream into clips and highlights.",
               whole: "Each video is posted in full, like a pre-show from X.",
-              both: "The full episode, with YouTube chapters in its description, plus Claude's chapters and highlights.",
+              both: "The full episode, with YouTube chapters in its description, plus the AI's clips and highlights.",
             }[fields.mode]
           }
         </p>
@@ -608,14 +609,14 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       </button>
 
       {hasClips(fields.mode) && (
-        <Group label="Clips offered per stream" hint="best first, by Claude's score">
+        <Group label="Offered per stream" hint="best first, by the AI's score">
           <div className="grid grid-cols-2 gap-2">
-            <CountBox label="Chapters" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
+            <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
             <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
           </div>
           <p className="mt-1.5 text-xs text-zinc-500">
             {fields.max_chapters + fields.max_shorts} videos from each stream
-            {hasEpisode(fields.mode) ? ", plus the full episode" : ""}. Claude's other picks wait on the video's page as
+            {hasEpisode(fields.mode) ? ", plus the full episode" : ""}. The AI's other picks wait on the video's page as
             extras. Raise these as your YouTube upload limit grows.
           </p>
         </Group>
@@ -628,7 +629,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           )}
           {hasClips(fields.mode) && (
             <>
-              <AutoChoice label="Chapters" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
+              <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
               <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
             </>
           )}
@@ -649,9 +650,9 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             </div>
             <p className="mt-1.5 text-xs text-zinc-500">
               {fields.auto_upload_score
-                ? `Chapters and Shorts Claude scores ${fields.auto_upload_score} or more upload straight away, even if set to Review above. `
-                : "Upload chapters and Shorts straight away when Claude scores them this high, even if set to Review above. "}
-              Only the ones offered per stream count. Claude keeps 0.9 and up for standout moments.
+                ? `Clips and Shorts the AI scores ${fields.auto_upload_score} or more upload straight away, even if set to Review above. `
+                : "Upload clips and Shorts straight away when the AI scores them this high, even if set to Review above. "}
+              Only the ones offered per stream count. The AI keeps 0.9 and up for standout moments.
             </p>
           </>
         )}
@@ -676,24 +677,32 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           />
           <p className="mt-1.5 text-xs text-zinc-500">
             {fields.upload_gap_hours
-              ? `Each chapter or Short goes up at least ${fields.upload_gap_hours} hour${fields.upload_gap_hours === 1 ? "" : "s"} after the last clip on its channel, whether it uploads by itself or you tap Upload. Full episodes go straight away.`
+              ? `Each clip or Short goes up at least ${fields.upload_gap_hours} hour${fields.upload_gap_hours === 1 ? "" : "s"} after the last clip on its channel, whether it uploads by itself or you tap Upload. Full episodes go straight away.`
               : "Clips upload as soon as they're ready. Space them out so a stream's clips don't all land at once."}
           </p>
         </Group>
       )}
 
       <Group label="Thumbnails" hint="drawn with AI">
-        <label className="flex items-start gap-3">
-          <input
-            type="checkbox"
-            checked={fields.auto_thumbnails}
-            onChange={(e) => set({ auto_thumbnails: e.target.checked })}
-            className="mt-0.5 size-5 shrink-0 accent-violet-500"
-          />
-          <span className="text-sm text-zinc-300">Make one for each chapter and full episode once it's rendered</span>
-        </label>
+        <p className="mb-2 text-sm text-zinc-300">Make one for each, once it's rendered:</p>
+        <div className="space-y-2">
+          {hasClips(fields.mode) && (
+            <Tick
+              label="Clip"
+              checked={fields.chapter_thumbnails}
+              onChange={(chapter_thumbnails) => set({ chapter_thumbnails })}
+            />
+          )}
+          {hasEpisode(fields.mode) && (
+            <Tick
+              label="Full episode"
+              checked={fields.episode_thumbnails}
+              onChange={(episode_thumbnails) => set({ episode_thumbnails })}
+            />
+          )}
+        </div>
         <p className="mt-1.5 text-xs text-zinc-500">
-          Claude comes up with a funny idea about what happens in the video, starring the people in it and the people it's
+          The AI comes up with a funny idea about what happens in the video, starring the people in it and the people it's
           about, and an image model on OpenRouter draws it from frames of the video and photos it looks up. Each costs a few
           cents. You can also make one for any video on its Upload page. Say what the regulars look like under About the
           show.
@@ -702,7 +711,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>
         )}
         <label className="mt-3 block">
-          <span className="mb-1 block text-xs text-zinc-500">What every thumbnail must have (Claude follows this over its defaults)</span>
+          <span className="mb-1 block text-xs text-zinc-500">What every thumbnail must have (the AI follows this over its defaults)</span>
           <textarea
             value={fields.thumbnail_guidance}
             onChange={(e) => set({ thumbnail_guidance: e.target.value })}
@@ -735,24 +744,24 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         onChanged={props.onChanged}
       />
 
-      <Field label="About the show" hint="context for Claude">
+      <Field label="About the show" hint="context for the AI">
         <textarea
           value={fields.notes}
           onChange={(e) => set({ notes: e.target.value })}
           rows={5}
-          placeholder="Who hosts it and who the regulars are, how a typical episode runs, running jokes and nicknames, names Claude might mishear…"
+          placeholder="Who hosts it and who the regulars are, how a typical episode runs, running jokes and nicknames, names the AI might mishear…"
           className={input}
         />
       </Field>
 
       {hasClips(fields.mode) && (
-        <Field label="What the chapters and clips should be" hint="Claude follows this over its defaults">
+        <Field label="What the clips and highlights should be" hint="the AI follows this over its defaults">
           <textarea
             value={fields.clip_guidance}
             onChange={(e) => set({ clip_guidance: e.target.value })}
             rows={6}
             placeholder={
-              "e.g. Chapters follow the segments the hosts announce and run 20–90 minutes; give each of Jer's segments its own chapter.\n" +
+              "e.g. Clips follow the segments the hosts announce and run 20–90 minutes; give each of Jer's segments its own clip.\n" +
               "Highlights: the biggest laughs and blow-ups, 30–90 seconds."
             }
             className={input}
@@ -790,7 +799,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
 
 const AUTO_LABEL: Record<Auto, string> = { review: "Review", render: "Render", upload: "Upload" };
 const VISIBILITY_LABEL: Record<Visibility, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
-// Claude's score (0–1) from which a chapter or Short uploads without review.
+// The AI's score (0–1) from which a clip or Short uploads without review.
 const SCORE_LABEL: Record<string, string> = { "0": "Off", "0.8": "0.8+", "0.85": "0.85+", "0.9": "0.9+", "0.95": "0.95+" };
 // Hours between a channel's clip uploads.
 const GAP_LABEL: Record<string, string> = { "0": "Off", "1": "1h", "2": "2h", "3": "3h", "6": "6h", "12": "12h" };
@@ -830,6 +839,20 @@ function SitesChoice(props: { channel?: Destination; value: Sites | ""; onChange
         </p>
       )}
     </div>
+  );
+}
+
+function Tick(props: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return (
+    <label className="flex items-center gap-3">
+      <input
+        type="checkbox"
+        checked={props.checked}
+        onChange={(e) => props.onChange(e.target.checked)}
+        className="size-5 shrink-0 accent-violet-500"
+      />
+      <span className="text-sm text-zinc-300">{props.label}</span>
+    </label>
   );
 }
 
@@ -1085,7 +1108,7 @@ function ClipOverlay(props: {
         </label>
       )}
       <p className="mt-2 text-xs text-zinc-500">
-        Use a 1920×1080 PNG with a transparent background. Chapters and highlights get it; Shorts use the background above.
+        Use a 1920×1080 PNG with a transparent background. Clips and highlights get it; Shorts use the background above.
         Where it goes and its size are saved with the show.
       </p>
     </Group>
@@ -1187,12 +1210,12 @@ function PatternField(props: { label: string; value: string; placeholder: string
   const room = MAX_TITLE - applyTitlePattern(props.effective, "", date).length - 1;
   const ok = props.effective.includes("{title}");
   return (
-    <Field label={`${props.label} pattern`} hint="{date} = stream date, {title} = Claude's part">
+    <Field label={`${props.label} pattern`} hint="{date} = stream date, {title} = the AI's part">
       <input value={props.value} onChange={(e) => props.onChange(e.target.value)} placeholder={props.placeholder} className={input} />
       <div className="mt-2 rounded-xl bg-zinc-900 p-3 text-sm ring-1 ring-white/5">
         <p className="font-semibold leading-snug">{applyTitlePattern(props.effective, SAMPLE_TITLE, date)}</p>
         <p className={cn("mt-1 text-xs", ok ? "text-zinc-500" : "text-red-300")}>
-          {ok ? `Claude gets ${Math.max(20, room)} characters for its part, so titles fit YouTube's 100.` : "Add {title} where Claude's part goes."}
+          {ok ? `The AI gets ${Math.max(20, room)} characters for its part, so titles fit YouTube's 100.` : "Add {title} where the AI's part goes."}
         </p>
       </div>
     </Field>

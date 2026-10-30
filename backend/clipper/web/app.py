@@ -26,7 +26,7 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import cuts, ffmpeg, notify, stats, titles
+from .. import ai, cuts, ffmpeg, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
@@ -198,7 +198,8 @@ class ShowIn(BaseModel):
     auto_upload_score: float = Field(default=0, ge=0, le=1)
     auto_visibility: Visibility = "public"
     upload_gap_hours: float = Field(default=0, ge=0, le=168)
-    auto_thumbnails: bool = False
+    chapter_thumbnails: bool = False
+    episode_thumbnails: bool = False
     thumbnail_guidance: str = Field(default="", max_length=2000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
@@ -230,7 +231,8 @@ class ShowPatch(BaseModel):
     auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
     auto_visibility: Visibility | None = None
     upload_gap_hours: float | None = Field(default=None, ge=0, le=168)  # 0 uploads clips as soon as they're ready
-    auto_thumbnails: bool | None = None
+    chapter_thumbnails: bool | None = None
+    episode_thumbnails: bool | None = None
     thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
@@ -367,6 +369,26 @@ class AppSettingsPatch(BaseModel):
 APP_SETTING_KEYS = ("download_limit_mbps", "full_speed_from", "full_speed_until", "cleanup_after_days")
 
 
+class AiProvider(BaseModel):
+    id: str  # "claude", "codex" or "openrouter" (ai.PROVIDERS)
+    name: str
+    model: str  # the model it uses; for Codex, "" is its own default
+    default_model: str  # what it uses until another is set in the app (CLIPPER_LLM_MODEL and the like)
+
+
+class AiSetup(BaseModel):
+    """The AI that picks the clips and writes preview titles and thumbnail ideas (ai.py)."""
+
+    provider: str
+    providers: list[AiProvider]
+    problem: str  # what stops the chosen one from working, such as a missing sign-in; "" if nothing does
+
+
+class AiPatch(BaseModel):
+    provider: Literal["claude", "codex", "openrouter"] | None = None
+    model: str | None = Field(default=None, max_length=200)  # for the provider given, or else the chosen one; "" for its default
+
+
 class Pauses(BaseModel):
     """Which parts of the work are paused (db.PAUSABLE)."""
 
@@ -435,7 +457,8 @@ class ShowOut(BaseModel):
     auto_upload_score: float
     auto_visibility: str
     upload_gap_hours: float
-    auto_thumbnails: bool
+    chapter_thumbnails: bool
+    episode_thumbnails: bool
     thumbnail_guidance: str
     short_video_top: float | None
     short_video_width: float
@@ -661,7 +684,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def valid_template(template: str, optional: bool = False) -> str:
         template = " ".join(template.split())
         if not (optional and not template) and "{title}" not in template:
-            raise HTTPException(422, "A title pattern needs {title} in it, for the part Claude writes")
+            raise HTTPException(422, "A title pattern needs {title} in it, for the part the AI writes")
         return template
 
     def remove_channel(s: Session, ch: Channel) -> None:
@@ -872,6 +895,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             set_app_setting(s, key, str(value))
         s.commit()
         return current_settings(s)
+
+    def ai_setup(s: Session) -> AiSetup:
+        choice = ai.chosen(s, settings)
+        providers = [
+            AiProvider(id=p, name=name, model=get_app_setting(s, f"{p}_model") or ai.default_model(settings, p),
+                       default_model=ai.default_model(settings, p))
+            for p, name in ai.PROVIDERS.items()
+        ]
+        return AiSetup(provider=choice.provider, providers=providers, problem=ai.problem(settings, choice))
+
+    @app.get("/api/ai")
+    def get_ai(s: Session = Depends(db)) -> AiSetup:
+        return ai_setup(s)
+
+    @app.patch("/api/ai")
+    def set_ai(body: AiPatch, s: Session = Depends(db)) -> AiSetup:
+        """From the next piece of work on: what the AI is already working on finishes with the one it started with."""
+        if body.provider:
+            set_app_setting(s, ai.PROVIDER_KEY, body.provider)
+        if body.model is not None:
+            model = body.model.strip()
+            if any(c.isspace() for c in model):
+                raise HTTPException(422, "A model's name has no spaces in it")
+            set_app_setting(s, f"{body.provider or ai.chosen(s, settings).provider}_model", model)
+        s.commit()
+        return ai_setup(s)
 
     def current_pauses(s: Session) -> Pauses:
         return Pauses(**{part: is_paused(s, part) for part in PAUSABLE})

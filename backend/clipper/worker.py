@@ -7,7 +7,7 @@ transcribing. The heavy work happens in ffmpeg and Whisper, outside Python's GIL
 
 Downloads, processing, renders and uploads can each be paused in the app, and so can one video or clip.
 Work that's running stops at its next progress report (a download keeps what it has; a step like
-transcribing starts over) and carries on when resumed. Claude's step and the audio analysis can't be
+transcribing starts over) and carries on when resumed. The AI's step and the audio analysis can't be
 stopped partway, so a pause takes effect after them.
 """
 
@@ -48,7 +48,7 @@ from .youtube import Google, Video, YouTubeError, video_id
 
 log = logging.getLogger(__name__)
 
-USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when Claude doesn't say when the limit resets
+USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when the AI doesn't say when its limit resets
 LOW_SPACE_RETRY = timedelta(minutes=30)
 CHECK_EVERY_S = 2  # how often running work records its progress and looks for a pause
 STATS_EVERY_S = 1800
@@ -66,7 +66,7 @@ class LimitChanged(Exception):
 
 
 class Preview(threading.Thread):
-    """Makes a video's preview copy in the background while Claude picks clips (and, with
+    """Makes a video's preview copy in the background while the AI picks clips (and, with
     CLIPPER_PREVIEW_WITH_TRANSCRIPTION, while it's transcribed), since neither needs it."""
 
     def __init__(self, worker: "Worker", vod_id: int, ws: Workspace):
@@ -104,7 +104,7 @@ class Worker:
         )
         self.stopping = threading.Event()
         self._studio_checked = 0.0
-        # A preview still being made for a video that stopped for another reason (e.g. Claude's usage limit)
+        # A preview still being made for a video that stopped for another reason (e.g. the AI's usage limit)
         # carries on, and the video's next attempt picks it up rather than starting another.
         self._previews: dict[int, Preview] = {}
         self._prepared: set[int] = set()  # videos the editor's overviews are made for (or couldn't be), this run
@@ -288,10 +288,10 @@ class Worker:
             self._update_vod(vod_id, status="queued", progress=0)
         except UsageLimitError as e:
             retry_at = e.resets_at or utcnow() + USAGE_LIMIT_RETRY
-            log.warning("Claude usage limit reached; video %d retries at %s", vod_id, retry_at)
-            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error="Claude's usage limit was reached.")
+            log.warning("%s (%s); video %d retries at %s", e.note, e, vod_id, retry_at)
+            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error=e.note)
             if not was_waiting:
-                self._notify(Note(f"Claude's usage limit: {name}", "It carries on by itself once the limit resets.",
+                self._notify(Note(f"Waiting for the AI: {name}", f"{e.note} It carries on by itself after that.",
                                   link=f"videos/{vod_id}", tone="quiet"))
         except Exception as e:
             log.exception("Video %d failed", vod_id)
@@ -362,13 +362,13 @@ class Worker:
             return stats.best_titles(s, show)
 
     def _preview_title(self, text: str, room: int, notes: str) -> str:
-        """Claude's short title for a whole video; empty if Claude isn't available right now."""
+        """The AI's short title for a whole video; empty if the AI isn't available right now."""
         if not text:
             return ""
         try:
             return titles.preview_title(text, room, self.settings, notes)
         except LLMError as e:
-            log.warning("No title preview from Claude (%s); using the post's first line", e)
+            log.warning("No title preview from the AI (%s); using the post's first line", e)
             return ""
 
     def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None) -> dict[str, int]:
@@ -553,14 +553,16 @@ class Worker:
             return True
 
     def _auto_thumbnail(self, clip_id: int) -> None:
-        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them, unless it has one."""
+        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them for its kind,
+        unless it has one."""
         if not self.settings.openrouter_api_key:
             return
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod.show_id else None
-            if show and show.auto_thumbnails and clip.kind in ("chapter", "whole") and not clip.thumbnail_status:
+            wanted = show and {"chapter": show.chapter_thumbnails, "whole": show.episode_thumbnails}.get(clip.kind)
+            if wanted and not clip.thumbnail_status:
                 clip.thumbnail_status = "queued"
                 s.add(clip)
                 s.commit()
@@ -838,7 +840,7 @@ class Worker:
             if not vod.workspace:
                 raise ThumbnailError("This video hasn't been downloaded.")
             plan = None
-            if redraw:  # the saved plan, with the prompt as you left it; Claude isn't asked again
+            if redraw:  # the saved plan, with the prompt as you left it; the AI isn't asked again
                 plan = (thumbnails.Idea.model_validate_json(clip.thumbnail_plan) if clip.thumbnail_plan
                         else thumbnails.Idea(people=[], concept="Drawn from your prompt.", text="", prompt=""))
                 plan.prompt = redraw
@@ -1010,7 +1012,7 @@ class Worker:
         return True
 
     def clean_up(self, vod_id: int) -> None:
-        """Delete a stream's source, preview, audio and rendered clips; keep its transcript and Claude's picks."""
+        """Delete a stream's source, preview, audio and rendered clips; keep its transcript and the AI's picks."""
         vod = self._get(Vod, vod_id)
         freed = Workspace(self.settings.vods_dir / vod.workspace).delete_media()
         self._update_vod(vod_id, cleaned_at=utcnow())
@@ -1079,7 +1081,7 @@ def _added_summary(added: dict[str, int]) -> str:
 
 
 def _chapter_starts(segmentation: Segmentation) -> list[tuple[float, str]]:
-    """Every chapter Claude found (pre-show and breaks too), for the full episode's chapter list."""
+    """Every chapter the AI found (pre-show and breaks too), for the full episode's chapter list."""
     starts = []
     for ch in segmentation.chapters:
         try:

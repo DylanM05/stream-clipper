@@ -5,7 +5,7 @@ import { ago, cn, compact, loadSetting, median, pastDay, saveSetting, total, use
 import { ErrorNote, KIND_LABEL, Screen, StatTile } from "../ui";
 
 type Kind = "all" | Clip["kind"];
-const KINDS: Record<Kind, string> = { all: "All", chapter: "Chapters", highlight: "Highlights", whole: "Full episodes" };
+const KINDS: Record<Kind, string> = { all: "All", chapter: "Clips", highlight: "Highlights", whole: "Full episodes" };
 
 /** How the list is sorted. A phone switches between the first two; a desktop's table sorts by any of its numbers. */
 type Order = "views" | "newest" | "score" | "views_day1" | "views_week1" | "likes" | "comments";
@@ -20,7 +20,7 @@ const ORDER_LABEL: Record<Order, string> = {
 };
 
 /**
- * How uploads are doing on YouTube: whether Claude's score predicts views (which is what Standouts relies on),
+ * How uploads are doing on YouTube: whether the AI's score predicts views (which is what Standouts relies on),
  * and every upload's numbers. The worker reads them every few hours for each upload's first month.
  */
 export function Stats() {
@@ -154,7 +154,7 @@ function Totals({ uploads }: { uploads: StatsUpload[] }) {
 }
 
 const KIND_GROUPS: { label: string; match: (u: StatsUpload) => boolean }[] = [
-  { label: "Chapters", match: (u) => u.kind === "chapter" && u.which === "video" },
+  { label: "Clips", match: (u) => u.kind === "chapter" && u.which === "video" },
   { label: "Highlights", match: (u) => u.kind === "highlight" && u.which === "video" },
   { label: "Shorts", match: (u) => u.which === "short" },
   { label: "Full episodes", match: (u) => u.kind === "whole" && u.which === "video" },
@@ -278,13 +278,13 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
   );
 }
 
-/** Median views by Claude's score: if the top band doesn't beat the rest, the score (and Standouts) isn't telling much. */
+/** Median views by the AI's score: if the top band doesn't beat the rest, the score (and Standouts) isn't telling much. */
 function ScoreBands({ bands }: { bands: { label: string; count: number; day1: number | null; week1: number | null; views: number | null }[] }) {
   const counted = bands.filter((b) => b.count > 0);
   return (
     <section className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <h2 className="text-sm font-bold">Does Claude's score predict views?</h2>
-      <p className="mt-1 text-xs text-zinc-500">Median views of chapters and highlights, by the score Claude gave them.</p>
+      <h2 className="text-sm font-bold">Does the AI's score predict views?</h2>
+      <p className="mt-1 text-xs text-zinc-500">Median views of clips and highlights, by the score the AI gave them.</p>
       {counted.length === 0 ? (
         <p className="mt-3 text-sm text-zinc-500">Not enough uploads with views yet.</p>
       ) : (

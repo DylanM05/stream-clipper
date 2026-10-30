@@ -397,7 +397,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
 }
 
 /**
- * A thumbnail for the 16:9 video: Claude's idea, drawn by an image model on OpenRouter from frames of the video.
+ * A thumbnail for the 16:9 video: the AI's idea, drawn by an image model on OpenRouter from frames of the video.
  * It goes on with an upload through the YouTube API; for Studio uploads it's downloaded and added there.
  */
 function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destination?: Destination; onChange: (c: Clip) => void }) {
@@ -437,7 +437,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
               ? "Waiting its turn…"
               : clip.thumbnail_redrawing
                 ? "The image model is drawing it again…"
-                : "Claude is coming up with it, then the image model draws it…"}
+                : "The AI is coming up with it, then the image model draws it…"}
           </p>
           <ProgressBar value={null} />
         </div>
@@ -468,7 +468,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
             </Button>
             <p className="text-xs text-zinc-500">
               Change anything you like and draw it again. The same people go along, with fresh frames of the video and their
-              photos, and Claude isn't asked for a new idea. Make another, below, has Claude start over instead.
+              photos, and the AI isn't asked for a new idea. Make another, below, has the AI start over instead.
             </p>
           </div>
         </details>

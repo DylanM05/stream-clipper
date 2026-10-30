@@ -553,7 +553,7 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
                 onClick={() => setDraft((d) => ({ ...d, kind, make_short: kind === "highlight" && d.make_short }))}
                 className={cn("rounded-lg py-1.5 text-sm font-semibold", draft.kind === kind ? "bg-zinc-600 text-white" : "text-zinc-400 hover:text-zinc-200")}
               >
-                {kind === "highlight" ? "Highlight" : "Chapter"}
+                {kind === "highlight" ? "Highlight" : "Clip"}
               </button>
             ))}
           </div>
@@ -630,15 +630,15 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
         <p className="flex gap-2 rounded-xl bg-violet-500/10 p-3 text-sm text-violet-200 ring-1 ring-violet-500/20">
           <SparkIcon className="mt-0.5 size-4 shrink-0" />
           <span>
-            <span className="font-semibold">Why Claude picked it: </span>
+            <span className="font-semibold">Why the AI picked it: </span>
             {clip.why}
           </span>
         </p>
       )}
-      {clip?.manual && <p className="text-xs text-zinc-500">You made this clip, so it has no score from Claude.</p>}
+      {clip?.manual && <p className="text-xs text-zinc-500">You made this clip, so it has no score from the AI.</p>}
       {clip?.status === "extra" && (
         <p className="rounded-xl bg-zinc-900 p-3 text-sm text-zinc-400 ring-1 ring-white/10">
-          An extra: Claude scored it below this show's best few for the stream, so it isn't in your inbox. Approve it to
+          An extra: the AI scored it below this show's best few for the stream, so it isn't in your inbox. Approve it to
           use it anyway.
         </p>
       )}

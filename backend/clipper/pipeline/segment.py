@@ -1,14 +1,14 @@
-"""Ask Claude to split the stream into chapters and pick highlights, in one call over the whole transcript.
+"""Ask the AI to split the stream into chapters and pick highlights, in one call over the whole transcript.
 
-One call instead of two halves how much of your Claude plan each VOD uses: the transcript is
-most of the input, and it only has to be sent once.
+One call instead of two halves how much of your plan (or OpenRouter credit) each VOD uses: the transcript is
+most of the input, and it only has to be sent once. The app calls chapters "clips".
 """
 
 import logging
 from pathlib import Path
 
 from ..config import Settings
-from ..llm import ClaudeCode
+from .. import ai
 from ..models import Segmentation, Signals, Transcript
 from ..timecode import to_timecode
 from ..workspace import Workspace, write_text
@@ -30,7 +30,7 @@ def run(
     episode_room: int | None = None,
     top_titles: list[str] | None = None,
 ) -> Segmentation:
-    """Ask Claude for chapters, highlights and an episode title.
+    """Ask the AI for chapters, highlights and an episode title.
 
     `context` is about the show and `guidance` is what its chapters and highlights should be.
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
@@ -46,9 +46,7 @@ def run(
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    llm = ClaudeCode(
-        bin=settings.claude_bin, model=settings.llm_model, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s
-    )
+    llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
     result = llm.structured(
         system_prompt=(PROMPTS_DIR / "segment.md").read_text(encoding="utf-8"),
         task=(
@@ -60,7 +58,7 @@ def run(
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
     write_text(ws.segmentation_json, result.model_dump_json(indent=2))
-    log.info("Claude proposed %d chapters and %d highlights", len(result.chapters), len(result.highlights))
+    log.info("%s proposed %d chapters and %d highlights", llm.name, len(result.chapters), len(result.highlights))
     return result
 
 
@@ -81,7 +79,8 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
     if context.strip():
         lines += ["", "# About the show", context.strip()]
     if guidance.strip():
-        lines += ["", "# What the chapters and highlights should be", guidance.strip()]
+        # The app calls chapters "clips", so the show's guidance may too.
+        lines += ["", '# What the chapters and highlights should be (chapters may be called "clips" here)', guidance.strip()]
     if top_titles:
         lines += ["", "# The channel's most-viewed clip titles, most viewed first"]
         lines += [f"- {t}" for t in top_titles]

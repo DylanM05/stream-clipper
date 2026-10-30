@@ -1,20 +1,22 @@
-"""Thumbnails: Claude's idea, drawn by an image model on OpenRouter from frames of the video."""
+"""Thumbnails: the AI's idea, drawn by an image model on OpenRouter from frames of the video."""
 
 import base64
 import json
 import re
 import shutil
+import sqlite3
 
 import httpx
 import pytest
 from conftest import line, transcript
 from fastapi.testclient import TestClient
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from clipper import thumbnails
 from clipper import worker as worker_module
 from clipper.config import Settings
 from clipper.db import ClipRecord, Show, Vod, get_engine
+from clipper.llm import ClaudeCode
 from clipper.thumbnails import Idea, Person, ThumbnailError
 from clipper.web import app as web_app
 from clipper.workspace import Workspace, write_json, write_text
@@ -33,7 +35,7 @@ def clip_id(settings):
     write_json(ws.meta_json, {"title": "Stream", "source_path": str(source)})
     write_text(ws.transcript_json, transcript(*[line(i * 10.0, f"Line {i}.") for i in range(30)], duration=300).model_dump_json())
     with Session(get_engine(settings)) as s:
-        s.add(Show(name="Don", notes="Don wears a red cap.", auto_thumbnails=True,
+        s.add(Show(name="Don", notes="Don wears a red cap.", chapter_thumbnails=True,
                    thumbnail_guidance="Must have the words DON'S DEN"))
         s.commit()
         s.add(Vod(url="https://kick.com/don/videos/1", show_id=1, workspace="vod-1", status="ready", duration=300))
@@ -109,7 +111,7 @@ def test_claude_follows_the_shows_rules_for_its_thumbnails(settings, clip_id, mo
         sent.update(system=system_prompt, input=stdin_text)
         return Idea(people=[], concept="c", text="KINO CASINO PRESHOW", prompt="p")
 
-    monkeypatch.setattr(thumbnails.ClaudeCode, "structured", structured)
+    monkeypatch.setattr(ClaudeCode, "structured", structured)
     thumbnails.write_idea(settings, get_clip(settings, clip_id), "", rules="Must have the words Kino Casino Preshow")
     assert ("# The show's rules for every thumbnail (follow them, over your defaults)\n"
             "Must have the words Kino Casino Preshow") in sent["input"]
@@ -271,19 +273,43 @@ def test_a_failed_thumbnail_says_why(settings, clip_id, monkeypatch):
     assert clip.thumbnail_error == "The image model sent no picture back"
 
 
-def test_shows_that_make_thumbnails_queue_them_for_rendered_chapters(settings, clip_id, monkeypatch):
+def test_shows_queue_thumbnails_for_the_kinds_of_video_they_make_them_for(settings, clip_id, monkeypatch):
     monkeypatch.setattr(worker_module.render, "render_landscape", lambda source, clip, out, *a, **k: out.write_bytes(b"v"))
     w = worker_module.Worker(settings)
+
+    def rendered(kind: str, key: str) -> ClipRecord:
+        with Session(get_engine(settings)) as s:
+            s.add(ClipRecord(vod_id=1, key=key, kind=kind, start=0, end=60, title="t", status="approved"))
+            s.commit()
+        w.render_next_clip()
+        with Session(get_engine(settings)) as s:
+            return s.exec(select(ClipRecord).where(ClipRecord.key == key)).one()
+
     w.render_next_clip()
-    assert get_clip(settings, clip_id).thumbnail_status == "queued"
+    assert get_clip(settings, clip_id).thumbnail_status == "queued"  # a chapter: the show makes them for those
+    assert rendered("whole", "full").thumbnail_status == ""  # but not for full episodes
+
+    with Session(get_engine(settings)) as s:
+        show = s.get(Show, 1)
+        show.chapter_thumbnails, show.episode_thumbnails = False, True
+        s.add(show)
+        s.commit()
+    assert rendered("chapter", "ch02").thumbnail_status == ""
+    assert rendered("whole", "full2").thumbnail_status == "queued"
+    assert rendered("highlight", "hl01").thumbnail_status == ""  # never for highlights
 
     settings.openrouter_api_key = ""  # without a key there are no thumbnails
-    with Session(get_engine(settings)) as s:
-        s.add(ClipRecord(vod_id=1, key="ch02", kind="chapter", start=0, end=60, title="t", status="approved"))
-        s.commit()
-    w.render_next_clip()
-    with Session(get_engine(settings)) as s:
-        assert s.get(ClipRecord, 2).thumbnail_status == ""
+    assert rendered("whole", "full3").thumbnail_status == ""
+
+
+def test_a_show_that_made_thumbnails_before_they_were_split_by_kind_makes_them_for_both(tmp_path):
+    with sqlite3.connect(tmp_path / "clipper.db") as conn:  # as an older version left it
+        conn.execute("CREATE TABLE show (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL, auto_thumbnails BOOLEAN NOT NULL)")
+        conn.execute("INSERT INTO show (id, name, auto_thumbnails) VALUES (1, 'Don', 1), (2, 'Kino', 0)")
+    with Session(get_engine(Settings(data_dir=tmp_path))) as s:
+        assert [(show.chapter_thumbnails, show.episode_thumbnails) for show in s.exec(select(Show).order_by(Show.id))] == [
+            (True, True), (False, False)
+        ]
 
 
 def test_asking_for_a_thumbnail_in_the_app(settings, clip_id):

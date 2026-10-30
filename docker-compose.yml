@@ -15,6 +15,7 @@ x-clipper: &clipper
   volumes:
     - ${CLIPPER_HOST_DATA_DIR:-./data}:/data
     - claude-config:/home/clipper/.claude-config
+    - codex-config:/home/clipper/.codex-config
     - models:/models
   restart: unless-stopped
 
@@ -64,5 +65,6 @@ services:
 
 volumes:
   claude-config: # Claude Code login
+  codex-config: # Codex login, if the AI work goes through your ChatGPT plan
   models: # Whisper model download (about 1.6 GB)
   browser-profile: # the upload browser's YouTube and X sign-ins

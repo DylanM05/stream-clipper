@@ -18,7 +18,7 @@ def test_input_has_stream_details_hints_notes_and_timestamped_transcript():
     assert "Date: 2026-10-20" in text
     assert "Length: 02:00:00" in text
     assert "# About the show\nThe guest is called Sam." in text
-    assert "# What the chapters and highlights should be\nOne chapter per guest." in text
+    assert '# What the chapters and highlights should be (chapters may be called "clips" here)\nOne chapter per guest.' in text
     assert "[00:00:00] Just Chatting" in text
     assert "00:01:00-00:01:35" in text
     assert "01:06:40 (+12 dB)" in text

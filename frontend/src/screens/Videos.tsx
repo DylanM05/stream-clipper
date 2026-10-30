@@ -1,5 +1,5 @@
 import { useState, type FormEvent } from "react";
-import { api, errorText, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type AiProviderId, type AiSetup, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, timeOfDay, titleDate, useDesktop, usePoll } from "../lib";
@@ -155,12 +155,12 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
-          placeholder="Notes for Claude: who's on the show, running jokes, title style…"
+          placeholder="Notes for the AI: who's on the show, running jokes, title style…"
           className="w-full rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none ring-violet-500 placeholder:text-zinc-500 focus:ring-2"
         />
       ) : (
         <button type="button" onClick={() => setShowNotes(true)} className="text-sm font-medium text-violet-300">
-          + Add notes for Claude
+          + Add notes for the AI
         </button>
       )}
       <Button type="submit" tone="primary" disabled={!url.trim() || busy} className="w-full">
@@ -204,10 +204,11 @@ function DownloadAndDisk() {
         }
         warning={lowSpace ? `Below ${storage!.min_free_gb} GB free: new downloads wait for space.` : undefined}
         label="Delete finished streams' files after (days)"
-        hint="The transcript and Claude's picks are kept; the clips can't be re-cut after this. Each rendered clip is deleted as soon as it's uploaded."
+        hint="The transcript and the AI's picks are kept; the clips can't be re-cut after this. Each rendered clip is deleted as soon as it's uploaded."
         value={days}
         onSave={async (v) => setData(await api.updateSettings({ cleanup_after_days: v }))}
       />
+      <AiChoice />
       <Notifications />
     </div>
   );
@@ -297,6 +298,101 @@ function FullSpeedHours({ settings, onChange }: { settings: AppSettings; onChang
         ? `Full speed from ${hourLabel(settings.full_speed_from)} to ${hourLabel(settings.full_speed_until)} (${zone}). `
         : "No full-speed hours. "}
       <span className="font-semibold text-violet-300">{on ? "Change" : "Set some"}</span>
+    </button>
+  );
+}
+
+const AI_HINT: Record<AiProviderId, string> = {
+  claude: "On your Claude plan, signed in once on the server (README). The model is opus, sonnet or a full model name.",
+  codex:
+    "On your ChatGPT plan, signed in once on the server with codex login --device-auth (README). Leave the model " +
+    "empty for Codex's own default.",
+  openrouter:
+    "Paid per use from your OpenRouter credit, with CLIPPER_OPENROUTER_API_KEY. Any model whose page lists " +
+    "structured outputs works; anthropic/claude-opus-5.5 costs about $0.75 for an 8-hour stream.",
+};
+
+function aiText(setup: AiSetup): string {
+  const { id, model } = setup.providers.find((p) => p.id === setup.provider)!;
+  const who = {
+    claude: `Claude (${model}) on your Claude plan`,
+    codex: `Codex (${model || "its default model"}) on your ChatGPT plan`,
+    openrouter: `${model} on OpenRouter`,
+  }[id];
+  return `${who} picks the clips and writes their titles and thumbnail ideas.`;
+}
+
+/** Which AI picks the clips and writes the titles and thumbnail ideas, and its model. */
+function AiChoice() {
+  const toast = useToast();
+  const { data: setup, setData } = usePoll(api.ai, 0);
+  const [editing, setEditing] = useState(false);
+  const [provider, setProvider] = useState<AiProviderId>("claude");
+  const [model, setModel] = useState("");
+  if (!setup) return null;
+
+  const modelOf = (id: AiProviderId) => setup.providers.find((p) => p.id === id)!;
+  const choose = (id: AiProviderId) => {
+    setProvider(id);
+    setModel(modelOf(id).model);
+  };
+  const save = async () => {
+    try {
+      // The default stays the default, rather than being kept as this model's name.
+      const name = model.trim() === modelOf(provider).default_model ? "" : model.trim();
+      setData(await api.setAi({ provider, model: name }));
+      setEditing(false);
+      toast({ text: "Saved. It takes over from the next video." });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
+  if (editing) {
+    const problem = provider === setup.provider ? setup.problem : "";
+    return (
+      <div className="space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">The AI</label>
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
+          {setup.providers.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => choose(p.id)}
+              className={cn("rounded-lg py-2 text-xs font-semibold", provider === p.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={modelOf(provider).default_model || "Codex's default"}
+            aria-label="Model"
+            className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+          />
+          <Button onClick={() => setEditing(false)}>Cancel</Button>
+          <Button tone="primary" onClick={save}>
+            Save
+          </Button>
+        </div>
+        <p className="text-xs text-zinc-500">{AI_HINT[provider]}</p>
+        {problem && <p className="text-xs text-amber-300">{problem}</p>}
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        choose(setup.provider);
+        setEditing(true);
+      }}
+      className="block w-full text-left text-xs text-zinc-500"
+    >
+      {aiText(setup)} {setup.problem && <span className="text-amber-300">{setup.problem} </span>}
+      <span className="font-semibold text-violet-300">Change</span>
     </button>
   );
 }
@@ -543,7 +639,7 @@ export function VideoDetail({ id }: { id: number }) {
             </button>
           )}
           {desktop && <VodFacts vod={vod} />}
-          {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for Claude: {vod.notes}</p>}
+          {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for the AI: {vod.notes}</p>}
         </div>
       )}
       <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
@@ -608,7 +704,7 @@ function VodFacts({ vod }: { vod: Vod }) {
   );
 }
 
-/** Claude's picks beyond the show's best few: not in the inbox, but there to approve if you want more. */
+/** The AI's picks beyond the show's best few: not in the inbox, but there to approve if you want more. */
 function Extras({ clips }: { clips: Clip[] }) {
   const [open, setOpen] = useState(false);
   return (
