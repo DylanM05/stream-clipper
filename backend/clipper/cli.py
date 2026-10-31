@@ -585,11 +585,11 @@ def deploy_wait(
         if not going:
             typer.echo("No upload is going through the upload browser: the worker can restart. New uploads are held.")
             return
+        jobs = ", ".join(f"{j.site} upload {j.id} at {round(j.progress * 100)}%" for j in going)
         if time.monotonic() > deadline:
             _end_hold(engine)
-            typer.echo(f"Still uploading after {max_hours:g} hours; not restarting the worker under it.", err=True)
+            typer.echo(f"Still uploading after {max_hours:g} hours ({jobs}); not restarting the worker under it.", err=True)
             raise typer.Exit(1)
-        jobs = ", ".join(f"{j.site} upload {j.id} at {round(j.progress * 100)}%" for j in going)
         typer.echo(f"Waiting for {jobs} to finish (new uploads are held meanwhile)")
         time.sleep(every)
 
