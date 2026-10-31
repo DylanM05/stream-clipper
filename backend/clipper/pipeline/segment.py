@@ -74,19 +74,27 @@ def break_down(ws: Workspace, settings: Settings, transcript: Transcript, breakd
                context: str = "") -> list[LLMBreakdownPart]:
     """Ask the AI for the breakdown alone, for a stream whose clips were picked already: one picked before its show
     had categories, or after they changed. Nothing about its clips changes. `context` is about the show."""
+    result = ask_breakdown(settings, ws.meta(), transcript, breakdown, context, raw_log=ws.llm_dir / "breakdown.response.json")
+    write_text(ws.breakdown_json, result.model_dump_json(indent=2))
+    return result.breakdown
+
+
+def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakdown: dict[str, str], context: str = "",
+                  raw_log: Path | None = None) -> Breakdown:
+    """The AI's breakdown of any transcript, also one from elsewhere (transcripts.read). `meta` is the stream's details
+    as yt-dlp gives them."""
     system_prompt = "\n".join((PROMPTS_DIR / name).read_text(encoding="utf-8") for name in ("breakdown_alone.md", "breakdown.md"))
     llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
     result = llm.structured(
         system_prompt=system_prompt,
         task=(f"Break down what this {to_timecode(transcript.duration)} stream's time goes on. The stream details, notes "
               "and transcript follow."),
-        stdin_text=build_input(ws.meta(), transcript, Signals(), context, breakdown=breakdown),
+        stdin_text=build_input(meta, transcript, Signals(), context, breakdown=breakdown),
         schema=Breakdown,
-        raw_log=ws.llm_dir / "breakdown.response.json",
+        raw_log=raw_log,
     )
-    write_text(ws.breakdown_json, result.model_dump_json(indent=2))
     log.info("%s broke the stream down into %d parts", llm.name, len(result.breakdown))
-    return result.breakdown
+    return result
 
 
 def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",

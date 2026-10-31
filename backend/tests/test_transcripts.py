@@ -1,5 +1,7 @@
 """Transcripts saved for use outside the app, with the AI's breakdown of what each stream's time goes on."""
 
+import json
+
 import pytest
 from conftest import line, transcript
 
@@ -190,3 +192,27 @@ class TestBreakdownCommand:
         assert asked == ["kick-1", "kick-2"]
         output = self.run(cli, str(ids["kick-2"]), str(ids["kick-3"]))
         assert asked[2:] == ["kick-2"] and "Its show has no breakdown categories" in output
+
+    def test_imported_breaks_down_only_transcripts_from_elsewhere_that_have_none(self, setup, settings, monkeypatch):
+        cli, asked, _ = setup
+        folder = settings.transcripts_dir / "night-owls"
+        write_text(folder / "2026-10-30_kick-1.json", json.dumps({"id": "kick-1", "duration": 600, "segments": []}))
+        write_text(folder / "2025-01-02_archive-9.json", json.dumps({
+            "id": "archive-9", "title": "An old stream", "date": "2025-01-02", "duration": 600, "platform": "Rumble",
+            "segments": [{"start": 5, "end": 9, "text": "Hello chat."}],
+        }))
+        got = []
+
+        def ask(settings_, meta, transcript, categories, context=""):
+            got.append((meta["title"], meta["upload_date"], transcript.segments[0].text, context))
+            return Breakdown(breakdown=[part("00:00:00", "00:10:00", "news")], other_summary="Nothing else.")
+
+        monkeypatch.setattr(cli.segment, "ask_breakdown", ask)
+        self.run(cli, "--imported")
+        assert got == [("An old stream", "20250102", "Hello chat.", "")] and asked == []
+        saved = read_json(folder / "2025-01-02_archive-9.json")
+        assert saved["breakdown"] == [{"start": 0, "end": 600, "category": "News", "note": ""}]
+        assert saved["other_summary"] == "Nothing else." and saved["categories"]["News"] == "going through headlines"
+        assert "breakdown" not in read_json(folder / "2026-10-30_kick-1.json")  # the app's own: done the usual way
+        self.run(cli, "--imported")
+        assert len(got) == 1  # it has one now

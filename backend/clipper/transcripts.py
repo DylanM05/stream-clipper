@@ -3,6 +3,9 @@
 Each stream gets <data>/transcripts/<show>/<date>_<video>.json, with the stream's details, its lines and, for a show
 with breakdown categories, what the AI found its time goes on, and a .txt beside it with the lines to read. The
 .json is written last and whole, so something watching the folder for new ones never reads one half-written.
+
+Files in the same form can also be added to a show's folder from elsewhere, such as an archive of the streamer's
+past streams; `clipper breakdown --imported` breaks those down too (from_elsewhere, add_breakdown).
 """
 
 import json
@@ -12,7 +15,7 @@ from pathlib import Path
 from . import titles
 from .config import Settings
 from .db import Show, Vod
-from .models import Breakdown, LLMBreakdownPart, SegmentationWithBreakdown, Transcript
+from .models import Breakdown, LLMBreakdownPart, SegmentationWithBreakdown, Transcript, TranscriptSegment
 from .timecode import to_seconds, to_timecode
 from .workspace import Workspace, safe_id, write_text
 
@@ -67,16 +70,50 @@ def parts(ws: Workspace) -> list[LLMBreakdownPart]:
 def breakdown(ws: Workspace, categories: dict[str, str], duration: float) -> list[dict]:
     """The AI's breakdown of the stream in seconds, each part under one of `categories` or Other. Empty for a stream
     whose clips were picked before the show had categories, until `clipper breakdown` is run for it."""
+    return in_seconds(parts(ws), categories, duration)
+
+
+def from_elsewhere(settings: Settings, show: Show, made_here: set[str]) -> list[Path]:
+    """The transcripts in the show's folder that the app didn't make: ones whose name (<date>_<id>.json) isn't for
+    one of `made_here`, the app's own streams' folders."""
+    folder = settings.transcripts_dir / safe_id(show.name)
+    return [path for path in sorted(folder.glob("*.json")) if path.stem.partition("_")[2] not in made_here]
+
+
+def read(path: Path) -> tuple[dict, Transcript]:
+    """A saved transcript: the file as it is, and its lines as a Transcript."""
+    data = json.loads(path.read_text(encoding="utf-8"))
+    segments = [TranscriptSegment(start=s["start"], end=s["end"], text=s["text"]) for s in data["segments"]]
+    duration = float(data.get("duration") or (segments[-1].end if segments else 0))
+    return data, Transcript(language=data.get("language"), duration=duration, segments=segments)
+
+
+def meta(data: dict) -> dict:
+    """A saved transcript's details as yt-dlp gives them for the app's own streams, for the AI's input."""
+    return {"title": data.get("title"), "channel": data.get("channel"), "extractor_key": data.get("platform"),
+            "upload_date": (data.get("date") or "").replace("-", "")}
+
+
+def add_breakdown(path: Path, data: dict, show: Show, answer: Breakdown, duration: float) -> None:
+    """Put the AI's breakdown into a saved transcript from elsewhere, under the show's categories."""
+    categories = show.breakdown_categories()
+    data.update(categories=categories, breakdown=in_seconds(answer.breakdown, categories, duration),
+                other_summary=answer.other_summary)
+    write_text(path, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+
+def in_seconds(found: list[LLMBreakdownPart], categories: dict[str, str], duration: float) -> list[dict]:
+    """The AI's parts in seconds, each under one of `categories` or Other."""
     names = {_key(name): name for name in categories}
-    found = []
-    for part in parts(ws):
+    out = []
+    for part in found:
         try:
             start, end = max(0.0, to_seconds(part.start)), min(duration, to_seconds(part.end))
         except ValueError:
             continue  # not a timecode: left out rather than guessed at
         if end > start:
-            found.append({"start": start, "end": end, "category": names.get(_key(part.category), OTHER), "note": part.note})
-    return found
+            out.append({"start": start, "end": end, "category": names.get(_key(part.category), OTHER), "note": part.note})
+    return out
 
 
 def _key(name: str) -> str:

@@ -336,6 +336,7 @@ def save_transcripts() -> None:
 def breakdown(
     vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: every stream of the shows with breakdown categories that has none yet.")] = None,
     again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories.")] = False,
+    imported: Annotated[bool, typer.Option("--imported", help="Instead, the transcripts added to the shows' folders from elsewhere, e.g. an archive of past streams.")] = False,
 ) -> None:
     """Ask the AI what past streams' time went on, from their saved transcripts, and save it with them (see transcripts.py).
 
@@ -353,7 +354,10 @@ def breakdown(
     with Session(get_engine(settings)) as s:
         shows = {show.id: show for show in s.exec(select(Show))}
         query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id))
-        vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids else query).all()
+        vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids and not imported else query).all()
+    if imported:
+        _break_down_imported(settings, list(shows.values()), {vod.workspace for vod in vods}, again)
+        return
     todo = []
     for vod in vods:
         show = shows[vod.show_id]
@@ -386,6 +390,37 @@ def breakdown(
         typer.secho(f"    {len(parts)} parts, saved with its transcript", fg="green")
     if not todo:
         typer.echo("Nothing to break down." + ("" if vod_ids or again else " To do ones that have a breakdown again, add --again."))
+
+
+def _break_down_imported(settings, shows, made_here: set[str], again: bool) -> None:
+    """`breakdown --imported`: the transcripts in the shows' folders that came from elsewhere."""
+    from . import transcripts
+
+    todo = []
+    for show in shows:
+        if show.breakdown_categories():
+            for path in transcripts.from_elsewhere(settings, show, made_here):
+                if again or not transcripts.read(path)[0].get("breakdown"):
+                    todo.append((show, path))
+    for i, (show, path) in enumerate(todo, 1):
+        data, transcript = transcripts.read(path)
+        typer.echo(f"{i}/{len(todo)}  {data.get('date')}  {(data.get('title') or path.stem)[:80]}")
+        try:
+            answer = segment.ask_breakdown(settings, transcripts.meta(data), transcript, show.breakdown_categories(),
+                                           context=show.notes)
+        except UsageLimitError as e:
+            when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
+            typer.secho(f"    {e.note}{when} Run `clipper breakdown --imported` again after that: it carries on with the "
+                        f"{len(todo) - i + 1} left.", fg="yellow", err=True)
+            raise typer.Exit(2)
+        except LLMError as e:
+            typer.secho(f"    {e}", fg="red", err=True)
+            continue
+        transcripts.add_breakdown(path, data, show, answer, transcript.duration)
+        typer.secho(f"    {len(answer.breakdown)} parts", fg="green")
+    if not todo:
+        typer.echo("Nothing to break down: no transcripts from elsewhere without a breakdown, in the folders of the shows "
+                   "with breakdown categories." + ("" if again else " To do them all again, add --again."))
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended
