@@ -13,7 +13,7 @@ STEP_OUTPUTS = {
     "audio": ["audio.wav"],
     "transcribe": ["transcript.json", "transcript.partial.json"],
     "signals": ["signals.json"],
-    "segment": ["llm/segmentation.json"],
+    "segment": ["llm/segmentation.json", "llm/breakdown.json"],
     "refine": ["segments.json"],
     "render": ["clips"],
 }
@@ -62,6 +62,12 @@ class Workspace:
     @property
     def segmentation_json(self) -> Path:
         return self.llm_dir / "segmentation.json"
+
+    @property
+    def breakdown_json(self) -> Path:
+        """A breakdown asked for on its own after the clips were picked (segment.break_down); it replaces the one in
+        segmentation.json."""
+        return self.llm_dir / "breakdown.json"
 
     @property
     def segments_json(self) -> Path:

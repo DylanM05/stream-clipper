@@ -116,6 +116,12 @@ class SegmentationWithBreakdown(Segmentation):
     breakdown: list[LLMBreakdownPart] = Field(default=[], description="The whole stream, in order, each part by category")
 
 
+class Breakdown(BaseModel):
+    """The breakdown asked for on its own, for a stream whose clips were picked already (segment.break_down)."""
+
+    breakdown: list[LLMBreakdownPart] = Field(description="The whole stream, in order, each part by category")
+
+
 # --- Final clips, after cut points are snapped to word boundaries -----------
 
 

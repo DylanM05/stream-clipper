@@ -229,7 +229,9 @@ def test_a_show_that_saves_transcripts_gets_each_streams_in_its_own_folder(setti
         "id": "vod-1", "show": "Night Owls", "title": "Big stream", "url": "https://www.twitch.tv/videos/1",
         "channel": "Creator", "platform": "TwitchVod", "date": "2026-10-23", "duration": 1000,
     }
-    assert saved["segments"][1] == {"start": 10.0, "end": TRANSCRIPT.segments[1].end, "text": "Sentence number 1."}
+    line = TRANSCRIPT.segments[1]
+    assert saved["segments"][1] == {"start": 10.0, "end": line.end, "text": "Sentence number 1.",
+                                    "words": [[w.start, w.end] for w in line.words]}
     assert len(saved["segments"]) == 100
     assert (folder / "2026-10-23_vod-1.txt").read_text(encoding="utf-8").splitlines()[1] == "[00:00:10] Sentence number 1."
 

@@ -9,6 +9,7 @@
 - `clipper rumble-upload-check` shows what Rumble's upload page asks for, in the upload browser.
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
 - `clipper save-transcripts` saves the transcripts of past streams of the shows with Save transcripts on.
+- `clipper breakdown` asks the AI for past streams' breakdowns, from their saved transcripts.
 - `clipper deploy-wait` and `clipper deploy-done` let a deploy restart the worker between uploads (deploy/deploy.sh).
 """
 
@@ -329,6 +330,62 @@ def save_transcripts() -> None:
                        f"{settings.transcripts_dir / safe_id(show.name)}")
         if not shows:
             typer.echo("No show has Save transcripts on (under the show, on the Shows screen).")
+
+
+@app.command()
+def breakdown(
+    vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: every stream of the shows with breakdown categories that has none yet.")] = None,
+    again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories.")] = False,
+) -> None:
+    """Ask the AI what past streams' time went on, from their saved transcripts, and save it with them (see transcripts.py).
+
+    Nothing is downloaded or transcribed again, and the streams' clips stay as they are. Each stream is one AI request
+    over its whole transcript.
+    """
+    from sqlmodel import Session, col, select
+
+    from . import transcripts
+    from .db import Show, Vod, get_engine
+    from .models import Transcript
+    from .workspace import Workspace
+
+    settings = get_settings()
+    with Session(get_engine(settings)) as s:
+        shows = {show.id: show for show in s.exec(select(Show))}
+        query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id))
+        vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids else query).all()
+    todo = []
+    for vod in vods:
+        show = shows[vod.show_id]
+        ws = Workspace(settings.vods_dir / vod.workspace)
+        if not show.breakdown_categories():
+            why_not = "Its show has no breakdown categories, or doesn't save transcripts."
+        elif not ws.transcript_json.exists():
+            why_not = "No transcript: it was posted whole, or isn't transcribed yet."
+        elif vod_ids or again or not transcripts.parts(ws):
+            todo.append((vod, show, ws))
+            continue
+        else:
+            continue  # has one already
+        if vod_ids:  # asked for by its id, so say why not
+            typer.echo(f"{vod.id}  {vod.title[:80]}\n    {why_not}")
+    for i, (vod, show, ws) in enumerate(todo):
+        typer.echo(f"{vod.id}  {vod.title[:80]}")
+        transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
+        try:
+            parts = segment.break_down(ws, settings, transcript, show.breakdown_categories(), context=show.notes)
+        except UsageLimitError as e:
+            when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
+            rest = " ".join(str(v.id) for v, _, _ in todo[i:])
+            typer.secho(f"    {e.note}{when} Carry on after that with: clipper breakdown {rest}", fg="yellow", err=True)
+            raise typer.Exit(2)
+        except LLMError as e:
+            typer.secho(f"    {e}", fg="red", err=True)
+            continue
+        transcripts.save(settings, show, vod, ws, transcript)
+        typer.secho(f"    {len(parts)} parts, saved with its transcript", fg="green")
+    if not todo:
+        typer.echo("Nothing to break down." + ("" if vod_ids or again else " To do ones that have a breakdown again, add --again."))
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended

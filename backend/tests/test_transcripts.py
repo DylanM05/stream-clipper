@@ -5,7 +5,7 @@ from conftest import line, transcript
 
 from clipper.config import Settings
 from clipper.db import Show, Vod
-from clipper.models import LLMBreakdownPart, Segmentation, SegmentationWithBreakdown, Signals
+from clipper.models import Breakdown, LLMBreakdownPart, Segmentation, SegmentationWithBreakdown, Signals
 from clipper.pipeline import segment
 from clipper import transcripts
 from clipper.workspace import Workspace, read_json, write_json, write_text
@@ -96,3 +96,96 @@ def test_a_stream_picked_through_before_the_show_had_categories_has_an_empty_bre
     show = Show(name="Night Owls", save_transcripts=True, breakdown=CATEGORIES)
     saved = read_json(transcripts.save(settings, show, Vod(url="u"), ws, TRANSCRIPT))
     assert saved["breakdown"] == [] and "News" in saved["categories"]
+
+
+def test_each_saved_line_has_its_words_timings_so_pauses_inside_it_can_be_measured(settings, ws):
+    path = transcripts.save(settings, Show(name="Night Owls", save_transcripts=True), Vod(url="u"), ws, TRANSCRIPT)
+    assert read_json(path)["segments"][0]["words"] == [[5.0, 5.3], [5.35, 5.65]]  # "Hello chat."
+    assert "\n" not in path.read_text(encoding="utf-8")  # compact: a long stream's word timings run to megabytes
+
+
+def part(start, end, category, note=""):
+    return LLMBreakdownPart(start=start, end=end, category=category, note=note)
+
+
+def test_a_breakdown_asked_for_on_its_own_replaces_the_one_with_the_clips_and_categories_match_however_written(settings, ws):
+    write_text(ws.segmentation_json, SegmentationWithBreakdown(
+        chapters=[], highlights=[], breakdown=[part("00:00:00", "00:10:00", "News")]).model_dump_json())
+    write_text(ws.breakdown_json, Breakdown(breakdown=[
+        part("00:00:00", "00:05:00", "dead air"), part("00:05:00", "00:10:00", "Dead_Air")]).model_dump_json())
+    show = Show(name="Night Owls", save_transcripts=True, breakdown="Dead-air: waiting around")
+    saved = read_json(transcripts.save(settings, show, Vod(url="u"), ws, TRANSCRIPT))
+    assert [p["category"] for p in saved["breakdown"]] == ["Dead-air", "Dead-air"]
+
+
+def test_breaking_a_stream_down_on_its_own_asks_only_for_the_breakdown(settings, ws, monkeypatch):
+    fake = FakeAI(Breakdown(breakdown=[part("00:00:00", "00:10:00", "News", "Headlines")]))
+    monkeypatch.setattr(segment.ai, "model", lambda *a, **k: fake)
+    parts = segment.break_down(ws, settings, TRANSCRIPT, {"News": "going through headlines"}, context="The host is Sam.")
+
+    assert [p.note for p in parts] == ["Headlines"]
+    asked = fake.asked
+    assert asked["schema"] is Breakdown and asked["system_prompt"].startswith("You work out what a long livestream's time")
+    assert "## Breakdown" in asked["system_prompt"] and asked["task"].startswith("Break down what this 00:10:00 stream")
+    assert "# About the show\nThe host is Sam." in asked["stdin_text"] and "- News: going through headlines" in asked["stdin_text"]
+    assert transcripts.parts(ws) == parts  # kept in llm/breakdown.json
+
+
+class TestBreakdownCommand:
+    @pytest.fixture
+    def setup(self, settings, monkeypatch):
+        from sqlmodel import Session
+
+        from clipper import cli
+        from clipper.db import get_engine
+
+        monkeypatch.setattr(cli, "get_settings", lambda: settings)
+        asked = []
+
+        def break_down(ws, settings_, transcript, categories, context=""):
+            asked.append(ws.root.name)
+            write_text(ws.breakdown_json, Breakdown(breakdown=[part("00:00:00", "00:10:00", "News")]).model_dump_json())
+            return transcripts.parts(ws)
+
+        monkeypatch.setattr(cli.segment, "break_down", break_down)
+        with Session(get_engine(settings)) as s:
+            tracked = Show(name="Night Owls", save_transcripts=True, breakdown=CATEGORIES)
+            other = Show(name="Other show")
+            s.add_all([tracked, other])
+            s.commit()
+            ids = {}
+            for name, show, has_one in (("kick-1", tracked, False), ("kick-2", tracked, True), ("kick-3", other, False)):
+                ws = Workspace.open(settings.vods_dir, name)
+                write_json(ws.meta_json, {"title": name, "upload_date": "20261030"})
+                write_text(ws.transcript_json, TRANSCRIPT.model_dump_json())
+                if has_one:
+                    write_text(ws.segmentation_json, SegmentationWithBreakdown(
+                        chapters=[], highlights=[], breakdown=[part("00:00:00", "00:10:00", "Gameplay")]).model_dump_json())
+                vod = Vod(url=f"https://kick.com/x/videos/{name}", workspace=name, title=name, show_id=show.id)
+                s.add(vod)
+                s.commit()
+                ids[name] = vod.id
+        return cli, asked, ids
+
+    def run(self, cli, *args):
+        from typer.testing import CliRunner
+
+        out = CliRunner().invoke(cli.app, ["breakdown", *args])
+        assert out.exit_code == 0, out.output
+        return out.output
+
+    def test_by_default_only_streams_without_a_breakdown_are_done_and_saved_with_their_transcript(self, setup, settings):
+        cli, asked, _ = setup
+        self.run(cli)
+        assert asked == ["kick-1"]
+        saved = read_json(settings.transcripts_dir / "night-owls" / "2026-10-30_kick-1.json")
+        assert saved["breakdown"] == [{"start": 0, "end": 600, "category": "News", "note": ""}]
+        self.run(cli)
+        assert asked == ["kick-1"]  # nothing left without one
+
+    def test_again_redoes_the_ones_with_one_and_ids_pick_streams_saying_why_one_cant_be_done(self, setup):
+        cli, asked, ids = setup
+        self.run(cli, "--again")
+        assert asked == ["kick-1", "kick-2"]
+        output = self.run(cli, str(ids["kick-2"]), str(ids["kick-3"]))
+        assert asked[2:] == ["kick-2"] and "Its show has no breakdown categories" in output
