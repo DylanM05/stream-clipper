@@ -116,7 +116,7 @@ def reference_guide(idea: Idea, frame_count: int, photos: list[Photo]) -> str:
 
 
 def cast_list(idea: Idea, photos: list[Photo]) -> str:
-    """E.g. "Don (from the video), Ethan Klein (Wikipedia photo), Hasan (from a description)"."""
+    """E.g. "Sam (from the video), John Doe (Wikipedia photo), Alex (from a description)"."""
     sources = {p.person.name: f"{p.source} photo" for p in photos}
     return ", ".join(
         f"{p.name} ({'from the video' if p.in_video else sources.get(p.name, 'from a description')})" for p in idea.people
@@ -156,9 +156,9 @@ def _channel(person: Person, channel_picture: ChannelPicture | None) -> str:
 
 
 def _same_person(person: Person, title: str) -> bool:
-    """Whether a page or channel name is theirs, by the name the video uses or their full name: "The Quartering" for
-    TheQuartering, "Jeremy Hambly" for Jer if the AI knows that's who Jer is. Short names must match exactly, since a
-    nickname like "Jer" on its own could be any Jeremy."""
+    """Whether a page or channel name is theirs, by the name the video uses or their full name: "John Doe Show" for
+    JohnDoeShow, "John Doe" for Jay if the AI knows that's who Jay is. Short names must match exactly, since a
+    nickname like "Jay" on its own could be anyone."""
     found = _squash(title)
 
     def matches(name: str) -> bool:

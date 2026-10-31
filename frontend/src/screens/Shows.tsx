@@ -139,7 +139,7 @@ export function UploadChannels() {
     <Screen title="YouTube channels" subtitle="Where your videos get uploaded." onBack={() => go("shows")}>
       {youtube && <YouTubeApiPanel configured={youtube.configured} callbackPath={youtube.callback_path} />}
       <div className="space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Kino Casino Clips" className={cn(input, "bg-zinc-800 ring-0")} />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Name, e.g. Night Owls Clips" className={cn(input, "bg-zinc-800 ring-0")} />
         <input
           type="url"
           inputMode="url"
@@ -516,7 +516,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   return (
     <div className="space-y-5">
       <Field label="Name">
-        <input value={fields.name} onChange={(e) => set({ name: e.target.value })} placeholder="Kino Casino" className={input} />
+        <input value={fields.name} onChange={(e) => set({ name: e.target.value })} placeholder="Night Owls" className={input} />
       </Field>
 
       <Field label="What to make from each video">
@@ -718,7 +718,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             onChange={(e) => set({ thumbnail_guidance: e.target.value })}
             rows={3}
             maxLength={2000}
-            placeholder={'e.g. Must have the words "Kino Casino Preshow" in a banner along the bottom. Bright, casino colours.'}
+            placeholder={'e.g. Must have the words "Night Owls Live" in a banner along the bottom. Bold, neon colours.'}
             className={input}
           />
         </label>
@@ -762,7 +762,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             onChange={(e) => set({ clip_guidance: e.target.value })}
             rows={6}
             placeholder={
-              "e.g. Clips follow the segments the hosts announce and run 20–90 minutes; give each of Jer's segments its own clip.\n" +
+              "e.g. Clips follow the segments the hosts announce and run 20–90 minutes; give each guest their own clip.\n" +
               "Highlights: the biggest laughs and blow-ups, 30–90 seconds."
             }
             className={input}
@@ -795,7 +795,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           value={fields.match}
           onChange={(e) => set({ match: e.target.value })}
           rows={3}
-          placeholder={"x.com/Andywarski\nkick.com/kinocasino"}
+          placeholder={"x.com/yourshow\nkick.com/yourshow"}
           className={input}
         />
         <p className="mt-1.5 text-xs text-zinc-500">
@@ -1314,9 +1314,9 @@ function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChan
   return (
     <div className="space-y-3">
       <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
-        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + kino casino" : "kino, casino"} className={cn(input, "bg-zinc-800 ring-0")} />
+        <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + night owls" : "night owls, full show"} className={cn(input, "bg-zinc-800 ring-0")} />
         <p className="mt-1.5 text-xs text-zinc-500">
-          Any one keyword will do. Join words with + to need all of them, e.g. “tonight on + kino casino”.
+          Any one keyword will do. Join words with + to need all of them, e.g. “tonight on + night owls”.
         </p>
       </Field>
       <Field label={`Skip ${what} with`} hint="comma-separated">

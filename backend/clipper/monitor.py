@@ -201,7 +201,7 @@ def skip_reason(channel: Channel, item: Listed) -> str:
     """Why the channel's filters leave this video out, or "" to process it.
 
     Keywords are comma-separated, and any one of them will do; one made of parts joined with "+" needs
-    all its parts, e.g. "tonight on + kino casino". Case and repeated spaces don't matter.
+    all its parts, e.g. "tonight on + night owls". Case and repeated spaces don't matter.
     """
     title = _words(item.title)
     what = "post" if channel.platform == "x" else "title"

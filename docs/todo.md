@@ -2,6 +2,14 @@
 
 Ideas agreed on but not built yet, newest first.
 
+## Description footer for each show
+
+A show setting with text added to the end of every upload's description, such as the creators' channel links (Oct 30, 2026). Asking the AI for it in the show's notes doesn't work reliably, and a video posted whole (a pre-show from X) gets the post's own text as its description, which the AI never writes, so the link never gets in.
+
+## People shared between shows
+
+One list of the people the shows feature or talk about: who each is, the names they go by, their real name and what they look like, which several shows can use instead of each describing them in its own notes and thumbnail rules (Oct 30, 2026). The same people are described in three shows now, so a change has to be made three times, and the copies drift apart.
+
 ## Learn from how past clips did: what's left
 
 Since Oct 30, 2026, the AI gets each show's track record when it picks a stream's clips (learning.py): how past uploads did against the show's usual, how the owner changed its picks (with the words a moved start or end took in or left out) or turned them down, and the owner's notes. Still to do, roughly most useful first:
@@ -34,6 +42,7 @@ Make sure everything is secure and no secrets are exposed (Oct 29, 2026).
 ## Release on GitHub, selfh.st and r/selfhosted
 
 Get the project ready to publish on GitHub, then post it to selfh.st and r/selfhosted (Oct 29, 2026).
+- **Generic test data:** the prompts, the app's example texts, the README and the code's comments use made-up shows and people since Oct 30, 2026, but the tests' sample data still names the owner's shows and the people on them (about 250 lines). Swap those for made-up names too.
 
 ## Intro on videos (on hold, Oct 27, 2026)
 

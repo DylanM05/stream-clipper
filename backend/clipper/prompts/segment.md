@@ -19,8 +19,8 @@ Split the whole stream into chapters, in order, covering it from start to end wi
   - `break`: BRB, AFK, ad breaks, long silences.
   - `outro`: raid, goodbyes, ending screen.
   - `content`: everything worth uploading.
-- Title: short and snappy, saying what the chapter is at a glance. Lead with the segment, then the topics if there's room:
-  - A segment built around a guest or person, or a recurring segment of the show, starts with its name and "Segment:", e.g. "TheQuartering Segment: Ethan Klein Lawsuit, Twitch Ban". A game or one main topic starts with that instead, e.g. "Elden Ring: Jer Finally Beats Malenia".
+- Title: short and snappy, saying what the chapter is at a glance. Lead with what it's built around, then the topics if there's room:
+  - Start with the name of the recurring segment, guest, person, game or main topic it's built around, then a colon, e.g. "Listener Mailbag: Moving Abroad, Worst Roommates" or "Speedrun Night: The Final Boss Finally Falls". Where the show's guidance sets a naming style, use that.
   - After the colon, name the one or two main topics in a few plain words. Drop topics rather than cram them in.
   - Aim for 35–60 characters, never more than the task's limit. Shorter is better when it still says what the video is.
   - In the creator's voice. No clickbait the video doesn't deliver, no all-caps titles, and no emojis unless the creator notes ask for them.
@@ -37,7 +37,7 @@ Pick the best standalone moments for short clips and Shorts.
 - Each must make sense with no earlier context. Start at the setup, a beat before the moment begins, and end right after the payoff or reaction. Never start or end in the middle of a sentence.
 - Good highlights: big laughs, surprising or emotional moments, hype plays, great stories, sharp hot takes, a guest's best line. Loud moments in the hints are worth checking, but confirm them in the transcript.
 - No two highlights may overlap. Skip pre-stream, break and outro chapters unless something exceptional happens there.
-- Title: a short, snappy hook that makes people want to watch, true to what happens. Aim for under 50 characters, never more than the task's limit. Name who it's about when that's a draw, e.g. "TheQuartering Gets Caught Lying Again".
+- Title: a short, snappy hook that makes people want to watch, true to what happens. Aim for under 50 characters, never more than the task's limit. Name who it's about when that's a draw, e.g. "[Name] Gets Caught Lying Again".
 - Score: 0–1, how likely the clip is to do well. Only the best-scored highlights get uploaded, so be calibrated: most good clips score 0.5–0.8; reserve 0.9 and above for standout moments.
 - vertical_ok: true if the clip still works in vertical format on a phone, where the original video is shown small; false if it depends on reading small on-screen detail.
 

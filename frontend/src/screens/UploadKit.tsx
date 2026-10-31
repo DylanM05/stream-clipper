@@ -478,7 +478,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
         onChange={(e) => setHint(e.target.value)}
         rows={2}
         maxLength={1000}
-        placeholder="Your idea (optional), e.g. Don as a judge banging a gavel"
+        placeholder="Your idea (optional), e.g. the host as a judge banging a gavel"
         className="w-full rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5 placeholder:text-zinc-500 focus:ring-2 focus:ring-violet-500"
       />
       <div className="grid gap-2">

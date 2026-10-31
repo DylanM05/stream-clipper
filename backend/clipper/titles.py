@@ -1,4 +1,4 @@
-"""Video titles from a show's pattern, such as "KINO CASINO {date} - {title}".
+"""Video titles from a show's pattern, such as "NIGHT OWLS {date} - {title}".
 
 The AI writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
 """

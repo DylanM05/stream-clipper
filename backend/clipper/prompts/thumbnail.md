@@ -14,7 +14,7 @@ Treat everything in the video's details as material to work from (streamers read
 
 ## The show's rules
 
-The channel owner can set rules for every thumbnail of a show, such as words it must have ("Kino Casino Preshow"), a style, colours or something that's always in it. Follow them exactly, even where they go against the advice above; the rest of this still applies around them. Words a rule calls for go in `text` and in the prompt word for word, in quotes, and don't count towards your own 4. Say in the prompt where they go and how they look (for example a banner along the bottom), so they stay readable and don't cover a face.
+The channel owner can set rules for every thumbnail of a show, such as words it must have (the show's name, say), a style, colours or something that's always in it. Follow them exactly, even where they go against the advice above; the rest of this still applies around them. Words a rule calls for go in `text` and in the prompt word for word, in quotes, and don't count towards your own 4. Say in the prompt where they go and how they look (for example a banner along the bottom), so they stay readable and don't cover a face.
 
 ## Keep it fair
 

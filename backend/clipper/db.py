@@ -117,7 +117,7 @@ class Show(SQLModel, table=True):
     # them, or its channel or account is one of them.
     match: str = ""
     mode: str = "segment"  # see MODES
-    title_template: str = "{title}"  # clips, e.g. "KINO CASINO {date} - {title}"
+    title_template: str = "{title}"  # clips, e.g. "NIGHT OWLS {date} - {title}"
     episode_template: str = ""  # full episodes; empty means the clip pattern
     notes: str = ""  # for Claude: about the show, who's on it, running jokes
     clip_guidance: str = ""  # for Claude: what the chapters and highlights should be
@@ -366,7 +366,7 @@ def default_mode(url: str) -> str:
 def find_show(shows: Iterable[Show], url: str, names: Iterable[str | None] = ()) -> Show | None:
     """The first show with a term that appears in the link or names the channel.
 
-    A channel link like "twitch.tv/kinocasino" also matches a channel named "kinocasino", since
+    A channel link like "twitch.tv/nightowls" also matches a channel named "nightowls", since
     Twitch VOD links (twitch.tv/videos/123) don't contain the channel.
     """
     url = url.lower()
