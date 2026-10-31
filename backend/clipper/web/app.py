@@ -202,6 +202,8 @@ class ShowIn(BaseModel):
     episode_thumbnails: bool = False
     thumbnail_guidance: str = Field(default="", max_length=2000)
     learning_notes: str = Field(default="", max_length=4000)
+    save_transcripts: bool = False
+    breakdown: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
@@ -236,6 +238,8 @@ class ShowPatch(BaseModel):
     episode_thumbnails: bool | None = None
     thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
     learning_notes: str | None = Field(default=None, max_length=4000)  # what you've noticed works (learning.py)
+    save_transcripts: bool | None = None  # also saved as files, for use outside the app (transcripts.py)
+    breakdown: str | None = Field(default=None, max_length=4000)  # categories the AI sorts streams' time into
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
@@ -463,6 +467,8 @@ class ShowOut(BaseModel):
     episode_thumbnails: bool
     thumbnail_guidance: str
     learning_notes: str
+    save_transcripts: bool
+    breakdown: str
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none

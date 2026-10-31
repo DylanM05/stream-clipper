@@ -455,6 +455,8 @@ const BLANK: ShowFields = {
   episode_thumbnails: false,
   thumbnail_guidance: "",
   learning_notes: "",
+  save_transcripts: false,
+  breakdown: "",
   short_video_top: null,
   short_video_width: 1,
   overlay_episodes: false,
@@ -788,6 +790,43 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             its picks. Stats shows what it's given.
           </p>
         </Field>
+      )}
+
+      {hasClips(fields.mode) && (
+        <Group label="Transcripts" hint="for use outside the app">
+          <Tick
+            label="Save each stream's transcript as files"
+            checked={fields.save_transcripts}
+            onChange={(save_transcripts) => set({ save_transcripts })}
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Once the AI has been through a stream, its transcript is saved in the data folder under transcripts/, in a
+            folder for the show: as .json with the stream's details and when each line was said, and as .txt to read. The
+            save-transcripts command saves past streams' too.
+          </p>
+          {fields.save_transcripts && (
+            <label className="mt-3 block">
+              <span className="mb-1 block text-xs text-zinc-500">
+                What each stream's time goes on (optional): one category per line, a name, a colon and what it covers
+              </span>
+              <textarea
+                value={fields.breakdown}
+                onChange={(e) => set({ breakdown: e.target.value })}
+                rows={4}
+                maxLength={4000}
+                placeholder={
+                  "e.g. Gameplay: playing a game\nNews: going through headlines and other people's stories\nSponsors: paid ad reads"
+                }
+                className={input}
+              />
+              <span className="mt-1.5 block text-xs text-zinc-500">
+                The AI splits each stream into these, with anything else as Other, in the same request as picking the clips,
+                so it costs little extra. The parts are saved in the .json, for working out what share of each stream goes
+                on what. For streams from now on.
+              </span>
+            </label>
+          )}
+        </Group>
       )}
 
       <Field label="Links that belong to this show" hint="one per line">

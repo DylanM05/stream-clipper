@@ -138,6 +138,11 @@ class Settings(BaseSettings):
         return self.data_dir / "overlays" / f"show-{show_id}.png"
 
     @property
+    def transcripts_dir(self) -> Path:
+        """Transcripts of the shows that save them, a folder per show (transcripts.py)."""
+        return self.data_dir / "transcripts"
+
+    @property
     def db_path(self) -> Path:
         return self.data_dir / "clipper.db"
 

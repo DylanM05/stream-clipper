@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles
+from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles, transcripts
 from .config import Settings
 from .db import (
     CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show, get_app_setting,
@@ -255,7 +255,10 @@ class Worker:
                     title_prefixed=clip_template != "{title}",
                     episode_room=titles.room_for_title(episode_template, day),
                     track_record=self._track_record(show),
+                    breakdown=show.breakdown_categories() if show else None,
                 )
+                if show and show.save_transcripts:
+                    self._save_transcript(show, vod, ws, transcript)
                 clips = refine.run(ws, segmentation, transcript)
                 for c in clips:
                     c.title = titles.build(clip_template, c.title, day)
@@ -360,6 +363,14 @@ class Worker:
             if show:
                 s.expunge(show)
             return show
+
+    def _save_transcript(self, show: Show, vod: Vod, ws: Workspace, transcript: Transcript) -> None:
+        """Save the transcript, with the AI's breakdown if the show has one, for use outside the app. That's not what
+        the stream is processed for, so a failure is only logged."""
+        try:
+            log.info("Saved video %d's transcript to %s", vod.id, transcripts.save(self.settings, show, vod, ws, transcript))
+        except Exception:
+            log.exception("Couldn't save video %d's transcript", vod.id)
 
     def _track_record(self, show: Show | None) -> str:
         """What the show's past clips teach the AI (learning.py); empty if there's nothing yet, or working it out

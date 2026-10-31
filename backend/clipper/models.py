@@ -102,6 +102,20 @@ class Segmentation(BaseModel):
     episode_summary: str = Field(default="", description="2-4 sentences describing the whole episode, for its description")
 
 
+class LLMBreakdownPart(BaseModel):
+    start: str = Field(description=_TIMECODE)
+    end: str = Field(description=_TIMECODE)
+    category: str = Field(description="One of the show's breakdown categories, by its name as given, or Other")
+    note: str = Field(description="What happens in it, in a few words")
+
+
+class SegmentationWithBreakdown(Segmentation):
+    """The same, plus what the stream's time goes on, for a show that asks for a breakdown (Show.breakdown)."""
+
+    # The default keeps answers without one readable; the AI is always asked for it when this is the schema.
+    breakdown: list[LLMBreakdownPart] = Field(default=[], description="The whole stream, in order, each part by category")
+
+
 # --- Final clips, after cut points are snapped to word boundaries -----------
 
 

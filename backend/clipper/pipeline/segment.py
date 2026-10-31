@@ -1,7 +1,8 @@
 """Ask the AI to split the stream into chapters and pick highlights, in one call over the whole transcript.
 
 One call instead of two halves how much of your plan (or OpenRouter credit) each VOD uses: the transcript is
-most of the input, and it only has to be sent once. The app calls chapters "clips".
+most of the input, and it only has to be sent once. The app calls chapters "clips". For the same reason, a show's
+breakdown of what the stream's time goes on (Show.breakdown) is asked for in the same call.
 """
 
 import logging
@@ -9,7 +10,7 @@ from pathlib import Path
 
 from ..config import Settings
 from .. import ai
-from ..models import Segmentation, Signals, Transcript
+from ..models import Segmentation, SegmentationWithBreakdown, Signals, Transcript
 from ..timecode import to_timecode
 from ..workspace import Workspace, write_text
 
@@ -29,13 +30,15 @@ def run(
     title_prefixed: bool = False,
     episode_room: int | None = None,
     track_record: str = "",
+    breakdown: dict[str, str] | None = None,
 ) -> Segmentation:
     """Ask the AI for chapters, highlights and an episode title.
 
     `context` is about the show and `guidance` is what its chapters and highlights should be.
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
     means the show name and date get added to them. `track_record` is what the show's past clips teach it
-    (learning.py).
+    (learning.py). `breakdown` is the categories, by name with what each covers, that it also sorts the stream's
+    time into; the answer is then a SegmentationWithBreakdown.
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
@@ -47,15 +50,19 @@ def run(
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
+    system_prompt = (PROMPTS_DIR / "segment.md").read_text(encoding="utf-8")
+    task = f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to {max_highlights} highlights"
+    schema = Segmentation
+    if breakdown:
+        system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
+        task += ", and break down what its time goes on"
+        schema = SegmentationWithBreakdown
     llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
     result = llm.structured(
-        system_prompt=(PROMPTS_DIR / "segment.md").read_text(encoding="utf-8"),
-        task=(
-            f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to "
-            f"{max_highlights} highlights. {title_rule}. The stream details, hints and transcript follow."
-        ),
-        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record),
-        schema=Segmentation,
+        system_prompt=system_prompt,
+        task=f"{task}. {title_rule}. The stream details, hints and transcript follow.",
+        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown),
+        schema=schema,
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
     write_text(ws.segmentation_json, result.model_dump_json(indent=2))
@@ -64,7 +71,7 @@ def run(
 
 
 def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",
-                track_record: str = "") -> str:
+                track_record: str = "", breakdown: dict[str, str] | None = None) -> str:
     tc = to_timecode
     lines = [
         "# Stream",
@@ -82,6 +89,9 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
     if guidance.strip():
         # The app calls chapters "clips", so the show's guidance may too.
         lines += ["", '# What the chapters and highlights should be (chapters may be called "clips" here)', guidance.strip()]
+    if breakdown:
+        lines += ["", "# Breakdown categories"]
+        lines += [f"- {name}: {covers}" if covers else f"- {name}" for name, covers in breakdown.items()]
     if track_record.strip():
         lines += ["", track_record.strip()]
     if signals.platform_chapters:

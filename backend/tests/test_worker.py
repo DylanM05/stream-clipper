@@ -7,13 +7,15 @@ from zoneinfo import ZoneInfo
 import pytest
 from conftest import line, transcript
 from sqlmodel import Session, select
+from typer.testing import CliRunner
 
+from clipper import cli
 from clipper import worker as worker_module
 from clipper.config import Settings
 from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_engine, set_app_setting, utcnow
 from clipper.llm import UsageLimitError
 from clipper.models import LLMChapter, LLMHighlight, Segmentation, Signals
-from clipper.workspace import Workspace, write_json, write_text
+from clipper.workspace import Workspace, read_json, write_json, write_text
 
 TRANSCRIPT = transcript(*[line(i * 10.0, f"Sentence number {i}.") for i in range(100)], duration=1000)
 SEGMENTATION = Segmentation(
@@ -215,6 +217,51 @@ def test_whole_mode_posts_the_entire_video(settings, fake_pipeline):
     assert (clip.key, clip.kind, clip.start, clip.end) == ("full", "whole", 0, 1000)
     assert clip.title == "LIVE NOW: the preshow & more"
     assert fake_pipeline["segment"] == 0
+
+
+def test_a_show_that_saves_transcripts_gets_each_streams_in_its_own_folder(settings, fake_pipeline):
+    add_show(settings, name="Night Owls", match="twitch.tv/videos", save_transcripts=True)
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+
+    folder = settings.transcripts_dir / "night-owls"
+    saved = read_json(folder / "2026-10-23_vod-1.json")
+    assert {k: saved[k] for k in ("id", "show", "title", "url", "channel", "platform", "date", "duration")} == {
+        "id": "vod-1", "show": "Night Owls", "title": "Big stream", "url": "https://www.twitch.tv/videos/1",
+        "channel": "Creator", "platform": "TwitchVod", "date": "2026-10-23", "duration": 1000,
+    }
+    assert saved["segments"][1] == {"start": 10.0, "end": TRANSCRIPT.segments[1].end, "text": "Sentence number 1."}
+    assert len(saved["segments"]) == 100
+    assert (folder / "2026-10-23_vod-1.txt").read_text(encoding="utf-8").splitlines()[1] == "[00:00:10] Sentence number 1."
+
+
+def test_transcripts_are_only_saved_for_shows_that_ask_and_failing_to_doesnt_stop_the_stream(settings, fake_pipeline, monkeypatch):
+    show_id = add_show(settings, name="Night Owls", match="twitch.tv/videos")
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    assert not settings.transcripts_dir.exists()
+
+    with Session(get_engine(settings)) as s:
+        s.get(Show, show_id).save_transcripts = True
+        s.commit()
+    monkeypatch.setattr(worker_module.transcripts, "save", lambda *a: 1 / 0)
+    vod_id = add_vod(settings, url="https://www.twitch.tv/videos/2")
+    worker_module.Worker(settings).process_vod(vod_id)
+    assert get(settings, Vod, vod_id).status == "ready"
+
+
+def test_save_transcripts_saves_past_streams_of_the_shows_with_it_on(settings, fake_pipeline, monkeypatch):
+    show_id = add_show(settings, name="Night Owls", match="twitch.tv/videos")
+    add_show(settings, name="Pre-show", match="x.com/a", save_transcripts=True)  # nothing transcribed
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+    with Session(get_engine(settings)) as s:
+        s.get(Show, show_id).save_transcripts = True
+        s.commit()
+
+    monkeypatch.setattr(cli, "get_settings", lambda: settings)
+    out = CliRunner().invoke(cli.app, ["save-transcripts"])
+    assert out.exit_code == 0, out.output
+    assert "Night Owls: 1 transcript in" in out.output and "Pre-show: 0 transcripts in" in out.output
+    assert read_json(settings.transcripts_dir / "night-owls" / "2026-10-23_vod-1.json")["title"] == "Big stream"
 
 
 def test_usage_limit_waits_and_retries_later(settings, fake_pipeline, monkeypatch):

@@ -257,6 +257,8 @@ export interface Show {
   episode_thumbnails: boolean; // and full episodes
   thumbnail_guidance: string; // what every thumbnail of the show must have, e.g. words on it
   learning_notes: string; // what you've noticed works, which the AI follows over how past clips did
+  save_transcripts: boolean; // each stream's transcript is also saved as files, for use outside the app
+  breakdown: string; // categories the AI sorts each stream's time into, saved with it: one per line, "Name: what it covers"
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream

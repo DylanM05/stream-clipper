@@ -151,6 +151,11 @@ class Show(SQLModel, table=True):
     # For the AI: what you've noticed works for the show, which it puts first among what its past clips teach it
     # (learning.py).
     learning_notes: str = ""
+    # Each stream's transcript is also saved as files of its own, for use outside the app (transcripts.py), with
+    # what the stream's time goes on when `breakdown` has categories: one per line, "Name: what it covers". The AI
+    # sorts the stream into them in the same request as the clips (segment.py).
+    save_transcripts: bool = False
+    breakdown: str = ""
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
@@ -183,6 +188,17 @@ class Show(SQLModel, table=True):
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]
+
+    def breakdown_categories(self) -> dict[str, str]:
+        """The breakdown's categories by name, with what each covers; none unless transcripts are saved."""
+        if not self.save_transcripts:
+            return {}
+        categories = {}
+        for line in self.breakdown.splitlines():
+            name, _, covers = line.partition(":")
+            if name.strip():
+                categories[name.strip()] = covers.strip()
+        return categories
 
 
 class Vod(SQLModel, table=True):

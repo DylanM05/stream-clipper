@@ -8,6 +8,7 @@
 - `clipper channel-check <url>` shows what the worker sees on a watched channel.
 - `clipper rumble-upload-check` shows what Rumble's upload page asks for, in the upload browser.
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
+- `clipper save-transcripts` saves the transcripts of past streams of the shows with Save transcripts on.
 - `clipper deploy-wait` and `clipper deploy-done` let a deploy restart the worker between uploads (deploy/deploy.sh).
 """
 
@@ -301,6 +302,33 @@ def timing_check(
                         typer.echo(f"      {clip.key}  {clip.title[:70]}")
         if not vods:
             typer.echo("No finished videos" + (" with those ids." if vod_ids else "."))
+
+
+@app.command("save-transcripts")
+def save_transcripts() -> None:
+    """Save the transcripts of past streams, of every show with Save transcripts on, as new ones are (see transcripts.py)."""
+    from sqlmodel import Session, col, select
+
+    from . import transcripts
+    from .db import Show, Vod, get_engine
+    from .models import Transcript
+    from .workspace import Workspace, safe_id
+
+    settings = get_settings()
+    with Session(get_engine(settings)) as s:
+        shows = s.exec(select(Show).where(col(Show.save_transcripts).is_(True)).order_by(col(Show.id))).all()
+        for show in shows:
+            saved = 0
+            for vod in s.exec(select(Vod).where(Vod.show_id == show.id, col(Vod.workspace).is_not(None))):
+                ws = Workspace(settings.vods_dir / vod.workspace)
+                if ws.transcript_json.exists() and ws.meta_json.exists():  # posted whole, or not transcribed yet
+                    transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
+                    transcripts.save(settings, show, vod, ws, transcript)
+                    saved += 1
+            typer.echo(f"{show.name}: {saved} transcript{'' if saved == 1 else 's'} in "
+                       f"{settings.transcripts_dir / safe_id(show.name)}")
+        if not shows:
+            typer.echo("No show has Save transcripts on (under the show, on the Shows screen).")
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended
