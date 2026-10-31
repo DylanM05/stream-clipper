@@ -257,6 +257,10 @@ class ClipRecord(SQLModel, table=True):
     picked_start: float | None = None
     picked_end: float | None = None
     picked_title: str = ""
+    # Offered as an extra (beyond the show's best few, by score) rather than in the inbox: approving it anyway says the
+    # AI scored it too low (learning.py). Unset for clips made in the app, full episodes, and older clips until it's
+    # worked out from their scores.
+    was_extra: bool | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

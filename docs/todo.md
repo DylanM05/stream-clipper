@@ -4,9 +4,16 @@ Ideas agreed on but not built yet, newest first.
 
 ## Learn from how past clips did: what's left
 
-Since Oct 30, 2026, the AI gets each show's track record when it picks a stream's clips (learning.py): how past uploads did against the show's usual, how the owner changed its picks (with the words a moved start or end took in or left out) or turned them down, and the owner's notes. Still to do:
-- **Better measures than views:** how much of each clip people watched, from the YouTube Analytics API, so the track record can tell a clip people clicked from one they stayed for. Connected channels would need to grant one more permission.
-- **How it went up:** whether the day and time, the channel, or having a thumbnail made a difference. The app already keeps these, but nothing compares them yet.
+Since Oct 30, 2026, the AI gets each show's track record when it picks a stream's clips (learning.py): how past uploads did against the show's usual, how the owner changed its picks (with the words a moved start or end took in or left out) or turned them down, and the owner's notes. Still to do, roughly most useful first:
+- **Where viewers leave:** how much of each clip people watched, and its retention curve, from the YouTube Analytics API, matched to the transcript ("most viewers left when the sponsor read started"). The best teacher for cut points. Connected channels would need to grant one more permission.
+- **Subscribers gained per clip** (the same API): which clips grow the channel, not just get views.
+- **Topic and people tags:** the AI tags each pick, so the track record can say "segments about X do 2× usual" instead of hoping the AI spots it in titles. Keeping the tags consistent means showing it the ones it used before.
+- **Click-through rate:** how often people clicked when YouTube showed the video, from YouTube's reach reports (to be confirmed that the API has it). It separates a good title and thumbnail from a good clip, and could teach the thumbnail ideas too.
+- **Comments:** a short summary of what viewers quoted, asked for or complained about (YouTube Data API, cheap on quota).
+- **Live chat and viewer clips while picking:** chat spikes in the stream, and the moments viewers clipped themselves on Twitch or Kick. Twitch chat replays can be downloaded; Kick's is less certain.
+- **Rumble views:** not read yet.
+- **Scores that steer Standouts:** if the AI's high scores haven't beaten the rest, Standouts could warn, or wait for more proof before uploading by itself.
+- **How it went up, for the upload timing:** whether the day and time, the gap between a stream's clips, how soon after the stream, the channel or having a thumbnail made a difference. The app already keeps these; they'd steer the upload schedule rather than the picks.
 
 ## Setup when the app first starts
 

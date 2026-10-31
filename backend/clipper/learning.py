@@ -1,15 +1,15 @@
 """What a show's past clips teach the AI that picks the next stream's (segment.py): how its uploads did on YouTube
-against the show's usual, and how the channel owner changed or turned down the AI's picks, down to the words a moved
-start or end took in or left out. With the owner's own notes about what works, it goes into the AI's input for each
-new stream, and the Stats screen shows it.
+against the show's usual, how the channel owner changed or turned down the AI's picks (down to the words a moved
+start or end took in or left out), and the moments the owner clipped themselves. With the owner's own notes about
+what works, it goes into the AI's input for each new stream, and the Stats screen shows it.
 
-The AI's picks are kept with each clip as first offered (ClipRecord.picked_*); clips from before that get them from
-their stream's segments.json, which has kept them all along (backfill_picks).
+The AI's picks are kept with each clip as first offered (ClipRecord.picked_*, was_extra); clips from before that get
+them from their stream's segments.json, which has kept them all along, and from how their scores ranked (backfill).
 """
 
 import logging
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 from math import inf
 from pathlib import Path
 from statistics import median
@@ -27,9 +27,12 @@ log = logging.getLogger(__name__)
 
 MIN_KIND = 4  # uploads of a kind with views before its usual (the median) means anything
 MIN_BAND = 2  # uploads in a band of length or score before it's worth a mention
-BEST, WORST = 6, 4  # uploads shown as having done best and worst
+AROUND = timedelta(days=30)  # an upload is compared with others of its kind this close in time, so growth doesn't skew it
+LATELY = 10  # the newest uploads of a kind that say what's usual lately
+BEST, WORST, FEW = 6, 4, 3  # uploads shown as having done best and worst; and in the shorter lists
+MIN_VIEWS_FOR_RATES = 100  # likes and comments per view mean little below this
 LATEST = 100  # the newest picks looked at for changes and rejections
-EXAMPLES = 6  # changed picks shown with their words
+EXAMPLES = 6  # changed picks, and the owner's own clips, shown with their words
 QUOTE_WORDS = 18  # longer quotes keep their start and end
 MOVED_S = 0.5  # a start or end moved less than this wasn't changed
 APPROVED = ("approved", "rendering", "rendered", "failed", "uploaded")
@@ -39,6 +42,7 @@ LENGTHS = {
     "highlight": ((30, "under 30 s"), (60, "30–60 s"), (120, "1–2 min"), (inf, "over 2 min")),
 }
 SCORES = ((0.9, "0.9 and up"), (0.8, "0.8 to 0.89"), (0.0, "under 0.8"))
+HIGH_SCORE, LOW_SCORE = 0.85, 0.75  # a score this high that did badly, or this low that did well, was off
 
 
 def track_record(s: Session, settings: Settings, show: Show) -> str:
@@ -48,7 +52,8 @@ def track_record(s: Session, settings: Settings, show: Show) -> str:
         .where(Vod.show_id == show.id, UploadJob.status == "done", ClipRecord.kind != "whole",
                col(UploadJob.views).is_not(None))
     ).all()
-    sections = [_how_they_did(rows, show), _changes(s, settings, show)]
+    transcripts = _Transcripts(settings)
+    sections = [_how_they_did(rows, show), _changes(s, show, transcripts), _own_clips(s, show, transcripts)]
     if show.learning_notes.strip():
         sections.append(["# What the channel owner has noticed about what works (follow this over the numbers)",
                          show.learning_notes.strip()])
@@ -61,14 +66,17 @@ def track_record(s: Session, settings: Settings, show: Show) -> str:
 @dataclass
 class _Rated:
     clip: ClipRecord
+    job: UploadJob
     kind: str  # "clip", "highlight" or "Short"
-    views: int
-    ratio: float  # against the show's usual for its kind
+    views: int  # a week (or a day) after going up
+    ratio: float  # against the show's usual for its kind around then
 
 
 def _how_they_did(rows: list[tuple[UploadJob, ClipRecord]], show: Show) -> list[str]:
-    """Views a week after going up (or a day, where too few have that yet), each against the median of its kind, since
-    a Short and a 30-minute clip don't get the same views; then by length, by the AI's score, and the best and worst."""
+    """Views a week after going up (or a day, where too few have that yet), each against the median of others of its
+    kind from around then, since a Short and a 30-minute clip don't get the same views and a channel grows; then by
+    length and by the AI's score, the best and worst, scores that were off, what people engaged with most for their
+    views, and what kept getting views after its first day."""
     kinds: dict[str, list[tuple[UploadJob, ClipRecord]]] = {}
     for job, clip in rows:
         kinds.setdefault(_kind(clip, job.which), []).append((job, clip))
@@ -76,18 +84,20 @@ def _how_they_did(rows: list[tuple[UploadJob, ClipRecord]], show: Show) -> list[
     usual: list[str] = []
     for kind, members in kinds.items():
         for field, when in (("views_week1", "a week"), ("views_day1", "a day")):
-            have = [(j, c) for j, c in members if getattr(j, field) is not None]
+            have = sorted(((j, c) for j, c in members if getattr(j, field) is not None), key=lambda r: _went_up(r[0]))
             if len(have) < MIN_KIND:
                 continue
-            mid = median(getattr(j, field) for j, _ in have)
-            usual.append(f"- {PLURAL[kind]}: {compact(mid)} views {when} after going up ({len(have)} uploads)")
-            if mid > 0:
-                rated += [_Rated(c, kind, getattr(j, field), getattr(j, field) / mid) for j, c in have]
+            lately = median(getattr(j, field) for j, _ in have[-LATELY:])
+            usual.append(f"- {PLURAL[kind]}: lately {compact(lately)} views {when} after going up ({len(have)} uploads so far)")
+            for job, clip in have:
+                base = _usual_around(job, [j for j, _ in have], field)
+                if base > 0:
+                    rated.append(_Rated(clip, job, kind, getattr(job, field), getattr(job, field) / base))
             break
     if not usual:
         return []
 
-    lines = ["# How the show's past uploads did", "", "Their usual views, by kind:", *usual]
+    lines = ["# How the show's past uploads did", "", "Their usual views, by kind:", *usual, *_staying_usual(kinds)]
     against = []
     for kind in ("clip", "highlight"):
         of_kind = [r for r in rated if (r.kind == "clip") == (kind == "clip")]
@@ -96,15 +106,31 @@ def _how_they_did(rows: list[tuple[UploadJob, ClipRecord]], show: Show) -> list[
     if bands := _bands([r for r in rated if not r.clip.manual], SCORES, lambda r: r.clip.score, upward=True):
         against.append(f"- By the score you gave them: {bands}")
     if against:
-        lines += ["", "Views against usual (2.0× is twice the usual), with how many uploads:", *against]
+        lines += ["", "Views against usual (2.0× is twice what others of the kind got around then), with how many "
+                      "uploads:", *against]
 
     ranked = sorted(rated, key=lambda r: r.ratio, reverse=True)
-    best = [r for r in ranked if r.ratio >= 1.25][:BEST]
-    worst = [r for r in reversed(ranked) if r.ratio <= 0.8][:WORST]
-    for heading, picked in (("Did best:", best), ("Did worst:", worst)):
-        if picked:
-            lines += ["", heading, *(_rated_line(r, show) for r in picked)]
-    return lines
+    picks = [r for r in ranked if not r.clip.manual]
+    for heading, shown in (
+        ("Did best:", [r for r in ranked if r.ratio >= 1.25][:BEST]),
+        ("Did worst:", [r for r in reversed(ranked) if r.ratio <= 0.8][:WORST]),
+        ("Scored high but did badly:", [r for r in reversed(picks) if r.clip.score >= HIGH_SCORE and r.ratio <= 0.6][:FEW]),
+        ("Scored low but did well:", [r for r in picks if r.clip.score <= LOW_SCORE and r.ratio >= 1.5][:FEW]),
+    ):
+        if shown:
+            lines += ["", heading, *(_rated_line(r, show) for r in shown)]
+    return lines + _engaged(rated, show) + _stayed(kinds, show)
+
+
+def _went_up(job: UploadJob) -> datetime:
+    return job.finished_at or job.updated_at
+
+
+def _usual_around(job: UploadJob, jobs: list[UploadJob], field: str) -> float:
+    """The median of the other uploads of the kind that went up around the same time, or of all of them if too few."""
+    others = [o for o in jobs if o is not job]
+    near = [o for o in others if abs(_went_up(o) - _went_up(job)) <= AROUND]
+    return median(getattr(o, field) for o in (near if len(near) >= MIN_KIND - 1 else others))
 
 
 def _bands(rated: list[_Rated], bands, value, upward: bool = False) -> str:
@@ -130,12 +156,73 @@ def _rated_line(r: _Rated, show: Show) -> str:
             f"{made}): {r.ratio:.1f}× usual, {compact(r.views)} views" + (f". {reason}" if reason else ""))
 
 
+def _engaged(rated: list[_Rated], show: Show) -> list[str]:
+    """Uploads people liked and commented on most for their views, against others of their kind: what viewers enjoyed,
+    whether or not it got the most clicks."""
+    found = []
+    for kind in PLURAL:
+        of_kind = [(r, _engagement(r.job)) for r in rated if r.kind == kind and _engagement(r.job) is not None]
+        if len(of_kind) < MIN_KIND or not (usual := median(e for _, e in of_kind)):
+            continue
+        found += [(r, e / usual) for r, e in of_kind if e / usual >= 1.5]
+    if not found:
+        return []
+    found.sort(key=lambda f: f[1], reverse=True)
+    return ["", "Liked and commented on most for their views:", *(
+        f"- \"{titles.own_part(show.title_template, r.clip.title)}\" ({r.kind}, {_duration(_length(r.clip))}): "
+        f"{r.job.likes or 0} likes and {r.job.comments or 0} comments on {compact(r.job.views)} views, {ratio:.1f}× "
+        f"the usual for its kind"
+        for r, ratio in found[:FEW]
+    )]
+
+
+def _engagement(job: UploadJob) -> float | None:
+    if not job.views or job.views < MIN_VIEWS_FOR_RATES or job.likes is None:
+        return None
+    return ((job.likes or 0) + (job.comments or 0)) / job.views
+
+
+def _growth(job: UploadJob) -> float | None:
+    """How many times its first day's views it had a week after going up."""
+    return job.views_week1 / job.views_day1 if job.views_day1 and job.views_week1 is not None else None
+
+
+def _staying_usual(kinds: dict[str, list[tuple[UploadJob, ClipRecord]]]) -> list[str]:
+    lines = []
+    for kind, members in kinds.items():
+        growth = [g for j, _ in members if (g := _growth(j)) is not None]
+        if len(growth) >= MIN_KIND:
+            lines.append(f"- {PLURAL[kind]}: a week's views are usually {median(growth):.1f}× the first day's")
+    return lines
+
+
+def _stayed(kinds: dict[str, list[tuple[UploadJob, ClipRecord]]], show: Show) -> list[str]:
+    """Uploads that kept getting views after their first day, far more than others of their kind: what people still
+    find later, not just what lands the day it goes up."""
+    found = []
+    for kind, members in kinds.items():
+        grown = [(j, c, g) for j, c in members if (g := _growth(j)) is not None]
+        if len(grown) < MIN_KIND:
+            continue
+        usual = median(g for _, _, g in grown)
+        found += [(j, c, kind, g, usual) for j, c, g in grown if g >= 1.5 * usual]
+    if not found:
+        return []
+    found.sort(key=lambda f: f[3] / f[4], reverse=True)
+    return ["", "Kept getting views after their first day:", *(
+        f"- \"{titles.own_part(show.title_template, c.title)}\" ({kind}, {_duration(_length(c))}): {compact(j.views_week1)} "
+        f"views in a week, {g:.1f}× its first day's (usually {usual:.1f}×)"
+        for j, c, kind, g, usual in found[:FEW]
+    )]
+
+
 # --- How the owner changed the AI's picks ------------------------------------------------
 
 
-def _changes(s: Session, settings: Settings, show: Show) -> list[str]:
+def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
     """How the owner moved the starts and ends of the AI's picks they approved, with the words that took in or left
-    out where the transcript has them, what they cut out, how they retitled them, and which picks they turned down."""
+    out where the transcript has them, what they cut out, how they retitled them, which extras they approved anyway,
+    where they disagreed about a highlight working as a Short, and which picks they turned down."""
     picks = s.exec(
         select(ClipRecord, Vod).join(Vod)
         .where(Vod.show_id == show.id, ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
@@ -150,24 +237,25 @@ def _changes(s: Session, settings: Settings, show: Show) -> list[str]:
         (c.picked_title, own) for c, _ in approved
         if c.picked_title and _plain(own := titles.own_part(show.title_template, c.title)) != _plain(c.picked_title)
     ]
+    extras = [c for c, _ in approved if c.was_extra]
 
     lines: list[str] = []
     if len(known) >= 3:
         lines += ["", f"Of the last {len(known)} of your picks they approved, {_moves(known)}."]
     if changed:
-        words: dict[int, list[Word]] = {}
         lines += ["", "Picks they changed, newest first:"]
-        for clip, vod in changed[:EXAMPLES]:
-            if vod.id not in words:
-                words[vod.id] = _words(settings.vods_dir / vod.workspace) if vod.workspace else []
-            lines.append(_changed_line(clip, words[vod.id], show))
+        lines += [_changed_line(clip, transcripts.words(vod), show) for clip, vod in changed[:EXAMPLES]]
     if retitled:
         lines += ["", "Titles they rewrote, yours and then theirs:",
                   *(f"- \"{yours}\" → \"{theirs}\"" for yours, theirs in retitled[:5])]
+    if extras:
+        lines += ["", f"Extras they approved anyway: {len(extras)} of your picks you'd scored below the show's best few, "
+                      "for example:", *(_pick_line(c, show) for c in extras[:5])]
+    lines += _shorts(approved, show)
     if rejected:
         looked = len(rejected) + len(approved)
         lines += ["", f"They turned down {len(rejected)} of the last {looked} of your picks they looked at, for example:",
-                  *(_rejected_line(c, show) for c in rejected[:5])]
+                  *(_pick_line(c, show) for c in rejected[:5])]
     return ["# How the channel owner changed your earlier picks", *lines] if lines else []
 
 
@@ -221,27 +309,86 @@ def _changed_line(clip: ClipRecord, words: list[Word], show: Show) -> str:
     return f"- {kind} \"{titles.own_part(show.title_template, clip.title)}\": " + "; ".join(parts) + "."
 
 
-def _rejected_line(clip: ClipRecord, show: Show) -> str:
+def _pick_line(clip: ClipRecord, show: Show) -> str:
     reason = _sentence(clip.why or clip.description)
     kind = "clip" if clip.kind == "chapter" else "highlight"
     return (f"- \"{titles.own_part(show.title_template, clip.title)}\" ({kind}, {_duration(_length(clip))}, "
             f"scored {clip.score:.2f})" + (f". {reason}" if reason else ""))
 
 
+def _shorts(approved: list[tuple[ClipRecord, Vod]], show: Show) -> list[str]:
+    """Highlights the owner made a Short of against the AI's call that it doesn't work vertically, or the other way."""
+    highlights = [c for c, _ in approved if c.kind == "highlight"]
+    made = [c for c in highlights if c.make_short and not c.vertical_ok]
+    dropped = [c for c in highlights if not c.make_short and c.vertical_ok]
+    said = []
+    for clips, what in ((made, "made Shorts of {n} you'd said don't work vertically"),
+                        (dropped, "turned the Short off for {n} you'd said work vertically")):
+        if clips:
+            some = ", ".join(f"\"{titles.own_part(show.title_template, c.title)}\"" for c in clips[:3])
+            said.append(what.format(n=len(clips)) + f" (for example {some})")
+    return ["", f"Of the highlights they approved, they {' and '.join(said)}."] if said else []
+
+
+# --- Moments the owner clipped themselves --------------------------------------------------
+
+
+def _own_clips(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
+    """The clips the owner made in the app, newest first, with how each begins and ends, and whether it overlaps
+    one of the AI's picks of the same kind: a moment the AI didn't pick is the clearest sign of what it misses."""
+    mine = s.exec(
+        select(ClipRecord, Vod).join(Vod)
+        .where(Vod.show_id == show.id, col(ClipRecord.manual).is_(True))
+        .order_by(col(ClipRecord.created_at).desc()).limit(EXAMPLES)
+    ).all()
+    if not mine:
+        return []
+    ai_picks = s.exec(select(ClipRecord).where(
+        col(ClipRecord.vod_id).in_({v.id for _, v in mine}), col(ClipRecord.manual).is_not(True),
+        ClipRecord.kind != "whole",
+    )).all()
+    lines = ["# Moments the channel owner clipped themselves, newest first"]
+    for clip, vod in mine:
+        words = transcripts.words(vod)
+        opening = _quote(_texts(words, clip.start, clip.end)[:12])
+        closing = _quote(_texts(words, clip.start, clip.end)[-10:], tail=True)
+        said = f": it begins \"{opening}…\" and ends \"…{closing}\"" if opening else ""
+        overlap = max(
+            ((min(clip.end, _pick_end(p)) - max(clip.start, _pick_start(p)), p) for p in ai_picks
+             if p.vod_id == clip.vod_id and p.kind == clip.kind),
+            key=lambda o: o[0], default=(0.0, None),
+        )
+        kind = "clip" if clip.kind == "chapter" else "highlight"
+        whose = (f"overlapping your pick \"{titles.own_part(show.title_template, overlap[1].title)}\"" if overlap[0] >= 1
+                 else f"no {kind} of yours covered it")
+        lines.append(f"- \"{titles.own_part(show.title_template, clip.title)}\" ({kind}, {_duration(_length(clip))}, "
+                     f"{whose}){said}")
+    return lines
+
+
+def _pick_start(clip: ClipRecord) -> float:
+    return clip.picked_start if clip.picked_start is not None else clip.start
+
+
+def _pick_end(clip: ClipRecord) -> float:
+    return clip.picked_end if clip.picked_end is not None else clip.end
+
+
 # --- Picks kept from before ----------------------------------------------------------
 
 
-def backfill_picks(s: Session, settings: Settings) -> int:
-    """Fill in the AI's picks of clips from before they were kept with the clip, from their stream's segments.json.
-    A clip whose start and end are both just shifted from it, by the same amount, is left out: that's the timing fix
-    (timing.py) moving it, not the owner. Returns how many it filled in."""
+def backfill(s: Session, settings: Settings) -> int:
+    """Fill in what clips from before they were kept don't have: the AI's picks, from their stream's segments.json, and
+    whether each was offered as an extra, from how its score ranked against the show's best few (as best_picks does,
+    with the show's numbers as they are now). A clip whose start and end are both just shifted from its pick, by the
+    same amount, gets none: that's the timing fix (timing.py) moving it, not the owner. Returns how many it changed."""
     rows = s.exec(
         select(ClipRecord, Vod).join(Vod)
         .where(col(ClipRecord.picked_start).is_(None), ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
                col(Vod.workspace).is_not(None))
     ).all()
     picks: dict[int, dict[str, dict]] = {}
-    filled = 0
+    changed = 0
     for clip, vod in rows:
         if vod.id not in picks:
             picks[vod.id] = _segments(Workspace(settings.vods_dir / vod.workspace).segments_json)
@@ -253,9 +400,25 @@ def backfill_picks(s: Session, settings: Settings) -> int:
             continue
         clip.picked_start, clip.picked_end, clip.picked_title = pick["start"], pick["end"], pick.get("title", "")
         s.add(clip)
-        filled += 1
+        changed += 1
+
+    unranked = set(s.exec(select(ClipRecord.vod_id).where(
+        col(ClipRecord.was_extra).is_(None), ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
+    )))
+    for vod_id in unranked:
+        vod = s.get(Vod, vod_id)
+        show = s.get(Show, vod.show_id) if vod and vod.show_id else None
+        clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod_id, col(ClipRecord.manual).is_not(True))).all()
+        for kind, limit in (("chapter", show and show.max_chapters), ("highlight", show and show.max_shorts)):
+            ranked = sorted((c for c in clips if c.kind == kind), key=lambda c: c.score, reverse=True)
+            offered = {c.id for c in ranked[:limit]}
+            for c in ranked:
+                if c.was_extra is None:
+                    c.was_extra = c.status == "extra" or c.id not in offered
+                    s.add(c)
+                    changed += 1
     s.commit()
-    return filled
+    return changed
 
 
 def _segments(path: Path) -> dict[str, dict]:
@@ -267,6 +430,19 @@ def _segments(path: Path) -> dict[str, dict]:
 
 
 # --- Small helpers -----------------------------------------------------------------------
+
+
+class _Transcripts:
+    """Each stream's transcript words, read once for a whole track record."""
+
+    def __init__(self, settings: Settings):
+        self.settings = settings
+        self.found: dict[int, list[Word]] = {}
+
+    def words(self, vod: Vod) -> list[Word]:
+        if vod.id not in self.found:
+            self.found[vod.id] = _words(self.settings.vods_dir / vod.workspace) if vod.workspace else []
+        return self.found[vod.id]
 
 
 def _kind(clip: ClipRecord, which: str) -> str:

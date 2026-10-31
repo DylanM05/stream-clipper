@@ -113,8 +113,8 @@ class Worker:
         self.recover()
         try:
             with Session(self.engine) as s:
-                if filled := learning.backfill_picks(s, self.settings):
-                    log.info("Found the AI's picks of %d older clips, to learn from what was changed in them", filled)
+                if filled := learning.backfill(s, self.settings):
+                    log.info("Filled in how %d older clips were picked, to learn from what was changed in them", filled)
         except Exception:
             log.exception("Couldn't look up the AI's picks of older clips")
         threads = [
@@ -414,6 +414,7 @@ class Worker:
                     status=status, reviewed_at=utcnow() if status == "approved" else None,
                     picked_start=c.start if picked else None, picked_end=c.end if picked else None,
                     picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
+                    was_extra=status == "extra" if picked else None,
                 ))
                 added[status] = added.get(status, 0) + 1
             s.commit()
