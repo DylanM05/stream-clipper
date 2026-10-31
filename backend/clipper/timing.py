@@ -73,7 +73,8 @@ def fix_clips(s: Session, vod_id: int, found: Timing, picked: dict[str, tuple[fl
     ))
     for clip in clips:
         was = picked.get(clip.key)
-        untouched = bool(was) and abs(was[0] - clip.start) < 0.01 and abs(was[1] - clip.end) < 0.01
+        # Parts cut out in the app make it edited by hand too, even where its ends are still Claude's.
+        untouched = bool(was) and abs(was[0] - clip.start) < 0.01 and abs(was[1] - clip.end) < 0.01 and not clip.cuts
         if not untouched and not (clip.make_short and clip.status in RENDERED):
             continue
         jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip.id,
@@ -83,6 +84,8 @@ def fix_clips(s: Session, vod_id: int, found: Timing, picked: dict[str, tuple[fl
             continue
         if untouched:
             clip.start, clip.end = found.video_time(clip.start), found.video_time(clip.end)
+            if clip.picked_start is not None:  # the AI's pick moves with it, or it would look changed by hand
+                clip.picked_start, clip.picked_end = clip.start, clip.end
             fixed.moved.append(clip)
         if clip.status in RENDERED:
             for job in jobs:

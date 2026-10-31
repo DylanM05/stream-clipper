@@ -1,5 +1,7 @@
 // Types and calls for the backend API (backend/clipper/web/app.py).
 
+import type { Sites } from "./lib";
+
 export type VodStatus =
   | "queued"
   | "downloading"
@@ -11,10 +13,10 @@ export type VodStatus =
   | "ready"
   | "failed";
 
-/** "extra": picked by Claude but beyond the show's best few per stream, so not in the inbox. */
+/** "extra": picked by the AI but beyond the show's best few per stream, so not in the inbox. */
 export type ClipStatus = "proposed" | "extra" | "approved" | "rejected" | "rendering" | "rendered" | "uploaded" | "failed";
 
-/** "segment": chapters and highlights; "whole": the full episode; "both": full episode plus clips. */
+/** "segment": clips (kind "chapter") and highlights; "whole": the full episode; "both": full episode plus those. */
 export type Mode = "segment" | "whole" | "both";
 
 /** What happens to a show's new videos of one kind: wait for review, render without review, or render and upload. */
@@ -59,6 +61,8 @@ export interface Clip {
   description: string;
   why: string;
   score: number;
+  manual: boolean; // made in the app, so it has no score from the AI
+  cuts: [number, number][]; // parts taken out of the middle, in the stream's seconds
   vertical_ok: boolean;
   make_short: boolean;
   status: ClipStatus;
@@ -72,15 +76,16 @@ export interface Clip {
   destination_name: string;
   destination_url: string;
   playlist_id: string; // a playlist on that channel, or ""
+  upload_to: Sites; // where its uploads go unless one is sent elsewhere: its show's choice, or else its channel's
   youtube_url: string;
   rumble_url: string; // once it's up on Rumble too
   reuploading: boolean; // rendering again, to be uploaded again where it went once it's done
   thumbnail_status: "" | "queued" | "making" | "done" | "failed";
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
-  thumbnail_idea: string; // what Claude came up with
+  thumbnail_idea: string; // what the AI came up with
   thumbnail_prompt: string; // the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
-  thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from Claude
+  thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from the AI
   thumbnail_error: string;
   upload_state: UploadState;
   next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself
@@ -94,11 +99,34 @@ export interface Line {
   start: number;
   end: number;
   text: string;
+  words?: [number, number, string][]; // start, end, text: asked for when snapping cuts to words
 }
 
 export type ClipPatch = Partial<
-  Pick<Clip, "title" | "description" | "start" | "end" | "make_short" | "destination_id" | "playlist_id">
+  Pick<Clip, "title" | "description" | "start" | "end" | "cuts" | "make_short" | "destination_id" | "playlist_id">
 >;
+
+/** A clip made in the app from any part of a stream. */
+export interface NewClip {
+  kind: "chapter" | "highlight";
+  start: number;
+  end: number;
+  cuts: [number, number][];
+  title: string;
+  description: string;
+  make_short: boolean;
+  destination_id: number | null;
+  playlist_id: string;
+  approve: boolean; // straight to rendering, rather than into the inbox
+}
+
+/** What a clip made in the app starts with. */
+export interface NewClipInfo {
+  title_pattern: string; // the show's pattern with the stream's date in it, and {title} for the part you write
+  title_room: number; // how long that part can be
+  destination_id: number | null;
+  playlist_id: string;
+}
 
 /** A playlist on a YouTube channel connected to the API. */
 export interface Playlist {
@@ -167,6 +195,7 @@ export interface StatsUpload {
   kind: Clip["kind"];
   which: "video" | "short";
   score: number;
+  manual: boolean;
   youtube_url: string;
   finished_at: string | null;
   views: number | null;
@@ -214,16 +243,20 @@ export interface Show {
   episode_destination_id: number | null;
   clip_playlist_id: string; // on the clips' channel; "" for none
   episode_playlist_id: string;
+  clip_sites: Sites | ""; // where uploads to the clips' channel go; "" goes by the channel's own setting
+  episode_sites: Sites | "";
   max_chapters: number; // offered per stream, best first; the rest are extras
   max_shorts: number;
   auto_episode: Auto;
   auto_chapters: Auto;
   auto_shorts: Auto;
-  auto_upload_score: number; // offered chapters and Shorts Claude scores at least this upload without review; 0 is off
+  auto_upload_score: number; // offered clips and Shorts the AI scores at least this upload without review; 0 is off
   auto_visibility: Visibility; // for automatic uploads
   upload_gap_hours: number; // clips go up at least this long after the channel's last one; 0 = right away
-  auto_thumbnails: boolean; // chapters and full episodes get a thumbnail once rendered
+  chapter_thumbnails: boolean; // clips (kind "chapter") get a thumbnail once rendered
+  episode_thumbnails: boolean; // and full episodes
   thumbnail_guidance: string; // what every thumbnail of the show must have, e.g. words on it
+  learning_notes: string; // what you've noticed works, which the AI follows over how past clips did
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
@@ -255,6 +288,30 @@ export interface ChannelVideo {
   vod_id: number | null;
   published_at: string | null; // when it was posted or streamed, if the platform says (roughly, on YouTube)
   first_seen_at: string;
+}
+
+/** Counts for the tab badges. */
+export interface Summary {
+  to_review: number;
+  to_upload: number; // rendered clips, whether or not their upload has started
+  videos_in_progress: number;
+}
+
+/** Space on the data disk, and how much the streams' files take. */
+export interface Storage {
+  free_gb: number | null;
+  total_gb: number | null;
+  videos_gb: number;
+  min_free_gb: number; // below this, new downloads wait for space
+}
+
+/** The AI that picks the clips and writes preview titles and thumbnail ideas. */
+export type AiProviderId = "claude" | "codex" | "openrouter";
+
+export interface AiSetup {
+  provider: AiProviderId;
+  providers: { id: AiProviderId; name: string; model: string; default_model: string }[]; // Codex's "" is its default
+  problem: string; // what stops the chosen one from working, e.g. no sign-in; "" if nothing does
 }
 
 /** Settings changed from the app. */
@@ -313,14 +370,15 @@ export const api = {
   session: () => request<{ authenticated: boolean; password_required: boolean }>("/api/session"),
   login: (password: string) => post<void>("/api/login", { password }),
   logout: () => post<void>("/api/logout"),
-  summary: () => request<{ to_review: number; to_upload: number; videos_in_progress: number }>("/api/summary"),
+  summary: () => request<Summary>("/api/summary"),
   settings: () => request<AppSettings>("/api/settings"),
   updateSettings: (body: Partial<Omit<AppSettings, "timezone">>) => patch<AppSettings>("/api/settings", body),
-  storage: () =>
-    request<{ free_gb: number | null; total_gb: number | null; videos_gb: number; min_free_gb: number }>("/api/storage"),
+  storage: () => request<Storage>("/api/storage"),
   pauses: () => request<Pauses>("/api/pauses"),
   setPauses: (body: Partial<Pauses>) => patch<Pauses>("/api/pauses", body),
   notifications: () => request<{ ntfy: boolean; discord: boolean; links: boolean }>("/api/notifications"),
+  ai: () => request<AiSetup>("/api/ai"),
+  setAi: (body: { provider?: AiProviderId; model?: string }) => patch<AiSetup>("/api/ai", body),
   testNotification: () => post<{ sent: boolean }>("/api/notifications/test"),
 
   vods: () => request<Vod[]>("/api/vods"),
@@ -345,6 +403,19 @@ export const api = {
   unmarkUploaded: (id: number) => changed(post<Clip>(`/api/clips/${id}/not-uploaded`)),
   reupload: (id: number) => changed(post<Clip>(`/api/clips/${id}/reupload`)),
   transcript: (id: number) => request<Line[]>(`/api/clips/${id}/transcript`),
+
+  /** The stream's transcript: all of it, or from start to end, with each word's timing if asked. */
+  vodTranscript: (vodId: number, part?: { start: number; end: number; words?: boolean }) =>
+    request<Line[]>(
+      `/api/vods/${vodId}/transcript${part ? `?start=${part.start}&end=${part.end}${part.words ? "&words=true" : ""}` : ""}`,
+    ),
+  /** How loud the stream is across `count` parts of start to end, from 0 to 1. */
+  peaks: (vodId: number, start: number, end: number, count: number) =>
+    request<{ start: number; end: number; peaks: number[] }>(
+      `/api/vods/${vodId}/peaks?start=${start}&end=${end}&count=${count}`,
+    ),
+  newClipInfo: (vodId: number) => request<NewClipInfo>(`/api/vods/${vodId}/new-clip`),
+  makeClip: (vodId: number, body: NewClip) => changed(post<Clip>(`/api/vods/${vodId}/clips`, body)),
 
   studio: () => request<StudioStatus>("/api/studio"),
   openStudioBrowser: () => post<{ opened: boolean }>("/api/studio/open"),
@@ -382,6 +453,8 @@ export const api = {
 
   shows: () => request<Show[]>("/api/shows"),
   show: (id: number) => request<Show>(`/api/shows/${id}`),
+  /** What the show's past clips teach the AI, as it's given with each new stream. */
+  trackRecord: (id: number) => request<{ text: string }>(`/api/shows/${id}/track-record`),
   addShow: (fields: ShowFields) => post<Show>("/api/shows", fields),
   updateShow: (id: number, fields: Partial<ShowFields>) => patch<Show>(`/api/shows/${id}`, fields),
   deleteShow: (id: number) => remove(`/api/shows/${id}`),
@@ -414,6 +487,8 @@ export const api = {
 
 export const media = {
   proxy: (vodId: number) => `/media/vods/${vodId}/proxy.mp4`,
+  /** A small still of the stream, for the editor's timeline. */
+  frame: (vodId: number, t: number) => `/media/vods/${vodId}/frame.jpg?t=${t.toFixed(1)}`,
   thumb: (c: Clip) => `/media/clips/${c.id}/thumb.jpg?t=${Math.round(c.start * 10)}`,
   file: (c: Clip, which: "video" | "short", download = false) =>
     `/media/clips/${c.id}/${which}.mp4?v=${encodeURIComponent(c.updated_at)}${download ? "&download=true" : ""}`,

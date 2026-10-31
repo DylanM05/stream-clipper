@@ -1,5 +1,7 @@
 """JSON API for the review app, plus media streaming and the built phone app."""
 
+import asyncio
+import gzip
 import html
 import ipaddress
 import json
@@ -7,8 +9,11 @@ import logging
 import mimetypes
 import re
 import shutil
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from functools import lru_cache, partial
 from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
@@ -21,18 +26,17 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import ffmpeg, notify, stats
+from .. import ai, cuts, ffmpeg, learning, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
-    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, utcnow,
+    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, sites_name, upload_sites, utcnow,
 )
-from ..models import Transcript
 from ..monitor import ChannelUrlError, parse_channel
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
-from ..pipeline import render
+from ..pipeline import audio, render
 from ..rumble_upload import CATEGORIES as RUMBLE_CATEGORIES, LICENCE as RUMBLE_LICENCE
 from ..workspace import Workspace, remove
 from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
@@ -52,6 +56,7 @@ SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
+Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
 ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")  # statuses with a render queued, running or done
 
 
@@ -94,6 +99,8 @@ class ClipOut(BaseModel):
     description: str
     why: str
     score: float
+    manual: bool  # made in the app, so it has no score from Claude
+    cuts: list[tuple[float, float]]  # parts taken out of the middle, in the stream's seconds (cuts.py)
     vertical_ok: bool
     make_short: bool
     status: str
@@ -107,6 +114,7 @@ class ClipOut(BaseModel):
     destination_name: str
     destination_url: str
     playlist_id: str
+    upload_to: str  # where its uploads go unless one is sent elsewhere: "youtube", "rumble" or "both" (db.upload_sites)
     youtube_url: str
     rumble_url: str
     reuploading: bool  # rendering again, to be uploaded again once it's done (reupload)
@@ -140,6 +148,28 @@ class Line(BaseModel):
     text: str
 
 
+class NewClip(BaseModel):
+    """A clip made in the app from any part of a stream."""
+
+    kind: Literal["chapter", "highlight"]
+    start: float
+    end: float
+    cuts: list[tuple[float, float]] = Field(default=[], max_length=500)
+    title: str = Field(max_length=100)
+    description: str = Field(default="", max_length=5000)
+    make_short: bool = False  # highlights only
+    destination_id: int | None = None
+    playlist_id: str = Field(default="", max_length=64)
+    approve: bool = False  # straight to rendering, rather than into the inbox
+
+
+class NewClipInfo(BaseModel):
+    title_pattern: str  # the show's pattern for clips, with the stream's date in it and {title} for the part you write
+    title_room: int  # how long that part can be, for the whole title to fit YouTube's 100 characters
+    destination_id: int | None  # the show's channel for clips
+    playlist_id: str
+
+
 class NewVod(BaseModel):
     url: str = Field(min_length=4, max_length=2000)
     mode: Mode | None = None  # picked from the show or the link when missing
@@ -158,6 +188,8 @@ class ShowIn(BaseModel):
     episode_destination_id: int | None = None
     clip_playlist_id: str = Field(default="", max_length=64)
     episode_playlist_id: str = Field(default="", max_length=64)
+    clip_sites: Sites = ""
+    episode_sites: Sites = ""
     max_chapters: int = Field(default=5, ge=0, le=100)
     max_shorts: int = Field(default=5, ge=0, le=100)
     auto_episode: Auto = "review"
@@ -166,8 +198,10 @@ class ShowIn(BaseModel):
     auto_upload_score: float = Field(default=0, ge=0, le=1)
     auto_visibility: Visibility = "public"
     upload_gap_hours: float = Field(default=0, ge=0, le=168)
-    auto_thumbnails: bool = False
+    chapter_thumbnails: bool = False
+    episode_thumbnails: bool = False
     thumbnail_guidance: str = Field(default="", max_length=2000)
+    learning_notes: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
@@ -188,6 +222,8 @@ class ShowPatch(BaseModel):
     episode_destination_id: int | None = None
     clip_playlist_id: str | None = Field(default=None, max_length=64)
     episode_playlist_id: str | None = Field(default=None, max_length=64)
+    clip_sites: Sites | None = None  # "" goes by the channel's own setting
+    episode_sites: Sites | None = None
     max_chapters: int | None = Field(default=None, ge=0, le=100)
     max_shorts: int | None = Field(default=None, ge=0, le=100)
     auto_episode: Auto | None = None
@@ -196,8 +232,10 @@ class ShowPatch(BaseModel):
     auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
     auto_visibility: Visibility | None = None
     upload_gap_hours: float | None = Field(default=None, ge=0, le=168)  # 0 uploads clips as soon as they're ready
-    auto_thumbnails: bool | None = None
+    chapter_thumbnails: bool | None = None
+    episode_thumbnails: bool | None = None
     thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
+    learning_notes: str | None = Field(default=None, max_length=4000)  # what you've noticed works (learning.py)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
@@ -286,6 +324,7 @@ class StatsUpload(BaseModel):
     kind: str
     which: str
     score: float
+    manual: bool  # made in the app: no score from Claude
     youtube_url: str
     finished_at: str | None
     views: int | None
@@ -330,6 +369,26 @@ class AppSettingsPatch(BaseModel):
 
 
 APP_SETTING_KEYS = ("download_limit_mbps", "full_speed_from", "full_speed_until", "cleanup_after_days")
+
+
+class AiProvider(BaseModel):
+    id: str  # "claude", "codex" or "openrouter" (ai.PROVIDERS)
+    name: str
+    model: str  # the model it uses; for Codex, "" is its own default
+    default_model: str  # what it uses until another is set in the app (CLIPPER_LLM_MODEL and the like)
+
+
+class AiSetup(BaseModel):
+    """The AI that picks the clips and writes preview titles and thumbnail ideas (ai.py)."""
+
+    provider: str
+    providers: list[AiProvider]
+    problem: str  # what stops the chosen one from working, such as a missing sign-in; "" if nothing does
+
+
+class AiPatch(BaseModel):
+    provider: Literal["claude", "codex", "openrouter"] | None = None
+    model: str | None = Field(default=None, max_length=200)  # for the provider given, or else the chosen one; "" for its default
 
 
 class Pauses(BaseModel):
@@ -390,6 +449,8 @@ class ShowOut(BaseModel):
     episode_destination_id: int | None
     clip_playlist_id: str
     episode_playlist_id: str
+    clip_sites: str
+    episode_sites: str
     max_chapters: int
     max_shorts: int
     auto_episode: str
@@ -398,8 +459,10 @@ class ShowOut(BaseModel):
     auto_upload_score: float
     auto_visibility: str
     upload_gap_hours: float
-    auto_thumbnails: bool
+    chapter_thumbnails: bool
+    episode_thumbnails: bool
     thumbnail_guidance: str
+    learning_notes: str
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none
@@ -433,6 +496,7 @@ class ClipPatch(BaseModel):
     start: float | None = None
     end: float | None = None
     make_short: bool | None = None
+    cuts: list[tuple[float, float]] | None = Field(default=None, max_length=500)  # parts taken out, in the stream's seconds
     destination_id: int | None = None
     playlist_id: str | None = Field(default=None, max_length=64)  # cleared when the channel changes, unless given
 
@@ -489,6 +553,46 @@ def file_name(title: str) -> str:
     return " ".join(name.split()).strip(" .") or "clip"
 
 
+# A transcript line, light to keep: start, end, text, and its words as (start, end, text).
+TranscriptLine = tuple[float, float, str, tuple[tuple[float, float, str], ...]]
+
+
+@lru_cache(maxsize=2)
+def _transcript_lines(path: str, _modified: float) -> tuple[TranscriptLine, ...]:
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return tuple(
+        (round(seg["start"], 2), round(seg["end"], 2), seg["text"].strip(),
+         tuple((round(w["start"], 2), round(w["end"], 2), w["text"].strip()) for w in seg.get("words") or () if w["text"].strip()))
+        for seg in data["segments"] if seg["text"].strip()
+    )
+
+
+_transcript_lock = threading.Lock()
+
+
+def transcript_lines(path: Path) -> tuple[TranscriptLine, ...]:
+    """A stream's transcript lines, kept while the file stays the same: the editor asks for parts of a long one as it
+    pans. Read as plain JSON, which is quicker and smaller than the full models, and only once at a time, so the
+    editor's first requests don't each parse it."""
+    with _transcript_lock:
+        return _transcript_lines(str(path), path.stat().st_mtime)
+
+
+# Stills made at once for the editor's timeline, when the worker's one-every-10-s pass hasn't got them: each run of
+# ffmpeg reads the whole preview's index first (about 180 MB for 8 hours), so one at a time, and a minute's worth each.
+FRAME_JOBS = 1
+
+
+def packed(request: Request, data) -> Response:
+    """JSON, compressed when the browser takes that and it's worth it: the editor's transcript and waveform add up
+    on a slow connection."""
+    body = json.dumps(data, ensure_ascii=False, separators=(",", ":")).encode()
+    if len(body) > 2000 and "gzip" in request.headers.get("accept-encoding", ""):
+        return Response(gzip.compress(body, 5), media_type="application/json",
+                        headers={"Content-Encoding": "gzip", "Vary": "Accept-Encoding"})
+    return Response(body, media_type="application/json")
+
+
 def _size(path: str) -> int:
     p = Path(path) if path else None
     return p.stat().st_size if p and p.exists() else 0
@@ -517,6 +621,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return await call_next(request)
 
     # --- Helpers ---
+
+    def looked_up(read):
+        """What `read` finds in the database, with the connection given back straight away. Media can take minutes to
+        send (a preview streams for as long as it's watched): holding a connection all that time left none for the
+        rest of the app once a few were streaming, and every request waited (30 s, then failed)."""
+        with Session(engine) as s:
+            return read(s)
+
+    # Stills for the timeline and clips' pictures are made on a thread of their own, and the waveform read on another,
+    # so a burst of either (zooming asks for dozens of stills) can't take the threads every other request needs.
+    frame_pool = ThreadPoolExecutor(max_workers=FRAME_JOBS, thread_name_prefix="frames")
+    frame_slots = asyncio.Semaphore(FRAME_JOBS)
+    waveform_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="waveform")
 
     def workspace(vod: Vod) -> Workspace:
         if not vod.workspace:
@@ -570,7 +687,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def valid_template(template: str, optional: bool = False) -> str:
         template = " ".join(template.split())
         if not (optional and not template) and "{title}" not in template:
-            raise HTTPException(422, "A title pattern needs {title} in it, for the part Claude writes")
+            raise HTTPException(422, "A title pattern needs {title} in it, for the part the AI writes")
         return template
 
     def remove_channel(s: Session, ch: Channel) -> None:
@@ -584,10 +701,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         video_size, short_size = _size(clip.video_path), _size(clip.short_path)
         with Session(engine) as s:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
+            show = s.get(Show, vod.show_id) if vod.show_id else None
         thumbnail = Path(clip.thumbnail_path) if clip.thumbnail_path else None
         return ClipOut(
             **clip.model_dump(exclude={"video_path", "short_path", "thumbnail_path", "thumbnail_plan", "thumbnail_redraw",
-                                       "reupload", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+                                       "reupload", "cuts", "created_at", "updated_at", "reviewed_at", "uploaded_at"}),
+            cuts=cuts.parse(clip.cuts),
             reuploading=bool(clip.reupload),
             thumbnail_prompt=plan_prompt(clip.thumbnail_plan),
             thumbnail_redrawing=bool(clip.thumbnail_redraw) and clip.thumbnail_status in ("queued", "making"),
@@ -599,6 +718,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             short_size=short_size,
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
+            upload_to=sites_name(upload_sites(show, clip.kind, dest)),
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
             upload_state=upload_state,
             next_upload=iso(next_upload),
@@ -682,6 +802,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             raise HTTPException(404, "No such clip")
         return clip, s.get(Vod, clip.vod_id)
 
+    def checked_cuts(
+        kind: str, vod: Vod, start: float, end: float, cut_list: list[cuts.Cut], make_short: bool,
+    ) -> tuple[float, float, list[cuts.Cut]]:
+        """A clip's ends and the parts cut out of it, tidied (cuts.tidy) and checked."""
+        start, end, cut_list = cuts.tidy(start, end, cut_list)
+        if cut_list and kind == "whole":
+            raise HTTPException(422, "A full episode goes up as the stream is, so parts can't be cut out of it")
+        length = cuts.kept_length(start, end, cut_list)
+        if start < 0 or end - start < 1 or length < 1 or (vod.duration and end > vod.duration + 0.5):
+            raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
+        if make_short and length > MAX_SHORT_S:
+            raise HTTPException(422, "Shorts can be at most 3 minutes long")
+        return start, end, cut_list
+
     def set_status(s: Session, clip: ClipRecord, vod: Vod, status: str) -> ClipOut:
         clip.status = status
         clip.reviewed_at = clip.updated_at = utcnow()
@@ -764,6 +898,32 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             set_app_setting(s, key, str(value))
         s.commit()
         return current_settings(s)
+
+    def ai_setup(s: Session) -> AiSetup:
+        choice = ai.chosen(s, settings)
+        providers = [
+            AiProvider(id=p, name=name, model=get_app_setting(s, f"{p}_model") or ai.default_model(settings, p),
+                       default_model=ai.default_model(settings, p))
+            for p, name in ai.PROVIDERS.items()
+        ]
+        return AiSetup(provider=choice.provider, providers=providers, problem=ai.problem(settings, choice))
+
+    @app.get("/api/ai")
+    def get_ai(s: Session = Depends(db)) -> AiSetup:
+        return ai_setup(s)
+
+    @app.patch("/api/ai")
+    def set_ai(body: AiPatch, s: Session = Depends(db)) -> AiSetup:
+        """From the next piece of work on: what the AI is already working on finishes with the one it started with."""
+        if body.provider:
+            set_app_setting(s, ai.PROVIDER_KEY, body.provider)
+        if body.model is not None:
+            model = body.model.strip()
+            if any(c.isspace() for c in model):
+                raise HTTPException(422, "A model's name has no spaces in it")
+            set_app_setting(s, f"{body.provider or ai.chosen(s, settings).provider}_model", model)
+        s.commit()
+        return ai_setup(s)
 
     def current_pauses(s: Session) -> Pauses:
         return Pauses(**{part: is_paused(s, part) for part in PAUSABLE})
@@ -932,6 +1092,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/shows/{show_id}")
     def get_show(show_id: int, s: Session = Depends(db)) -> ShowOut:
         return show_out(s, found(s, Show, show_id, "show"))
+
+    @app.get("/api/shows/{show_id}/track-record")
+    def show_track_record(show_id: int, s: Session = Depends(db)) -> dict:
+        """What the show's past clips teach the AI, as it goes into its input for the next stream (learning.py)."""
+        return {"text": learning.track_record(s, settings, found(s, Show, show_id, "show"))}
 
     @app.patch("/api/shows/{show_id}")
     def update_show(show_id: int, patch: ShowPatch, s: Session = Depends(db)) -> ShowOut:
@@ -1310,11 +1475,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             changes["title"] = " ".join((changes["title"] or "").split())
             if not changes["title"]:
                 raise HTTPException(422, "The title can't be empty")
-        start, end = changes.get("start", clip.start), changes.get("end", clip.end)
-        if start < 0 or end - start < 1 or (vod.duration and end > vod.duration + 0.5):
-            raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
-        if changes.get("make_short", clip.make_short) and end - start > MAX_SHORT_S:
-            raise HTTPException(422, "Shorts can be at most 3 minutes long")
+        cut_list = changes.pop("cuts", None)
+        start, end, cut_list = checked_cuts(
+            clip.kind, vod, changes.get("start", clip.start), changes.get("end", clip.end),
+            cuts.parse(clip.cuts) if cut_list is None else cut_list, changes.get("make_short", clip.make_short),
+        )
+        changes.update(start=start, end=end, cuts=cuts.dump(cut_list))
         check_destinations(s, changes.get("destination_id"))
         if changes.get("destination_id", clip.destination_id) != clip.destination_id:
             changes.setdefault("playlist_id", "")  # a playlist belongs to its channel
@@ -1325,7 +1491,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             setattr(clip, k, v)
         clip.updated_at = utcnow()
         # New cut points or a new Short mean a new render; titles and channels don't change the video.
-        if changed.keys() & {"start", "end", "make_short"} and clip.status in ("approved", "rendering", "rendered", "failed"):
+        if changed.keys() & {"start", "end", "cuts", "make_short"} and clip.status in ("approved", "rendering", "rendered", "failed"):
             clip.status, clip.reviewed_at = "approved", utcnow()
         s.add(clip)
         s.commit()
@@ -1418,14 +1584,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/clips/{clip_id}/uploads", status_code=201)
     def start_upload(clip_id: int, body: UploadRequest, s: Session = Depends(db)) -> UploadJobOut:
-        clip, _ = get_clip(s, clip_id)
+        clip, vod = get_clip(s, clip_id)
         path = clip.short_path if body.which == "short" else clip.video_path
         if clip.status not in ("rendered", "uploaded") or not path or not Path(path).exists():
             raise HTTPException(409, "Render the clip before uploading it")
         if body.site == "rumble":
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
-            if not (dest and dest.rumble):
-                raise HTTPException(409, "Set its channel's uploads to go to Rumble (or both) under Shows → YouTube channels first")
+            show = s.get(Show, vod.show_id) if vod.show_id else None
+            if not (dest and (dest.rumble or "rumble" in upload_sites(show, clip.kind, dest))):
+                raise HTTPException(409, "Set its show's uploads, or its channel's under Shows → YouTube channels, to go to "
+                                         "Rumble (or both) first")
         busy = s.exec(select(UploadJob).where(
             UploadJob.clip_id == clip_id, UploadJob.which == body.which, UploadJob.site == body.site,
             col(UploadJob.status).in_(("queued", "uploading")),
@@ -1470,8 +1638,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
 
     @app.get("/media/upload-jobs/{job_id}/screenshot.png")
-    def upload_screenshot(job_id: int, s: Session = Depends(db)) -> FileResponse:
-        job = found(s, UploadJob, job_id, "upload")
+    def upload_screenshot(job_id: int) -> FileResponse:
+        job = looked_up(lambda s: found(s, UploadJob, job_id, "upload"))
         if not job.screenshot or not Path(job.screenshot).exists():
             raise HTTPException(404, "No screenshot")
         return FileResponse(job.screenshot, media_type="image/png")
@@ -1548,12 +1716,91 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ws = workspace(vod)
         if clip.kind == "whole" or not ws.transcript_json.exists():
             return []
-        transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
         return [
-            Line(start=seg.start, end=seg.end, text=seg.text)
-            for seg in transcript.segments
-            if seg.text and seg.end > clip.start - 60 and seg.start < clip.end + 60
+            Line(start=a, end=b, text=text)
+            for a, b, text, _ in transcript_lines(ws.transcript_json)
+            if b > clip.start - 60 and a < clip.end + 60
         ]
+
+    # --- The editor: a stream's transcript, waveform and frames, and clips made from any part of it ---
+
+    @app.get("/api/vods/{vod_id}/transcript")
+    def vod_transcript(
+        vod_id: int, request: Request, start: float | None = None, end: float | None = None, words: bool = False,
+    ) -> Response:
+        """The stream's transcript lines, all of them or those between `start` and `end`, with each word's timing
+        as [start, end, text] if `words` (to snap cuts to). Compressed when the browser takes that: all of a long
+        stream's lines come to several hundred KB."""
+        ws = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video")))
+        lo = float("-inf") if start is None else start
+        hi = float("inf") if end is None else end
+        lines = []
+        if ws.transcript_json.exists():
+            for a, b, text, said in transcript_lines(ws.transcript_json):
+                if b > lo and a < hi:
+                    lines.append({"start": a, "end": b, "text": text, **({"words": said} if words else {})})
+        return packed(request, lines)
+
+    @app.get("/api/vods/{vod_id}/peaks")
+    async def vod_peaks(
+        vod_id: int, request: Request, start: float = Query(ge=0), end: float = Query(gt=0),
+        count: int = Query(default=1000, ge=1, le=4000),
+    ) -> Response:
+        """How loud the stream is across `count` parts of `start` to `end` (0 to 1), to draw its waveform. Read on a
+        thread of its own: the first zoomed-out look at a stream the worker hasn't made the overview of yet makes it,
+        and requests meanwhile wait there rather than holding threads the rest of the app needs."""
+        ws = workspace(await run_in_threadpool(looked_up, lambda s: found(s, Vod, vod_id, "video")))
+        if end <= start:
+            raise HTTPException(422, "The end has to be after the start")
+        if not ws.audio_wav.exists():
+            raise HTTPException(404, "The stream's soundtrack isn't there: it's deleted with its video files")
+        peaks = await asyncio.get_running_loop().run_in_executor(waveform_pool, audio.peaks, ws, start, end, count)
+        return packed(request, {"start": start, "end": end, "peaks": peaks})
+
+    @app.get("/api/vods/{vod_id}/new-clip")
+    def new_clip_info(vod_id: int, s: Session = Depends(db)) -> NewClipInfo:
+        """What a clip made in the app starts with: the show's title pattern (with the stream's date, as Claude's
+        clips have it) and its channel and playlist for clips."""
+        vod = found(s, Vod, vod_id, "video")
+        show = s.get(Show, vod.show_id) if vod.show_id else None
+        template = show.title_template if show else "{title}"
+        ws = workspace(vod)
+        meta = ws.meta() if ws.meta_json.exists() else {}
+        day = titles.format_date(titles.stream_date(meta, vod.created_at.date(), settings.timezone, settings.day_starts_at))
+        return NewClipInfo(
+            title_pattern=titles.apply(template, "{title}", day),
+            title_room=titles.room_for_title(template, day),
+            destination_id=show.clip_destination_id if show else None,
+            playlist_id=show.clip_playlist_id if show else "",
+        )
+
+    @app.post("/api/vods/{vod_id}/clips", status_code=201)
+    def make_clip(vod_id: int, body: NewClip, s: Session = Depends(db)) -> ClipOut:
+        """A clip made in the app from any part of the stream: into the inbox, or with `approve` straight to
+        rendering. It's marked as made by hand (manual), since it has no score from Claude."""
+        vod = found(s, Vod, vod_id, "video")
+        if vod.cleaned_at:
+            raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
+        if vod.status != "ready" or not vod.workspace:
+            raise HTTPException(409, "Clips can be made once the video is ready")
+        title = " ".join(body.title.split())
+        if not title:
+            raise HTTPException(422, "The title can't be empty")
+        make_short = body.make_short and body.kind == "highlight"
+        start, end, cut_list = checked_cuts(body.kind, vod, body.start, body.end, body.cuts, make_short)
+        check_destinations(s, body.destination_id)
+        keys = set(s.exec(select(ClipRecord.key).where(ClipRecord.vod_id == vod.id)))
+        number = next(n for n in range(1, len(keys) + 2) if f"my{n:02d}" not in keys)
+        clip = ClipRecord(
+            vod_id=vod.id, key=f"my{number:02d}", kind=body.kind, start=start, end=end, cuts=cuts.dump(cut_list),
+            title=title, description=body.description.strip(), vertical_ok=body.kind == "highlight", make_short=make_short,
+            destination_id=body.destination_id, playlist_id=body.playlist_id if body.destination_id else "",
+            manual=True, status="approved" if body.approve else "proposed", reviewed_at=utcnow() if body.approve else None,
+        )
+        s.add(clip)
+        s.commit()
+        s.refresh(clip)
+        return clip_out(clip, vod)
 
     # --- Thumbnails (thumbnails.py), made by the worker, which has Claude ---
 
@@ -1637,7 +1884,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             bands=[StatsBand(**vars(b)) for b in stats.score_bands([(j, c) for j, c, _ in rows])],
             uploads=[
                 StatsUpload(job_id=j.id, clip_id=c.id, show_id=v.show_id, title=c.title, kind=c.kind, which=j.which,
-                            score=c.score, youtube_url=j.youtube_url, finished_at=iso(j.finished_at), views=j.views,
+                            score=c.score, manual=c.manual, youtube_url=j.youtube_url, finished_at=iso(j.finished_at), views=j.views,
                             likes=j.likes, comments=j.comments, views_day1=j.views_day1, views_week1=j.views_week1)
                 for j, c, v in rows
             ],
@@ -1646,37 +1893,77 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # --- Media ---
 
     @app.get("/media/clips/{clip_id}/thumbnail.jpg")
-    def clip_thumbnail(clip_id: int, download: bool = False, s: Session = Depends(db)) -> FileResponse:
-        clip, _ = get_clip(s, clip_id)
+    def clip_thumbnail(clip_id: int, download: bool = False) -> FileResponse:
+        clip, _ = looked_up(lambda s: get_clip(s, clip_id))
         if not clip.thumbnail_path or not Path(clip.thumbnail_path).is_file():
             raise HTTPException(404, "No thumbnail")
         name = f"{file_name(clip.title)} (thumbnail).jpg"
         return FileResponse(clip.thumbnail_path, media_type="image/jpeg", filename=name if download else None)
 
     @app.get("/media/vods/{vod_id}/proxy.mp4")
-    def proxy(vod_id: int, s: Session = Depends(db)) -> FileResponse:
-        vod = s.get(Vod, vod_id)
-        if not vod:
-            raise HTTPException(404, "No such video")
-        path = workspace(vod).proxy_mp4
+    def proxy(vod_id: int) -> FileResponse:
+        path = workspace(looked_up(lambda s: found(s, Vod, vod_id, "video"))).proxy_mp4
         if not path.exists():
             raise HTTPException(404, "The preview copy isn't ready yet")
         return FileResponse(path, media_type="video/mp4")
 
+    @app.get("/media/vods/{vod_id}/frame.jpg")
+    async def vod_frame(vod_id: int, request: Request, t: float = Query(ge=0)) -> Response:
+        """A small still of the stream at `t`, to the tenth of a second, for the editor's timeline. Kept once
+        made, and deleted with the stream's files. One the browser stopped wanting while it waited (the timeline
+        moved on) isn't made."""
+        vod = await run_in_threadpool(looked_up, lambda s: found(s, Vod, vod_id, "video"))
+        ws = workspace(vod)
+        if not ws.proxy_mp4.exists():
+            raise HTTPException(404, "The preview copy isn't ready yet")
+        # On the 2 s grid of the preview's keyframes, which is all a still can show.
+        moment = int(min(t, max(0.0, vod.duration - 0.5) if vod.duration else t) // 2 * 2)
+        out = ws.frames_dir / f"{moment * 10}.jpg"
+        coarse = moment % render.STILL_EVERY_S == 0
+        if not out.exists() and coarse and ws.stills_done.exists():
+            raise HTTPException(404, "No still there")  # the worker's pass made every one there is
+        if not out.exists():
+            async with frame_slots:
+                if await request.is_disconnected():
+                    return Response(status_code=204)
+                if not out.exists():
+                    if coarse:  # zoomed out, before the worker's pass: just this one
+                        make = partial(render.render_frame, ws.proxy_mp4, moment, out)
+                    else:  # zoomed in: the minute around it, in one run
+                        block = moment // render.STILL_BLOCK_S * render.STILL_BLOCK_S
+                        make = partial(render.render_stills, ws.proxy_mp4, ws.frames_dir, 2, block, render.STILL_BLOCK_S)
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(frame_pool, make)
+                    except ffmpeg.FFmpegError as e:
+                        raise HTTPException(404, "No still there") from e
+                if not out.exists():
+                    raise HTTPException(404, "No still there")
+        return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=604800, immutable"})
+
     @app.get("/media/clips/{clip_id}/thumb.jpg")
-    def thumbnail(clip_id: int, s: Session = Depends(db)) -> FileResponse:
-        clip, vod = get_clip(s, clip_id)
+    async def thumbnail(clip_id: int, request: Request) -> Response:
+        """A clip's picture in the lists. Made one at a time, with the timeline's stills: a list of new clips asks for
+        all of theirs at once, and each run of ffmpeg reads the stream's whole index (180 MB for 8 hours), so a few
+        dozen together took the server's memory. One the browser stopped wanting while it waited isn't made."""
+        clip, vod = await run_in_threadpool(looked_up, lambda s: get_clip(s, clip_id))
         ws = workspace(vod)
         t = clip.start + min(3.0, (clip.end - clip.start) * 0.2)
         out = ws.thumbs_dir / f"{clip.key}-{int(t * 10)}.jpg"
         if not out.exists():
-            video = ws.proxy_mp4 if ws.proxy_mp4.exists() else ws.source
-            render.render_thumbnail(video, t, out)
+            async with frame_slots:
+                if await request.is_disconnected():
+                    return Response(status_code=204)
+                if not out.exists():
+                    video = ws.proxy_mp4 if ws.proxy_mp4.exists() else ws.source
+                    try:
+                        await asyncio.get_running_loop().run_in_executor(frame_pool, render.render_thumbnail, video, t, out)
+                    except ffmpeg.FFmpegError as e:
+                        raise HTTPException(404, "No picture there") from e
         return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "max-age=86400"})
 
     @app.get("/media/clips/{clip_id}/{which}.mp4")
-    def clip_file(clip_id: int, which: str, download: bool = False, s: Session = Depends(db)) -> FileResponse:
-        clip, _ = get_clip(s, clip_id)
+    def clip_file(clip_id: int, which: str, download: bool = False) -> FileResponse:
+        clip, _ = looked_up(lambda s: get_clip(s, clip_id))
         path = {"video": clip.video_path, "short": clip.short_path}.get(which)
         if not path or not Path(path).exists():
             raise HTTPException(404, "Not rendered yet")

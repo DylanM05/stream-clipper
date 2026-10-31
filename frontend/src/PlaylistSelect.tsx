@@ -75,7 +75,7 @@ function Picker({ destId, value, onChange }: { destId: number; value: string; on
           <input
             value={title}
             onChange={(e) => setTitle(e.target.value)}
-            placeholder="Playlist name, e.g. Kino Casino pre-shows"
+            placeholder="Playlist name, e.g. Night Owls pre-shows"
             maxLength={150}
             className={cn(
               "min-w-0 flex-1 rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5",

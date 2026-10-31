@@ -1,6 +1,9 @@
-"""AI backends. The default runs Claude through Claude Code, signed in with your subscription."""
+"""AI backends: Claude through Claude Code on your Claude plan (the default), Codex on your ChatGPT plan, or a model
+on OpenRouter paid per use. ai.py picks the one chosen in the app."""
 
-from .base import LLMError, UsageLimitError
+from .base import LLM, LLMError, UsageLimitError
 from .claude_code import ClaudeCode
+from .codex import Codex
+from .openrouter import OpenRouter
 
-__all__ = ["ClaudeCode", "LLMError", "UsageLimitError"]
+__all__ = ["LLM", "ClaudeCode", "Codex", "LLMError", "OpenRouter", "UsageLimitError"]

@@ -16,7 +16,7 @@ from sqlmodel import Field, Session, SQLModel, col, create_engine, select
 
 from .config import Settings
 
-# Video statuses, in pipeline order. "waiting" means it can't go on yet (Claude's usage limit, or not
+# Video statuses, in pipeline order. "waiting" means it can't go on yet (the AI's usage limit, or not
 # enough disk space); `error` says why, and it retries at retry_at.
 VOD_ACTIVE = ("downloading", "preparing", "transcribing", "analysing", "segmenting")
 VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
@@ -117,7 +117,7 @@ class Show(SQLModel, table=True):
     # them, or its channel or account is one of them.
     match: str = ""
     mode: str = "segment"  # see MODES
-    title_template: str = "{title}"  # clips, e.g. "KINO CASINO {date} - {title}"
+    title_template: str = "{title}"  # clips, e.g. "NIGHT OWLS {date} - {title}"
     episode_template: str = ""  # full episodes; empty means the clip pattern
     notes: str = ""  # for Claude: about the show, who's on it, running jokes
     clip_guidance: str = ""  # for Claude: what the chapters and highlights should be
@@ -126,6 +126,10 @@ class Show(SQLModel, table=True):
     # YouTube playlists (PL… ids) on those channels that uploads are added to; empty means none.
     clip_playlist_id: str = ""
     episode_playlist_id: str = ""
+    # Where the uploads to those channels go: "youtube", "rumble" or "both" (see SITES); "" goes by the channel's own
+    # setting (Destination.youtube and .rumble).
+    clip_sites: str = ""
+    episode_sites: str = ""
     # How many of each stream's chapters and highlights are offered, best-scored first; the rest are extras.
     max_chapters: int = 5
     max_shorts: int = 5
@@ -140,9 +144,13 @@ class Show(SQLModel, table=True):
     # The show's chapters and highlights go up at least this many hours after the last clip upload to the same
     # channel (schedule.py); 0 uploads each as soon as it's ready. Full episodes never wait.
     upload_gap_hours: float = 0
-    # Chapters and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
-    auto_thumbnails: bool = False
+    # Chapters (clips, in the app) and full episodes get a thumbnail made (thumbnails.py) once they're rendered.
+    chapter_thumbnails: bool = False
+    episode_thumbnails: bool = False
     thumbnail_guidance: str = ""  # for Claude: what every thumbnail of the show must have, e.g. words on it
+    # For the AI: what you've noticed works for the show, which it puts first among what its past clips teach it
+    # (learning.py).
+    learning_notes: str = ""
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
@@ -211,7 +219,7 @@ class ClipRecord(SQLModel, table=True):
     end: float
     title: str
     description: str = ""
-    why: str = ""  # highlights: why Claude picked the moment
+    why: str = ""  # why the AI picked it
     score: float = 0
     vertical_ok: bool = False
     make_short: bool = False  # also render a vertical Short
@@ -239,6 +247,20 @@ class ClipRecord(SQLModel, table=True):
     # Uploads to make again once it's rendered again, after one went wrong on the site's side (a video YouTube
     # won't play): JSON [[which, site, visibility], ...]; "" for none.
     reupload: str = ""
+    # Parts taken out of the middle in the app's editor (cuts.py): JSON [[start, end], ...] in the stream's
+    # seconds, inside start-end; "" for none. The video jumps over them.
+    cuts: str = ""
+    manual: bool = False  # made in the app rather than picked by the AI, so its score means nothing
+    # The AI's pick as it was first offered, before any change in the app: where it started and ended, and the part of
+    # the title it wrote (without the show's pattern). What the owner changed teaches the AI (learning.py). Unset for
+    # clips made in the app, full episodes, and older clips whose pick couldn't be found.
+    picked_start: float | None = None
+    picked_end: float | None = None
+    picked_title: str = ""
+    # Offered as an extra (beyond the show's best few, by score) rather than in the inbox: approving it anyway says the
+    # AI scored it too low (learning.py). Unset for clips made in the app, full episodes, and older clips until it's
+    # worked out from their scores.
+    was_extra: bool | None = None
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None
@@ -289,6 +311,24 @@ class AppSetting(SQLModel, table=True):
     value: str
 
 
+# A show's choice of where uploads go, as UploadJob.site values.
+SITES = {"youtube": ["youtube"], "rumble": ["rumble"], "both": ["youtube", "rumble"]}
+
+
+def upload_sites(show: Show | None, kind: str, dest: Destination | None) -> list[str]:
+    """Where a clip's uploads go: its show's choice for full episodes or for clips (by `kind`), or else its channel's
+    own setting; YouTube when there's neither."""
+    chosen = (show.episode_sites if kind == "whole" else show.clip_sites) if show else ""
+    if chosen in SITES:
+        return SITES[chosen]
+    return dest.sites if dest else ["youtube"]
+
+
+def sites_name(sites: list[str]) -> str:
+    """["youtube", "rumble"] as "both", one of them as itself."""
+    return "both" if len(sites) > 1 else sites[0]
+
+
 def get_app_setting(s: Session, key: str) -> str | None:
     row = s.get(AppSetting, key)
     return row.value if row else None
@@ -305,6 +345,19 @@ def is_paused(s: Session, part: str) -> bool:
     return get_app_setting(s, f"paused_{part}") == "1"
 
 
+# A deploy holds new uploads until then (an ISO time), while it waits for one through the browser to finish
+# (cli deploy-wait). It lapses by itself, so a deploy that stops partway can't leave uploads held.
+DEPLOY_HOLD = "deploy_hold_until"
+
+
+def deploy_held(s: Session, now: datetime | None = None) -> bool:
+    until = get_app_setting(s, DEPLOY_HOLD)
+    try:
+        return bool(until) and datetime.fromisoformat(until) > (now or utcnow())
+    except ValueError:
+        return False
+
+
 def default_mode(url: str) -> str:
     host = (urlparse(url).hostname or "").lower().removeprefix("www.").removeprefix("mobile.")
     return "whole" if host in WHOLE_VIDEO_HOSTS else "segment"
@@ -313,7 +366,7 @@ def default_mode(url: str) -> str:
 def find_show(shows: Iterable[Show], url: str, names: Iterable[str | None] = ()) -> Show | None:
     """The first show with a term that appears in the link or names the channel.
 
-    A channel link like "twitch.tv/kinocasino" also matches a channel named "kinocasino", since
+    A channel link like "twitch.tv/nightowls" also matches a channel named "nightowls", since
     Twitch VOD links (twitch.tv/videos/123) don't contain the channel.
     """
     url = url.lower()
@@ -365,8 +418,24 @@ def _engine(db_path: str) -> Engine:
         cur.close()
 
     SQLModel.metadata.create_all(engine)
+    _rename_columns(engine)
     _add_missing_columns(engine)
     return engine
+
+
+# Columns renamed since a database was made, by (table, old name, new name): renamed in place, keeping their values.
+_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails")]
+# Columns that start out as a copy of another when they're added, by (table, column, copied from): one setting that
+# became two keeps doing what it did.
+_COPIED = {("show", "episode_thumbnails"): "chapter_thumbnails"}
+
+
+def _rename_columns(engine: Engine) -> None:
+    with engine.begin() as conn:
+        for table, old, new in _RENAMED:
+            have = {row[1] for row in conn.exec_driver_sql(f'PRAGMA table_info("{table}")')}
+            if old in have and new not in have:
+                conn.exec_driver_sql(f'ALTER TABLE "{table}" RENAME COLUMN "{old}" TO "{new}"')
 
 
 def _add_missing_columns(engine: Engine) -> None:
@@ -383,6 +452,8 @@ def _add_missing_columns(engine: Engine) -> None:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
                 )
+                if source := _COPIED.get((table.name, column.name)):
+                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = "{source}"')
 
 
 def _sql_literal(value) -> str:

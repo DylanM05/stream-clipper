@@ -7,7 +7,7 @@ transcribing. The heavy work happens in ffmpeg and Whisper, outside Python's GIL
 
 Downloads, processing, renders and uploads can each be paused in the app, and so can one video or clip.
 Work that's running stops at its next progress report (a download keeps what it has; a step like
-transcribing starts over) and carries on when resumed. Claude's step and the audio analysis can't be
+transcribing starts over) and carries on when resumed. The AI's step and the audio analysis can't be
 stopped partway, so a pause takes effect after them.
 """
 
@@ -25,11 +25,11 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import ffmpeg, notify, rumble_upload, stats, thumbnails, titles
+from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles
 from .config import Settings
 from .db import (
-    CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, find_show, get_app_setting, get_engine,
-    is_paused, set_app_setting, utcnow,
+    CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show, get_app_setting,
+    get_engine, is_paused, set_app_setting, upload_sites, utcnow,
 )
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
@@ -48,7 +48,7 @@ from .youtube import Google, Video, YouTubeError, video_id
 
 log = logging.getLogger(__name__)
 
-USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when Claude doesn't say when the limit resets
+USAGE_LIMIT_RETRY = timedelta(minutes=30)  # when the AI doesn't say when its limit resets
 LOW_SPACE_RETRY = timedelta(minutes=30)
 CHECK_EVERY_S = 2  # how often running work records its progress and looks for a pause
 STATS_EVERY_S = 1800
@@ -66,7 +66,7 @@ class LimitChanged(Exception):
 
 
 class Preview(threading.Thread):
-    """Makes a video's preview copy in the background while Claude picks clips (and, with
+    """Makes a video's preview copy in the background while the AI picks clips (and, with
     CLIPPER_PREVIEW_WITH_TRANSCRIPTION, while it's transcribed), since neither needs it."""
 
     def __init__(self, worker: "Worker", vod_id: int, ws: Workspace):
@@ -104,12 +104,19 @@ class Worker:
         )
         self.stopping = threading.Event()
         self._studio_checked = 0.0
-        # A preview still being made for a video that stopped for another reason (e.g. Claude's usage limit)
+        # A preview still being made for a video that stopped for another reason (e.g. the AI's usage limit)
         # carries on, and the video's next attempt picks it up rather than starting another.
         self._previews: dict[int, Preview] = {}
+        self._prepared: set[int] = set()  # videos the editor's overviews are made for (or couldn't be), this run
 
     def run(self) -> None:
         self.recover()
+        try:
+            with Session(self.engine) as s:
+                if filled := learning.backfill(s, self.settings):
+                    log.info("Filled in how %d older clips were picked, to learn from what was changed in them", filled)
+        except Exception:
+            log.exception("Couldn't look up the AI's picks of older clips")
         threads = [
             threading.Thread(target=self._loop, args=(self.process_next_vod,), name="videos", daemon=True),
             threading.Thread(target=self._loop, args=(self.render_next_clip,), name="renders", daemon=True),
@@ -118,6 +125,7 @@ class Worker:
             threading.Thread(target=self._loop, args=(self.make_next_thumbnail, 10), name="thumbnails", daemon=True),
             threading.Thread(target=self._loop, args=(self.check_stats, STATS_EVERY_S), name="stats", daemon=True),
             threading.Thread(target=self._loop, args=(self.clean_up_next, 120), name="cleanup", daemon=True),
+            threading.Thread(target=self._loop, args=(self.prepare_next_for_editor, 300), name="editor", daemon=True),
         ]
         for t in threads:
             t.start()
@@ -246,7 +254,7 @@ class Worker:
                     title_room=titles.room_for_title(clip_template, day),
                     title_prefixed=clip_template != "{title}",
                     episode_room=titles.room_for_title(episode_template, day),
-                    top_titles=self._top_titles(show),
+                    track_record=self._track_record(show),
                 )
                 clips = refine.run(ws, segmentation, transcript)
                 for c in clips:
@@ -286,10 +294,10 @@ class Worker:
             self._update_vod(vod_id, status="queued", progress=0)
         except UsageLimitError as e:
             retry_at = e.resets_at or utcnow() + USAGE_LIMIT_RETRY
-            log.warning("Claude usage limit reached; video %d retries at %s", vod_id, retry_at)
-            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error="Claude's usage limit was reached.")
+            log.warning("%s (%s); video %d retries at %s", e.note, e, vod_id, retry_at)
+            self._update_vod(vod_id, status="waiting", retry_at=retry_at, error=e.note)
             if not was_waiting:
-                self._notify(Note(f"Claude's usage limit: {name}", "It carries on by itself once the limit resets.",
+                self._notify(Note(f"Waiting for the AI: {name}", f"{e.note} It carries on by itself after that.",
                                   link=f"videos/{vod_id}", tone="quiet"))
         except Exception as e:
             log.exception("Video %d failed", vod_id)
@@ -353,20 +361,26 @@ class Worker:
                 s.expunge(show)
             return show
 
-    def _top_titles(self, show: Show | None) -> list[str]:
+    def _track_record(self, show: Show | None) -> str:
+        """What the show's past clips teach the AI (learning.py); empty if there's nothing yet, or working it out
+        went wrong, which shouldn't hold up the video."""
         if not show:
-            return []
-        with Session(self.engine) as s:
-            return stats.best_titles(s, show)
+            return ""
+        try:
+            with Session(self.engine) as s:
+                return learning.track_record(s, self.settings, show)
+        except Exception:
+            log.exception("Couldn't work out what the show's past clips teach the AI")
+            return ""
 
     def _preview_title(self, text: str, room: int, notes: str) -> str:
-        """Claude's short title for a whole video; empty if Claude isn't available right now."""
+        """The AI's short title for a whole video; empty if the AI isn't available right now."""
         if not text:
             return ""
         try:
             return titles.preview_title(text, room, self.settings, notes)
         except LLMError as e:
-            log.warning("No title preview from Claude (%s); using the post's first line", e)
+            log.warning("No title preview from the AI (%s); using the post's first line", e)
             return ""
 
     def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None) -> dict[str, int]:
@@ -391,11 +405,16 @@ class Worker:
                     status = "approved"
                 else:
                     status = "proposed"
+                # The AI's pick as offered, to learn from what the owner changes (learning.py).
+                picked = c.kind != "whole"
                 s.add(ClipRecord(
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
                     description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
                     make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
                     status=status, reviewed_at=utcnow() if status == "approved" else None,
+                    picked_start=c.start if picked else None, picked_end=c.end if picked else None,
+                    picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
+                    was_extra=status == "extra" if picked else None,
                 ))
                 added[status] = added.get(status, 0) + 1
             s.commit()
@@ -476,6 +495,7 @@ class Worker:
                 pipeline_clip = Clip(
                     id=clip.key, kind=clip.kind, start=clip.start, end=clip.end, title=clip.title,
                     description=clip.description, score=clip.score, llm_start="", llm_end="",
+                    cuts=cuts.parse(clip.cuts),
                 )
                 video = ws.clips_dir / f"{stem}.mp4"
                 render.render_landscape(source, pipeline_clip, video, settings, on_progress=check, overlay=overlay)
@@ -550,14 +570,16 @@ class Worker:
             return True
 
     def _auto_thumbnail(self, clip_id: int) -> None:
-        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them, unless it has one."""
+        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them for its kind,
+        unless it has one."""
         if not self.settings.openrouter_api_key:
             return
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod.show_id else None
-            if show and show.auto_thumbnails and clip.kind in ("chapter", "whole") and not clip.thumbnail_status:
+            wanted = show and {"chapter": show.chapter_thumbnails, "whole": show.episode_thumbnails}.get(clip.kind)
+            if wanted and not clip.thumbnail_status:
                 clip.thumbnail_status = "queued"
                 s.add(clip)
                 s.commit()
@@ -577,7 +599,7 @@ class Worker:
                 return  # uploaded or tried before: what happens next is up to you
             if clip.destination_id:
                 dest = s.get(Destination, clip.destination_id)
-                for site in dest.sites if dest else ["youtube"]:
+                for site in upload_sites(show, clip.kind, dest):
                     s.add(UploadJob(clip_id=clip_id, which=which, site=site, visibility=show.auto_visibility))
                 s.commit()
                 return
@@ -609,7 +631,8 @@ class Worker:
                 s.add(failed)
             s.commit()
             job = None
-            if not is_paused(s, "uploads"):
+            # Not while a deploy is about to restart the worker (cli deploy-wait).
+            if not is_paused(s, "uploads") and not deploy_held(s):
                 now = utcnow()
                 job_id = next((jid for jid, turn in upload_turns(s, now).items() if turn.at <= now), None)
                 job = s.get(UploadJob, job_id) if job_id else None
@@ -834,7 +857,7 @@ class Worker:
             if not vod.workspace:
                 raise ThumbnailError("This video hasn't been downloaded.")
             plan = None
-            if redraw:  # the saved plan, with the prompt as you left it; Claude isn't asked again
+            if redraw:  # the saved plan, with the prompt as you left it; the AI isn't asked again
                 plan = (thumbnails.Idea.model_validate_json(clip.thumbnail_plan) if clip.thumbnail_plan
                         else thumbnails.Idea(people=[], concept="Drawn from your prompt.", text="", prompt=""))
                 plan.prompt = redraw
@@ -854,6 +877,39 @@ class Worker:
         self._update_clip(clip_id, thumbnail_status="done", thumbnail_path=str(path),
                           thumbnail_idea=f"{idea.concept}{text}{people}", thumbnail_plan=idea.model_dump_json(),
                           thumbnail_redraw="")
+
+    def prepare_next_for_editor(self) -> bool:
+        """For a video ready to edit, newest first, make what the editor's zoomed-out timeline shows of it: the
+        soundtrack's loudness overview and a still every 10 s of the preview. Each is a pass over the whole stream,
+        so they're made here, once, rather than while the editor waits; stills for a zoomed-out view were each a run
+        of ffmpeg reading the whole preview's index (about 180 MB for 8 hours), which on a small server froze it.
+        Returns whether it made something."""
+        with Session(self.engine) as s:
+            vods = s.exec(
+                select(Vod.id, Vod.workspace)
+                .where(Vod.status == "ready", col(Vod.cleaned_at).is_(None), col(Vod.workspace).is_not(None))
+                .order_by(col(Vod.created_at).desc())
+            ).all()
+        for vod_id, folder in vods:
+            if vod_id in self._prepared:
+                continue
+            self._prepared.add(vod_id)
+            ws = Workspace(self.settings.vods_dir / folder)
+            made = False
+            try:
+                if ws.audio_wav.exists() and not audio.overview_ready(ws):
+                    audio.overview(ws)
+                    made = True
+                if ws.proxy_mp4.exists() and not ws.stills_done.exists():
+                    count = render.render_stills(ws.proxy_mp4, ws.frames_dir, render.STILL_EVERY_S)
+                    ws.stills_done.write_text(f"{count}\n", encoding="utf-8")
+                    log.info("Made the editor's overview of video %d (%d stills)", vod_id, count)
+                    made = True
+            except Exception as e:
+                log.warning("Couldn't make the editor's overview of video %d: %s", vod_id, e)
+            if made:
+                return True
+        return False
 
     def _channel_picture(self, name: str) -> tuple[str, str] | None:
         """For thumbnails: the picture of the YouTube channel a search for someone finds first. Uses the API key,
@@ -973,7 +1029,7 @@ class Worker:
         return True
 
     def clean_up(self, vod_id: int) -> None:
-        """Delete a stream's source, preview, audio and rendered clips; keep its transcript and Claude's picks."""
+        """Delete a stream's source, preview, audio and rendered clips; keep its transcript and the AI's picks."""
         vod = self._get(Vod, vod_id)
         freed = Workspace(self.settings.vods_dir / vod.workspace).delete_media()
         self._update_vod(vod_id, cleaned_at=utcnow())
@@ -1042,7 +1098,7 @@ def _added_summary(added: dict[str, int]) -> str:
 
 
 def _chapter_starts(segmentation: Segmentation) -> list[tuple[float, str]]:
-    """Every chapter Claude found (pre-show and breaks too), for the full episode's chapter list."""
+    """Every chapter the AI found (pre-show and breaks too), for the full episode's chapter list."""
     starts = []
     for ch in segmentation.chapters:
         try:

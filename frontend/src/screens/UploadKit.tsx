@@ -40,7 +40,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
   const copy = async (text: string, what: string) => toast({ text: (await copyText(text)) ? `${what} copied` : "Couldn't copy" });
 
   return (
-    <Screen title="Upload" subtitle={clip.title} onBack={() => goBack("approved")}>
+    <Screen title="Upload" subtitle={clip.title} onBack={() => goBack("approved")} wide>
       {clip.reuploading && (
         <p className="mb-4 rounded-xl bg-sky-500/10 p-3 text-sm text-sky-200 ring-1 ring-sky-500/20">
           Rendering again, to be uploaded again: it goes up by itself, where it went before, once it's rendered.
@@ -48,145 +48,152 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
       )}
       {!rendered && !clip.reuploading && <ErrorNote>This clip isn't rendered yet. Come back once it shows as ready.</ErrorNote>}
 
-      <Step n={1} title="Channel">
-        <DestinationSelect
-          value={clip.destination_id}
-          destinations={destinations}
-          onChange={(destination_id) => act(() => api.updateClip(clip.id, { destination_id }), "Channel changed")}
-        />
-        <PlaylistSelect
-          destination={destination}
-          value={clip.playlist_id}
-          onChange={(playlist_id) =>
-            act(() => api.updateClip(clip.id, { playlist_id }), playlist_id ? "It goes into that playlist" : "No playlist")
-          }
-        />
-        {destination ? (
-          <a
-            href={destination.studio_upload_url}
-            target="_blank"
-            rel="noreferrer"
-            className="mt-2 flex items-center gap-1.5 text-sm font-medium text-violet-300"
-          >
-            <LinkIcon className="size-4" /> Open YouTube Studio's upload page
-          </a>
-        ) : (
-          <p className="mt-2 text-xs text-zinc-500">Pick the channel this goes on. Add channels under Shows → YouTube channels.</p>
-        )}
-        <p className="mt-1 text-xs text-zinc-500">Make sure YouTube is signed in to this channel before you upload.</p>
-      </Step>
-
-      <Step n={2} title="Thumbnail">
-        <ThumbnailMaker clip={clip} destination={destination} onChange={onChange} />
-      </Step>
-
-      <Step n={3} title="Upload automatically">
-        <AutoUpload clip={clip} destination={destination} />
-      </Step>
-
-      <div className="mb-6 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-        <span className="h-px flex-1 bg-white/10" /> Or upload by hand <span className="h-px flex-1 bg-white/10" />
-      </div>
-
-      <Step n={4} title="Video file">
-        {clip.has_short && (
-          <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
-            {(["video", "short"] as const).map((w) => (
-              <button
-                key={w}
-                onClick={() => setWhich(w)}
-                className={cn("rounded-lg py-2 text-sm font-semibold", which === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
-              >
-                {w === "video" ? "Video (16:9)" : "Short (9:16)"}
-              </button>
-            ))}
-          </div>
-        )}
-        {rendered && size > 0 && (
-          <video
-            key={which}
-            src={media.file(clip, which)}
-            controls
-            playsInline
-            preload="metadata"
-            className={cn("w-full rounded-xl bg-black", which === "short" ? "mx-auto aspect-[9/16] max-h-96 w-auto" : "aspect-video")}
-          />
-        )}
-        {rendered && size === 0 && (
-          <p className="text-sm text-zinc-500">
-            {clip.status === "uploaded" ? "The file was deleted once it was uploaded, to save space." : "The file isn't there any more."}
-          </p>
-        )}
-        <div className="mt-3 grid gap-2">
-          {size > 0 && <ShareToPhone clip={clip} which={which} size={size} />}
-          <a
-            href={media.file(clip, which, true)}
-            className={cn(
-              "inline-flex items-center justify-center gap-1.5 rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold active:bg-zinc-700",
-              (!rendered || size === 0) && "pointer-events-none opacity-40",
-            )}
-          >
-            <DownloadIcon className="size-4" /> Download{size ? ` (${formatBytes(size)})` : ""}
-          </a>
-        </div>
-        <p className="mt-2 text-xs text-zinc-500">
-          The file is named after the title, so YouTube Studio fills the title in for you.
-        </p>
-      </Step>
-
-      <Step n={5} title="Title and description">
-        <CopyBox label="Title" text={clip.title} onCopy={() => copy(clip.title, "Title")} />
-        <CopyBox label="Description" text={clip.description} onCopy={() => copy(clip.description, "Description")} long />
-      </Step>
-
-      <Step n={6} title="Done?">
-        {clip.status === "uploaded" ? (
-          <div className="space-y-2">
-            <p className="text-sm text-emerald-300">Marked as uploaded{clip.destination_name ? ` to ${clip.destination_name}` : ""}.</p>
-            {[clip.youtube_url, clip.rumble_url].filter(Boolean).map((link) => (
-              <a key={link} href={link} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300">
-                {link}
-              </a>
-            ))}
-            <Button
-              onClick={() =>
-                act(
-                  () => api.unmarkUploaded(clip.id),
-                  clip.has_video ? "Moved back to Ready to upload" : "Its file was deleted after uploading, so it renders again first",
-                )
-              }
-            >
-              Not uploaded yet
-            </Button>
-            <Button
-              onClick={() =>
-                confirm("Render this clip again and upload it again wherever the app uploaded it, with the same visibility?") &&
-                act(() => api.reupload(clip.id), "Rendering it again. It uploads again by itself once that's done.")
-              }
-            >
-              Render and upload again
-            </Button>
-            <p className="text-xs text-zinc-500">
-              For an upload that's broken on the site, like a video YouTube won't play (“An error occurred”). Delete the
-              broken one there yourself, so there aren't two.
-            </p>
-          </div>
-        ) : (
-          <div className="space-y-2">
-            <input
-              type="url"
-              inputMode="url"
-              value={link}
-              onChange={(e) => setLink(e.target.value)}
-              placeholder="YouTube link (optional)"
-              className="w-full rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5 placeholder:text-zinc-500 focus:ring-2 focus:ring-violet-500"
+      {/* On a wide screen, uploading automatically and uploading by hand are side by side. */}
+      <div className="xl:grid xl:grid-cols-2 xl:items-start xl:gap-10">
+        <div>
+          <Step n={1} title="Channel">
+            <DestinationSelect
+              value={clip.destination_id}
+              destinations={destinations}
+              onChange={(destination_id) => act(() => api.updateClip(clip.id, { destination_id }), "Channel changed")}
             />
-            <Button tone="approve" disabled={!rendered} onClick={() => act(() => api.markUploaded(clip.id, link), "Marked as uploaded")} className="w-full">
-              Mark as uploaded
-            </Button>
+            <PlaylistSelect
+              destination={destination}
+              value={clip.playlist_id}
+              onChange={(playlist_id) =>
+                act(() => api.updateClip(clip.id, { playlist_id }), playlist_id ? "It goes into that playlist" : "No playlist")
+              }
+            />
+            {destination ? (
+              <a
+                href={destination.studio_upload_url}
+                target="_blank"
+                rel="noreferrer"
+                className="mt-2 flex items-center gap-1.5 text-sm font-medium text-violet-300"
+              >
+                <LinkIcon className="size-4" /> Open YouTube Studio's upload page
+              </a>
+            ) : (
+              <p className="mt-2 text-xs text-zinc-500">Pick the channel this goes on. Add channels under Shows → YouTube channels.</p>
+            )}
+            <p className="mt-1 text-xs text-zinc-500">Make sure YouTube is signed in to this channel before you upload.</p>
+          </Step>
+
+          <Step n={2} title="Thumbnail">
+            <ThumbnailMaker clip={clip} destination={destination} onChange={onChange} />
+          </Step>
+
+          <Step n={3} title="Upload automatically">
+            <AutoUpload clip={clip} destination={destination} />
+          </Step>
+        </div>
+
+        <div>
+          <div className="mb-6 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+            <span className="h-px flex-1 bg-white/10" /> Or upload by hand <span className="h-px flex-1 bg-white/10" />
           </div>
-        )}
-      </Step>
+
+          <Step n={4} title="Video file">
+            {clip.has_short && (
+              <div className="mb-3 grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
+                {(["video", "short"] as const).map((w) => (
+                  <button
+                    key={w}
+                    onClick={() => setWhich(w)}
+                    className={cn("rounded-lg py-2 text-sm font-semibold", which === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
+                  >
+                    {w === "video" ? "Video (16:9)" : "Short (9:16)"}
+                  </button>
+                ))}
+              </div>
+            )}
+            {rendered && size > 0 && (
+              <video
+                key={which}
+                src={media.file(clip, which)}
+                controls
+                playsInline
+                preload="metadata"
+                className={cn("w-full rounded-xl bg-black", which === "short" ? "mx-auto aspect-[9/16] max-h-96 w-auto" : "aspect-video")}
+              />
+            )}
+            {rendered && size === 0 && (
+              <p className="text-sm text-zinc-500">
+                {clip.status === "uploaded" ? "The file was deleted once it was uploaded, to save space." : "The file isn't there any more."}
+              </p>
+            )}
+            <div className="mt-3 grid gap-2">
+              {size > 0 && <ShareToPhone clip={clip} which={which} size={size} />}
+              <a
+                href={media.file(clip, which, true)}
+                className={cn(
+                  "inline-flex items-center justify-center gap-1.5 rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold active:bg-zinc-700",
+                  (!rendered || size === 0) && "pointer-events-none opacity-40",
+                )}
+              >
+                <DownloadIcon className="size-4" /> Download{size ? ` (${formatBytes(size)})` : ""}
+              </a>
+            </div>
+            <p className="mt-2 text-xs text-zinc-500">
+              The file is named after the title, so YouTube Studio fills the title in for you.
+            </p>
+          </Step>
+
+          <Step n={5} title="Title and description">
+            <CopyBox label="Title" text={clip.title} onCopy={() => copy(clip.title, "Title")} />
+            <CopyBox label="Description" text={clip.description} onCopy={() => copy(clip.description, "Description")} long />
+          </Step>
+
+          <Step n={6} title="Done?">
+            {clip.status === "uploaded" ? (
+              <div className="space-y-2">
+                <p className="text-sm text-emerald-300">Marked as uploaded{clip.destination_name ? ` to ${clip.destination_name}` : ""}.</p>
+                {[clip.youtube_url, clip.rumble_url].filter(Boolean).map((link) => (
+                  <a key={link} href={link} target="_blank" rel="noreferrer" className="block truncate text-sm text-violet-300">
+                    {link}
+                  </a>
+                ))}
+                <Button
+                  onClick={() =>
+                    act(
+                      () => api.unmarkUploaded(clip.id),
+                      clip.has_video ? "Moved back to Ready to upload" : "Its file was deleted after uploading, so it renders again first",
+                    )
+                  }
+                >
+                  Not uploaded yet
+                </Button>
+                <Button
+                  onClick={() =>
+                    confirm("Render this clip again and upload it again wherever the app uploaded it, with the same visibility?") &&
+                    act(() => api.reupload(clip.id), "Rendering it again. It uploads again by itself once that's done.")
+                  }
+                >
+                  Render and upload again
+                </Button>
+                <p className="text-xs text-zinc-500">
+                  For an upload that's broken on the site, like a video YouTube won't play (“An error occurred”). Delete the
+                  broken one there yourself, so there aren't two.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <input
+                  type="url"
+                  inputMode="url"
+                  value={link}
+                  onChange={(e) => setLink(e.target.value)}
+                  placeholder="YouTube link (optional)"
+                  className="w-full rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5 placeholder:text-zinc-500 focus:ring-2 focus:ring-violet-500"
+                />
+                <Button tone="approve" disabled={!rendered} onClick={() => act(() => api.markUploaded(clip.id, link), "Marked as uploaded")} className="w-full">
+                  Mark as uploaded
+                </Button>
+              </div>
+            )}
+          </Step>
+        </div>
+      </div>
     </Screen>
   );
 }
@@ -210,10 +217,12 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   const toast = useToast();
   const { data: jobs, refresh } = usePoll(() => api.uploads(clip.id), 4000, clip.id);
   const [visibility, setVisibility] = useState<Visibility>(() => loadSetting("clipper.uploadVisibility", "public"));
-  // Where the channel's uploads go, unless something else is picked for this upload.
+  // Where the clip's uploads go (its show's choice, or else its channel's), unless something else is picked for this
+  // upload.
   const [picked, setPicked] = useState<Sites | null>(null);
   useEffect(() => setPicked(null), [destination?.id]);
-  const where: Sites = picked ?? (destination ? sitesOf(destination) : "youtube");
+  const where: Sites = picked ?? clip.upload_to ?? (destination ? sitesOf(destination) : "youtube");
+  const rumbleToo = !!destination?.rumble || (clip.upload_to ?? "youtube") !== "youtube";
   const sites: Site[] = where === "both" ? ["youtube", "rumble"] : [where];
   // The sites a file can start going to: not ones it's already queued for or uploading to.
   const startable = (which: UploadJob["which"]) =>
@@ -221,7 +230,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
   const ready = clip.status === "rendered" || clip.status === "uploaded";
   const toText = (which: UploadJob["which"]) => {
     const to = startable(which);
-    return destination?.rumble && to.length ? ` to ${to.map((s) => SITE_LABEL[s]).join(" and ")}` : "";
+    return rumbleToo && to.length ? ` to ${to.map((s) => SITE_LABEL[s]).join(" and ")}` : "";
   };
 
   const run = async (work: () => Promise<unknown>, done?: string) => {
@@ -265,7 +274,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
         </>
       )}
       {destination?.api_error && <p className="text-xs text-red-300">{destination.api_error}</p>}
-      {destination?.rumble && (
+      {rumbleToo && (
         <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
           {(Object.keys(WHERE_LABEL) as Sites[]).map((w) => (
             <button
@@ -388,7 +397,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
 }
 
 /**
- * A thumbnail for the 16:9 video: Claude's idea, drawn by an image model on OpenRouter from frames of the video.
+ * A thumbnail for the 16:9 video: the AI's idea, drawn by an image model on OpenRouter from frames of the video.
  * It goes on with an upload through the YouTube API; for Studio uploads it's downloaded and added there.
  */
 function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destination?: Destination; onChange: (c: Clip) => void }) {
@@ -428,7 +437,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
               ? "Waiting its turn…"
               : clip.thumbnail_redrawing
                 ? "The image model is drawing it again…"
-                : "Claude is coming up with it, then the image model draws it…"}
+                : "The AI is coming up with it, then the image model draws it…"}
           </p>
           <ProgressBar value={null} />
         </div>
@@ -459,7 +468,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
             </Button>
             <p className="text-xs text-zinc-500">
               Change anything you like and draw it again. The same people go along, with fresh frames of the video and their
-              photos, and Claude isn't asked for a new idea. Make another, below, has Claude start over instead.
+              photos, and the AI isn't asked for a new idea. Make another, below, has the AI start over instead.
             </p>
           </div>
         </details>
@@ -469,7 +478,7 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
         onChange={(e) => setHint(e.target.value)}
         rows={2}
         maxLength={1000}
-        placeholder="Your idea (optional), e.g. Don as a judge banging a gavel"
+        placeholder="Your idea (optional), e.g. the host as a judge banging a gavel"
         className="w-full rounded-xl bg-zinc-900 px-3.5 py-3 text-base outline-none ring-1 ring-white/5 placeholder:text-zinc-500 focus:ring-2 focus:ring-violet-500"
       />
       <div className="grid gap-2">

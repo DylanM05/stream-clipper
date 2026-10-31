@@ -12,60 +12,27 @@ import tempfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any
 
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from ..workspace import write_json
-from .base import LLMError, UsageLimitError
+from .base import LLM, LLMError, UsageLimitError, llm_schema
 
 log = logging.getLogger(__name__)
 
-T = TypeVar("T", bound=BaseModel)
+__all__ = ["ClaudeCode", "llm_schema"]
 
 _LIMIT = re.compile(r"usage limit|limit reached|rate.?limit|out of (extra )?usage", re.IGNORECASE)
 _RESET_EPOCH = re.compile(r"\|(\d{10})\b")
 
-# Schema keywords left out of what Claude sees; pydantic still checks the answer afterwards.
-_SCHEMA_DROP = {
-    "title", "default", "minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum",
-    "minLength", "maxLength", "pattern", "minItems", "maxItems",
-}
-
 
 @dataclass
-class ClaudeCode:
+class ClaudeCode(LLM):
     bin: str = "claude"
     model: str = "opus"
     effort: str | None = "high"
     timeout_s: int = 3600
-
-    def structured(
-        self,
-        *,
-        system_prompt: str,
-        task: str,
-        stdin_text: str,
-        schema: type[T],
-        raw_log: Path | None = None,
-        attempts: int = 2,
-    ) -> T:
-        """Ask Claude for JSON matching `schema`, retrying once if the answer doesn't validate."""
-        problem = ""
-        for attempt in range(1, attempts + 1):
-            payload = self._run(system_prompt, task, stdin_text, schema)
-            if raw_log:
-                write_json(raw_log, payload)
-            output = payload.get("structured_output")
-            if output is None:
-                problem = "the response had no structured_output"
-            else:
-                try:
-                    return schema.model_validate(output)
-                except ValidationError as e:
-                    problem = str(e)
-            log.warning("Claude's answer was unusable (attempt %d/%d): %s", attempt, attempts, problem[:500])
-        raise LLMError(f"Claude gave no usable answer after {attempts} attempts: {problem[:1000]}")
+    name = "Claude"
 
     def command(self, task: str, system_prompt_file: Path, schema: type[BaseModel]) -> list[str]:
         cmd = [
@@ -93,6 +60,16 @@ class ClaudeCode:
         except FileNotFoundError:
             return f"Claude Code CLI not found ({self.bin!r})"
         return (proc.stdout or proc.stderr).strip()
+
+    def signed_in(self) -> bool:
+        try:
+            return bool(json.loads(self.auth_status()).get("loggedIn"))
+        except (json.JSONDecodeError, AttributeError):
+            return False
+
+    def _ask(self, system_prompt: str, task: str, stdin_text: str, schema: type[BaseModel]) -> tuple[dict[str, Any], Any]:
+        payload = self._run(system_prompt, task, stdin_text, schema)
+        return payload, payload.get("structured_output")
 
     def _run(self, system_prompt: str, task: str, stdin_text: str, schema: type[BaseModel]) -> dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="clipper-llm-") as cwd:
@@ -122,7 +99,7 @@ class ClaudeCode:
         if payload.get("is_error") or proc.returncode != 0:
             message = str(payload.get("result") or payload.get("subtype") or "unknown error")
             if _LIMIT.search(message):
-                raise UsageLimitError(message, _reset_time(message))
+                raise UsageLimitError(message, _reset_time(message), note="Claude's usage limit was reached.")
             raise LLMError(f"Claude Code reported an error: {message}")
 
         usage = payload.get("usage") or {}
@@ -135,34 +112,6 @@ class ClaudeCode:
             usage.get("output_tokens"),
         )
         return payload
-
-
-def llm_schema(model: type[BaseModel]) -> dict[str, Any]:
-    """The pydantic model's JSON Schema with $refs inlined, range/length/pattern keywords dropped, and
-    every field required (fields with defaults are still asked for)."""
-    raw = model.model_json_schema()
-    defs = raw.pop("$defs", {})
-
-    def walk(node: Any) -> Any:
-        if isinstance(node, list):
-            return [walk(v) for v in node]
-        if not isinstance(node, dict):
-            return node
-        if "$ref" in node:
-            return walk(defs[node["$ref"].rsplit("/", 1)[-1]])
-        out = {}
-        for key, value in node.items():
-            if key in _SCHEMA_DROP:
-                continue
-            # Under "properties" the keys are field names (which may be "title"), not schema keywords.
-            out[key] = {name: walk(sub) for name, sub in value.items()} if key == "properties" else walk(value)
-        if out.get("type") == "object":
-            out.setdefault("additionalProperties", False)
-            if "properties" in out:
-                out["required"] = list(out["properties"])
-        return out
-
-    return walk(raw)
 
 
 def _parse_output(stdout: str) -> dict[str, Any] | None:

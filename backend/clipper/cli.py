@@ -4,14 +4,16 @@
 - `clipper browser` opens the browser that uploads go through, on a desktop, for signing in.
 - `clipper add <url>` queues a video for the worker.
 - `clipper process <url-or-file>` runs the whole pipeline in the foreground, without the app.
-- `clipper doctor` and `clipper llm-check` check the server setup and the Claude Code login.
+- `clipper doctor` and `clipper llm-check` check the server setup and the AI chosen in the app.
 - `clipper channel-check <url>` shows what the worker sees on a watched channel.
 - `clipper rumble-upload-check` shows what Rumble's upload page asks for, in the upload browser.
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
+- `clipper deploy-wait` and `clipper deploy-done` let a deploy restart the worker between uploads (deploy/deploy.sh).
 """
 
-import json
 import logging
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Optional
 
@@ -20,7 +22,7 @@ from pydantic import BaseModel
 
 from . import ffmpeg
 from .config import get_settings
-from .llm import ClaudeCode, LLMError, UsageLimitError
+from .llm import LLMError, UsageLimitError
 from .models import Clip
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
 from .timecode import to_timecode
@@ -46,7 +48,7 @@ def _setup(verbose: Annotated[bool, typer.Option("--verbose", "-v", help="Show d
 @app.command()
 def process(
     source: Annotated[str, typer.Argument(help="VOD or video URL (Twitch, YouTube, Kick, X...) or a local video file.")],
-    notes: Annotated[Optional[str], typer.Option(help="Notes for Claude: names, running jokes, title style.")] = None,
+    notes: Annotated[Optional[str], typer.Option(help="Notes for the AI: names, running jokes, title style.")] = None,
     notes_file: Annotated[Optional[Path], typer.Option(exists=True, dir_okay=False, help="Read the notes from a file.")] = None,
     redo: Annotated[Optional[str], typer.Option(help=f"Re-run this step and every later one: {', '.join(STEPS)}.")] = None,
     render_clips: Annotated[bool, typer.Option("--render/--no-render", help="Render the clips with ffmpeg.")] = True,
@@ -70,11 +72,7 @@ def process(
         segmentation = segment.run(ws, settings, transcript, hints, context=notes or "")
     except UsageLimitError as e:
         when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
-        typer.secho(
-            f"Your Claude plan's usage limit was reached.{when} Run the same command again after that; "
-            "finished steps are skipped.",
-            fg="yellow", err=True,
-        )
+        typer.secho(f"{e.note}{when} Run the same command again after that; finished steps are skipped.", fg="yellow", err=True)
         raise typer.Exit(2)
     except LLMError as e:
         typer.secho(str(e), fg="red", err=True)
@@ -127,7 +125,7 @@ def browser(port: Annotated[int, typer.Option(help="Remote debugging port the wo
 def add(
     url: Annotated[str, typer.Argument(help="Video or VOD URL.")],
     whole: Annotated[Optional[bool], typer.Option("--whole/--segment", help="Post the whole video, or find clips. Default: the show's setting, else whole for X links.")] = None,
-    notes: Annotated[str, typer.Option(help="Notes for Claude: names, running jokes, title style.")] = "",
+    notes: Annotated[str, typer.Option(help="Notes for the AI: names, running jokes, title style.")] = "",
 ) -> None:
     """Queue a video for the worker."""
     from sqlmodel import Session
@@ -148,11 +146,20 @@ class _Check(BaseModel):
 
 @app.command("llm-check")
 def llm_check() -> None:
-    """Check that Claude Code is installed, signed in, and returns structured output."""
+    """Check that the AI chosen in the app (Claude Code, Codex or OpenRouter) answers with structured output."""
+    from sqlmodel import Session
+
+    from . import ai
+    from .db import get_engine
+
     settings = get_settings()
-    llm = ClaudeCode(bin=settings.claude_bin, model=settings.llm_model, effort="low", timeout_s=300)
-    typer.echo(llm.auth_status())
+    with Session(get_engine(settings)) as s:
+        choice = ai.chosen(s, settings)
+    typer.echo(f"{ai.PROVIDERS[choice.provider]}, model {choice.model or 'its default'}")
     try:
+        llm = ai.backend(settings, choice, effort="low", timeout_s=300)
+        if hasattr(llm, "auth_status"):
+            typer.echo(llm.auth_status())
         result = llm.structured(
             system_prompt="You answer briefly.",
             task="What is 17 + 25? Also invent a short, funny clip title about a streamer losing to a chicken.",
@@ -283,7 +290,7 @@ def timing_check(
             clips = timing.fix_clips(s, vod.id, found, picked)
             typer.secho("    Fixed its transcript. Clips you trimmed by hand keep their cut points.", fg="green")
             for heading, listed in (
-                ("Moved to where Claude meant them", clips.moved),
+                ("Moved to where the AI meant them", clips.moved),
                 ("Rendering again, with captions in time", clips.rendering),
                 ("Their queued uploads were taken out of the queue; upload them again once they're rendered", clips.unqueued),
                 ("Uploading right now, so left as they are", clips.uploading),
@@ -296,9 +303,66 @@ def timing_check(
             typer.echo("No finished videos" + (" with those ids." if vod_ids else "."))
 
 
+HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended
+
+
+@app.command("deploy-wait")
+def deploy_wait(
+    max_hours: Annotated[float, typer.Option(help="Give up waiting after this long.")] = 12,
+    every: Annotated[float, typer.Option(help="Seconds between checks.")] = 30,
+) -> None:
+    """Before a deploy restarts the worker: hold new uploads, and wait for one going up through the upload browser
+    (YouTube Studio or Rumble) to finish, since those can't carry on after a restart and would need checking by hand.
+    Everything else picks up by itself: videos and renders start their step again, and uploads through the YouTube
+    API carry on where they were. The hold lapses by itself 15 minutes after the last check, so a deploy that stops
+    partway can't leave uploads held; deploy-done ends it."""
+    from sqlmodel import Session, col, select
+
+    from .db import DEPLOY_HOLD, UploadJob, get_engine, set_app_setting, utcnow
+
+    engine = get_engine(get_settings())
+    deadline = time.monotonic() + max_hours * 3600
+    while True:
+        with Session(engine) as s:
+            set_app_setting(s, DEPLOY_HOLD, (utcnow() + HOLD_FOR).isoformat())
+            s.commit()
+            going = s.exec(select(UploadJob).where(
+                UploadJob.status == "uploading", col(UploadJob.method).not_in(("api",)),
+            )).all()
+        if not going:
+            typer.echo("No upload is going through the upload browser: the worker can restart. New uploads are held.")
+            return
+        if time.monotonic() > deadline:
+            _end_hold(engine)
+            typer.echo(f"Still uploading after {max_hours:g} hours; not restarting the worker under it.", err=True)
+            raise typer.Exit(1)
+        jobs = ", ".join(f"{j.site} upload {j.id} at {round(j.progress * 100)}%" for j in going)
+        typer.echo(f"Waiting for {jobs} to finish (new uploads are held meanwhile)")
+        time.sleep(every)
+
+
+@app.command("deploy-done")
+def deploy_done() -> None:
+    """Let uploads start again after a deploy (see deploy-wait)."""
+    from .db import get_engine
+
+    _end_hold(get_engine(get_settings()))
+    typer.echo("Uploads can start again.")
+
+
+def _end_hold(engine) -> None:
+    from sqlmodel import Session
+
+    from .db import DEPLOY_HOLD, set_app_setting
+
+    with Session(engine) as s:
+        set_app_setting(s, DEPLOY_HOLD, "")
+        s.commit()
+
+
 @app.command()
 def doctor() -> None:
-    """Check the setup: GPU video encoding, GPU for Whisper, Claude Code login and the data folder."""
+    """Check the setup: GPU video encoding, GPU for Whisper, the AI's sign-in and the data folder."""
     settings = get_settings()
     failures = 0
 
@@ -326,12 +390,15 @@ def doctor() -> None:
     except ImportError:
         report("GPU visible to Whisper", False, "faster-whisper isn't installed (pip install '.[transcribe]')")
 
-    status = ClaudeCode(bin=settings.claude_bin).auth_status()
-    try:
-        info = json.loads(status)
-        report("Claude Code signed in", bool(info.get("loggedIn")), f"{info.get('authMethod')}, {info.get('subscriptionType')} plan")
-    except json.JSONDecodeError:
-        report("Claude Code signed in", False, status[:200])
+    from sqlmodel import Session
+
+    from . import ai
+    from .db import get_engine
+
+    with Session(get_engine(settings)) as s:
+        choice = ai.chosen(s, settings)
+    problem = ai.problem(settings, choice)
+    report(f"the AI ({ai.PROVIDERS[choice.provider]}, {choice.model or 'its default model'}) set up", not problem, problem or "ready")
 
     try:
         settings.data_dir.mkdir(parents=True, exist_ok=True)

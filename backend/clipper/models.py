@@ -73,6 +73,8 @@ class LLMChapter(BaseModel):
     )
     title: str = Field(description="YouTube title for this chapter as its own video, within the task's title length")
     summary: str = Field(description="1-3 factual sentences, usable as the video description")
+    # The default keeps answers saved before it existed readable; the AI is always asked for it.
+    why: str = Field(default="", description="What would make people watch this as its own video, or hold it back")
     confidence: float = Field(description="0-1: how sure you are about this chapter's boundaries")
     # The default keeps answers saved before it existed readable; Claude is always asked for it.
     score: float = Field(
@@ -104,18 +106,20 @@ class Segmentation(BaseModel):
 
 
 class Clip(BaseModel):
-    id: str  # ch01, hl03, ... or "full"
+    id: str  # ch01, hl03, my01, ... or "full"
     kind: Literal["chapter", "highlight", "whole"]  # "whole": the entire video, posted as it is
     start: float
     end: float
     title: str
     description: str
     score: float  # how likely it is to do well, per Claude
-    why: str = ""  # highlights: why Claude picked the moment
+    why: str = ""  # why the AI picked it
     vertical_ok: bool = False
     llm_start: str
     llm_end: str
+    cuts: list[tuple[float, float]] = []  # parts taken out of the middle in the app (cuts.py), in the stream's seconds
 
     @property
     def duration(self) -> float:
-        return self.end - self.start
+        """How long it comes out: start to end, less the cuts."""
+        return self.end - self.start - sum(b - a for a, b in self.cuts)

@@ -1,6 +1,6 @@
-"""Video titles from a show's pattern, such as "KINO CASINO {date} - {title}".
+"""Video titles from a show's pattern, such as "NIGHT OWLS {date} - {title}".
 
-Claude writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
+The AI writes only the {title} part, sized to fit the room the pattern leaves within YouTube's limit.
 """
 
 import re
@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from pydantic import BaseModel, Field
 
 from .config import Settings
-from .llm import ClaudeCode
+from . import ai
 
 MAX_TITLE = 100  # YouTube's limit
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
@@ -107,8 +107,8 @@ class _Preview(BaseModel):
 
 
 def preview_title(post_text: str, room: int, settings: Settings, notes: str = "") -> str:
-    """A short title previewing what a posted video is about, written by Claude from the post's text."""
-    llm = ClaudeCode(bin=settings.claude_bin, model=settings.llm_model, effort="low", timeout_s=300)
+    """A short title previewing what a posted video is about, written by the AI from the post's text."""
+    llm = ai.model(settings, effort="low", timeout_s=300)
     stdin = f"# Post text\n{post_text.strip()}\n"
     if notes.strip():
         stdin += f"\n# Notes about the show\n{notes.strip()}\n"

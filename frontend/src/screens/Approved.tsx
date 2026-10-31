@@ -3,11 +3,15 @@ import { api, errorText, type Clip, type UploadState } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
 import { cn, go, upcoming, usePoll } from "../lib";
-import { PauseBar } from "../PauseBar";
+import { PauseBar, usePauses } from "../PauseBar";
 import { ErrorNote, Screen, useToast } from "../ui";
 
 // Rendered clips whose upload has been started, in the order they go up; a failed one is back to ready.
-const GOING_UP: UploadState[] = ["uploading", "queued", "scheduled", "retrying"];
+export const GOING_UP: UploadState[] = ["uploading", "queued", "scheduled", "retrying"];
+
+/** Clips whose upload has started, in the order they go up. */
+export const inUploadOrder = (a: Clip, b: Clip) =>
+  GOING_UP.indexOf(a.upload_state) - GOING_UP.indexOf(b.upload_state) || (a.next_upload ?? "").localeCompare(b.next_upload ?? "");
 
 /** Approved clips: being rendered, ready to upload, scheduled, and uploaded. */
 export function Approved() {
@@ -15,19 +19,18 @@ export function Approved() {
     () => api.clips(["approved", "rendering", "failed", "rendered", "uploaded"]),
     5000,
   );
-  const { data: pauses, setData: setPauses } = usePoll(api.pauses, 10000);
+  const { pauses, setPauses } = usePauses();
   const rendered = clips?.filter((c) => c.status === "rendered") ?? [];
   const ready = rendered.filter((c) => !GOING_UP.includes(c.upload_state));
-  const scheduled = rendered
-    .filter((c) => GOING_UP.includes(c.upload_state))
-    .sort((a, b) => GOING_UP.indexOf(a.upload_state) - GOING_UP.indexOf(b.upload_state)
-      || (a.next_upload ?? "").localeCompare(b.next_upload ?? ""));
+  const scheduled = rendered.filter((c) => GOING_UP.includes(c.upload_state)).sort(inUploadOrder);
   const working = clips?.filter((c) => ["approved", "rendering", "failed"].includes(c.status)) ?? [];
   const uploaded = clips?.filter((c) => c.status === "uploaded") ?? [];
 
   return (
-    <Screen title="Upload" subtitle="Approved clips, ready to post to YouTube.">
-      <PauseBar parts={["renders", "uploads"]} pauses={pauses} onChange={setPauses} />
+    <Screen title="Upload" subtitle="Approved clips, ready to post to YouTube." wide>
+      <div className="lg:max-w-md">
+        <PauseBar parts={["renders", "uploads"]} pauses={pauses} onChange={setPauses} />
+      </div>
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && <p className="mt-10 text-center text-sm text-zinc-500">Nothing approved yet.</p>}
       <Section title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
@@ -45,7 +48,7 @@ function Section(props: { title: string; clips: Clip[]; footer: (c: Clip) => Rea
       <h2 className="px-1 pb-2 pt-4 text-xs font-semibold uppercase tracking-wide text-zinc-500">
         {props.title} · {props.clips.length}
       </h2>
-      <div className="space-y-3">
+      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
         {props.clips.map((c) => (
           <ClipCard key={c.id} clip={c} showStatus footer={props.footer(c)} />
         ))}
@@ -73,7 +76,7 @@ function FooterButton(props: { onClick: () => void; tone?: "danger" | "accent"; 
     <button
       onClick={props.onClick}
       className={cn(
-        "flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium active:bg-white/5",
+        "flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium hover:bg-white/[0.03] active:bg-white/5",
         props.tone === "danger" ? "text-red-300" : props.tone === "accent" ? "font-semibold text-violet-300" : "text-zinc-400",
       )}
     >
@@ -164,7 +167,7 @@ function UploadedFooter({ clip }: { clip: Clip }) {
           <LinkIcon className="size-4" /> On YouTube
         </a>
       ) : !clip.rumble_url && (
-        <button onClick={() => go(`upload/${clip.id}`)} className="font-semibold text-zinc-300">
+        <button onClick={() => go(`upload/${clip.id}`)} className="font-semibold text-zinc-300 hover:text-zinc-100">
           Details
         </button>
       )}

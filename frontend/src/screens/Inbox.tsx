@@ -37,7 +37,7 @@ export function Inbox() {
   }
 
   return (
-    <Screen title="Inbox" subtitle={clips ? `${clips.length} clip${clips.length === 1 ? "" : "s"} to review` : " "}>
+    <Screen title="Inbox" subtitle={clips ? `${clips.length} clip${clips.length === 1 ? "" : "s"} to review` : " "} wide>
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && (
         <div className="mt-16 flex flex-col items-center text-center">
@@ -54,14 +54,18 @@ export function Inbox() {
         </div>
       )}
       {groups.length > 0 && (
-        <p className="mb-1 text-xs text-zinc-500">Swipe right to approve, left to reject, or tap to trim and edit.</p>
+        <p className="mb-1 text-xs text-zinc-500">
+          {/* A mouse can't swipe a card, so a computer is pointed to the buttons instead. */}
+          <span className="pointer-fine:hidden">Swipe right to approve, left to reject, or tap to trim and edit.</span>
+          <span className="hidden pointer-fine:inline">Approve or reject with the buttons under each clip, or click one to trim and edit it.</span>
+        </p>
       )}
       {groups.map((g) => (
         <section key={g.vodId}>
           <h2 className="truncate px-1 pb-2 pt-4 text-xs font-semibold uppercase tracking-wide text-zinc-500">
             {g.title}
           </h2>
-          <div className="space-y-3">
+          <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
             {g.clips.map((c) => (
               <ClipCard key={c.id} clip={c} onApprove={() => decide(c, true)} onReject={() => decide(c, false)} />
             ))}

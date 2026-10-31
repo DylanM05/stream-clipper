@@ -238,10 +238,97 @@ def test_choosing_rumble_in_the_app(settings, clip_id):
     assert (dest["youtube"], dest["rumble"], dest["rumble_category"]) == (True, False, "Podcasts")  # YouTube only now
     client.delete(f"/api/upload-jobs/{rumble.json()['id']}")
     res = client.post(f"/api/clips/{clip_id}/uploads", json={"site": "rumble"})
-    assert res.status_code == 409 and "go to Rumble" in res.json()["detail"]
+    assert res.status_code == 409 and "to go to Rumble" in res.json()["detail"]
 
     dest = client.patch("/api/destinations/1", json={"name": "Kino Klips", "youtube": False, "rumble": True}).json()
     assert (dest["youtube"], dest["rumble"]) == (False, True)  # Rumble only
     res = client.patch("/api/destinations/1", json={"name": "Kino Klips", "rumble": False})
     assert res.status_code == 422 and "YouTube, Rumble or both" in res.json()["detail"]  # somewhere, at least
     assert client.patch("/api/destinations/1", json={"name": "Kino Klips", "rumble_category": "Cats"}).status_code == 422
+
+
+class _NoBrowser:
+    """Stands in for Playwright: records how the upload browser was connected to, then finds nothing there."""
+
+    def __init__(self):
+        self.calls = []
+        self.chromium = self
+
+    def connect_over_cdp(self, url, **options):
+        self.calls.append(options)
+        raise ConnectionRefusedError("nothing listening")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+def test_uploads_hand_the_browser_the_file_by_its_path_so_big_files_go(tmp_path, monkeypatch):
+    # Over a connection to a browser Playwright doesn't think is local, it sends the file's bytes, and refuses
+    # anything over 50 MB: "Cannot transfer files larger than 50Mb to a browser not co-located with the server".
+    from clipper import studio
+
+    fake = _NoBrowser()
+    monkeypatch.setattr(rumble_upload, "sync_playwright", lambda: fake)
+    video, thumbnail = files(tmp_path)
+    job = RumbleUpload(file=video, title="t", description="", visibility="public", category="News", thumbnail=thumbnail)
+    with pytest.raises(RumbleUploadError):
+        rumble_upload.upload("http://127.0.0.1:9222", job, tmp_path)
+    monkeypatch.setattr(studio, "sync_playwright", lambda: fake)
+    with pytest.raises(studio.StudioError):
+        studio.Studio("http://127.0.0.1:9222", tmp_path).upload(studio.Upload(video, "t", "", "public", ""))
+    assert fake.calls and all(call.get("is_local") is True for call in fake.calls)
+
+
+class _Chooser:
+    def __init__(self, size):
+        self.size = size
+
+    def evaluate(self, script):
+        return self.size
+
+
+def test_a_browser_that_cant_read_the_file_is_said_plainly(tmp_path):
+    video, _ = files(tmp_path)  # 5 bytes
+    rumble_upload._check_chosen(_Chooser(5), video)  # all of it
+    rumble_upload._check_chosen(_Chooser(-1), video)  # the page took it and emptied the chooser: nothing to tell
+    with pytest.raises(RumbleUploadError, match="couldn't read .*hl01-a-moment.mp4"):
+        rumble_upload._check_chosen(_Chooser(0), video)
+
+
+@pytest.mark.parametrize("kind, clip_sites, episode_sites, sites", [
+    ("highlight", "rumble", "", ["rumble"]),  # the show's choice over its channel's (YouTube only here)
+    ("highlight", "both", "", ["rumble", "youtube"]),
+    ("highlight", "", "rumble", ["youtube"]),  # not chosen for clips: the channel's
+    ("whole", "", "rumble", ["rumble"]),  # full episodes have their own
+])
+def test_a_show_picks_where_its_uploads_go_after_the_channel(settings, clip_id, kind, clip_sites, episode_sites, sites):
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Kino", auto_shorts="upload", auto_episode="upload", clip_sites=clip_sites, episode_sites=episode_sites)
+        s.add(show)
+        s.commit()
+        vod, dest, clip = s.get(Vod, 1), s.get(Destination, 1), s.get(ClipRecord, clip_id)
+        vod.show_id, dest.rumble, clip.kind = show.id, False, kind
+        s.add_all([vod, dest, clip])
+        s.commit()
+    worker_module.Worker(settings)._auto_upload(clip_id)
+    with Session(get_engine(settings)) as s:
+        assert sorted(j.site for j in s.exec(select(UploadJob))) == sites
+    # The clip's Upload page starts with the same choice, and lets it go to Rumble.
+    client = TestClient(web_app.create_app(settings))
+    assert client.get(f"/api/clips/{clip_id}").json()["upload_to"] == ("both" if len(sites) == 2 else sites[0])
+    if "rumble" in sites:
+        for job_id in range(1, len(sites) + 1):  # the automatic ones, so one by hand isn't a second of the same
+            client.delete(f"/api/upload-jobs/{job_id}")
+        assert client.post(f"/api/clips/{clip_id}/uploads", json={"site": "rumble"}).status_code == 201
+
+
+def test_a_shows_choice_of_sites_is_saved_and_checked(settings):
+    client = TestClient(web_app.create_app(settings))
+    show = client.post("/api/shows", json={"name": "Kino", "clip_sites": "both"}).json()
+    assert (show["clip_sites"], show["episode_sites"]) == ("both", "")
+    assert client.patch(f"/api/shows/{show['id']}", json={"episode_sites": "rumble"}).json()["episode_sites"] == "rumble"
+    assert client.patch(f"/api/shows/{show['id']}", json={"clip_sites": ""}).json()["clip_sites"] == ""  # the channel's again
+    assert client.patch(f"/api/shows/{show['id']}", json={"clip_sites": "vimeo"}).status_code == 422

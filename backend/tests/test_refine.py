@@ -113,6 +113,14 @@ def test_chapters_are_scored_by_how_well_they_would_do_or_their_confidence_in_ol
     assert [c.score for c in clips] == [0.35, 0.7]
 
 
+def test_a_chapter_keeps_the_ais_reason_and_older_answers_have_none():
+    reasoned = chapter("00:02:00", "00:10:00")
+    reasoned.why = " A guest everyone asks about. "
+    older = chapter("00:10:30", "00:18:40")  # saved before chapters had a reason
+    clips = refine(Segmentation(chapters=[reasoned, older], highlights=[]), _chapters_transcript())
+    assert [c.why for c in clips] == ["A guest everyone asks about.", ""]
+
+
 def test_overlapping_highlights_keep_the_higher_score():
     t = transcript(*[line(i * 10.0, f"Sentence number {i}.") for i in range(30)])
     seg = Segmentation(

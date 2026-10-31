@@ -1,14 +1,14 @@
-"""Ask Claude to split the stream into chapters and pick highlights, in one call over the whole transcript.
+"""Ask the AI to split the stream into chapters and pick highlights, in one call over the whole transcript.
 
-One call instead of two halves how much of your Claude plan each VOD uses: the transcript is
-most of the input, and it only has to be sent once.
+One call instead of two halves how much of your plan (or OpenRouter credit) each VOD uses: the transcript is
+most of the input, and it only has to be sent once. The app calls chapters "clips".
 """
 
 import logging
 from pathlib import Path
 
 from ..config import Settings
-from ..llm import ClaudeCode
+from .. import ai
 from ..models import Segmentation, Signals, Transcript
 from ..timecode import to_timecode
 from ..workspace import Workspace, write_text
@@ -28,13 +28,14 @@ def run(
     title_room: int = 100,
     title_prefixed: bool = False,
     episode_room: int | None = None,
-    top_titles: list[str] | None = None,
+    track_record: str = "",
 ) -> Segmentation:
-    """Ask Claude for chapters, highlights and an episode title.
+    """Ask the AI for chapters, highlights and an episode title.
 
     `context` is about the show and `guidance` is what its chapters and highlights should be.
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
-    means the show name and date get added to them. `top_titles` are the show's most-viewed clip titles.
+    means the show name and date get added to them. `track_record` is what the show's past clips teach it
+    (learning.py).
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
@@ -46,26 +47,24 @@ def run(
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    llm = ClaudeCode(
-        bin=settings.claude_bin, model=settings.llm_model, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s
-    )
+    llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
     result = llm.structured(
         system_prompt=(PROMPTS_DIR / "segment.md").read_text(encoding="utf-8"),
         task=(
             f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to "
             f"{max_highlights} highlights. {title_rule}. The stream details, hints and transcript follow."
         ),
-        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, top_titles or []),
+        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record),
         schema=Segmentation,
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
     write_text(ws.segmentation_json, result.model_dump_json(indent=2))
-    log.info("Claude proposed %d chapters and %d highlights", len(result.chapters), len(result.highlights))
+    log.info("%s proposed %d chapters and %d highlights", llm.name, len(result.chapters), len(result.highlights))
     return result
 
 
 def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",
-                top_titles: list[str] = ()) -> str:
+                track_record: str = "") -> str:
     tc = to_timecode
     lines = [
         "# Stream",
@@ -81,10 +80,10 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
     if context.strip():
         lines += ["", "# About the show", context.strip()]
     if guidance.strip():
-        lines += ["", "# What the chapters and highlights should be", guidance.strip()]
-    if top_titles:
-        lines += ["", "# The channel's most-viewed clip titles, most viewed first"]
-        lines += [f"- {t}" for t in top_titles]
+        # The app calls chapters "clips", so the show's guidance may too.
+        lines += ["", '# What the chapters and highlights should be (chapters may be called "clips" here)', guidance.strip()]
+    if track_record.strip():
+        lines += ["", track_record.strip()]
     if signals.platform_chapters:
         lines += ["", "# Platform chapters (game or category changes)"]
         lines += [f"[{tc(c.start)}] {c.title}" for c in signals.platform_chapters]

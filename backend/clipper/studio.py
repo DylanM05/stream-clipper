@@ -64,6 +64,15 @@ NOT_RUNNING = (
 )
 
 
+def connect(p, cdp_url: str, timeout_ms: float):
+    """The upload browser, for uploading: told it shares the worker's files (is_local), so a video is handed to it by
+    its path, which the browser opens itself. Otherwise Playwright sends the file's bytes over the connection, which it
+    refuses for anything over 50 MB ("Cannot transfer files larger than 50Mb to a browser not co-located with the
+    server"). It does share them: in Docker the browser has the data folder at /data, as the worker does, and on a
+    desktop it's the same computer."""
+    return p.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms, is_local=True)
+
+
 class Studio:
     def __init__(self, cdp_url: str, screenshots_dir: Path, desktop_profile: Path | None = None):
         """With `desktop_profile`, an upload opens the desktop browser itself if it isn't running."""
@@ -119,7 +128,7 @@ class Studio:
 
     def _connect(self, p):
         try:
-            return p.chromium.connect_over_cdp(self.cdp_url, timeout=15_000)
+            return connect(p, self.cdp_url, 15_000)
         except Exception as e:
             if not self.desktop_profile or urlparse(self.cdp_url).hostname not in ("127.0.0.1", "localhost"):
                 raise StudioError(NOT_RUNNING, retry=True) from e
@@ -132,7 +141,7 @@ class Studio:
         deadline = time.monotonic() + 30
         while True:
             try:
-                return p.chromium.connect_over_cdp(self.cdp_url, timeout=5_000)
+                return connect(p, self.cdp_url, 5_000)
             except Exception as e:
                 if time.monotonic() > deadline:
                     raise StudioError(NOT_RUNNING, retry=True) from e

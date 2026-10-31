@@ -27,7 +27,7 @@ from playwright.sync_api import Page, sync_playwright
 from playwright.sync_api import TimeoutError as PlaywrightTimeoutError
 
 from .rumble import UPLOAD_PAGE
-from .studio import NOT_RUNNING
+from .studio import NOT_RUNNING, connect
 
 log = logging.getLogger(__name__)
 
@@ -71,7 +71,7 @@ def upload(cdp_url: str, job: RumbleUpload, screenshots_dir: Path,
     try:
         with sync_playwright() as p:
             try:
-                browser = p.chromium.connect_over_cdp(cdp_url, timeout=15_000)
+                browser = connect(p, cdp_url, 15_000)
             except Exception as e:
                 raise RumbleUploadError(NOT_RUNNING, retry=True) from e
             context = browser.contexts[0] if browser.contexts else browser.new_context()
@@ -169,6 +169,7 @@ def _choose_file(page: Page, file: Path, seen: list[str]) -> None:
     chooser = page.locator("#Filedata")
     for _ in range(2):
         chooser.set_input_files(str(file), timeout=60_000)
+        _check_chosen(chooser, file)
         if _upload_started(page):
             return
         log.info("Rumble: the upload didn't start; choosing the file again")
@@ -176,6 +177,19 @@ def _choose_file(page: Page, file: Path, seen: list[str]) -> None:
         # script, which tells the page nothing).
         chooser.evaluate("el => { el.value = ''; }")
     raise RumbleUploadError("Rumble didn't start uploading the file" + (_noticed(seen) or ", and the page showed no error"))
+
+
+def _check_chosen(chooser, file: Path) -> None:
+    """That the page has the whole file. The browser opens it by its path (see studio.connect), so one that can't see
+    the worker's files gets an empty one, and the page would only say it never started uploading."""
+    try:
+        size = chooser.evaluate("el => el.files.length ? el.files[0].size : -1")
+    except Exception:
+        return  # the page took the file and moved on
+    if size not in (-1, file.stat().st_size):
+        raise RumbleUploadError(
+            f"The upload browser couldn't read {file}: it has to see the worker's files at the same place (in Docker, "
+            "the data folder at /data in both)")
 
 
 def _upload_started(page: Page) -> bool:

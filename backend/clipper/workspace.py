@@ -79,6 +79,22 @@ class Workspace:
     def thumbs_dir(self) -> Path:
         return self.root / "thumbs"
 
+    @property
+    def peaks_u8(self) -> Path:
+        """The soundtrack's loudness, 50 readings a second, for the editor's waveform (audio.overview)."""
+        return self.root / "peaks.u8"
+
+    @property
+    def frames_dir(self) -> Path:
+        """Stills for the editor's timeline, made from the preview copy: one every 10 s by the worker in one pass
+        (render.render_stills), and closer together as they're asked for."""
+        return self.thumbs_dir / "frames"
+
+    @property
+    def stills_done(self) -> Path:
+        """Marks the pass over the whole preview making a still every 10 s as finished."""
+        return self.frames_dir / "every-10s.done"
+
     def meta(self) -> dict:
         return read_json(self.meta_json)
 
@@ -87,9 +103,10 @@ class Workspace:
         return Path(self.meta()["source_path"])
 
     def delete_media(self) -> int:
-        """Delete the big files (source, preview, audio, renders) and return how many bytes that freed. The
+        """Delete the big files (source, preview, audio, renders, the editor's stills) and return how many bytes that freed. The
         transcript and Claude's picks stay, and so does a source that was added from elsewhere by its path."""
-        targets = [self.proxy_mp4, self.audio_wav, self.clips_dir, *self.root.glob("audio.tmp.*"), *self.root.glob("proxy.tmp.*")]
+        targets = [self.proxy_mp4, self.audio_wav, self.peaks_u8, self.clips_dir, self.frames_dir,
+                   *self.root.glob("audio.tmp.*"), *self.root.glob("proxy.tmp.*")]
         if self.meta_json.exists() and self.source.resolve().parent == self.root.resolve():
             targets += self.root.glob("source.*")
         return sum(remove(path) for path in targets)

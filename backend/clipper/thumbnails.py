@@ -1,14 +1,14 @@
-"""Thumbnails for landscape videos: Claude comes up with the idea and writes the image prompt from what's said
-in the video, then an image model on OpenRouter draws it. Frames of the video go along as references, so the
+"""Thumbnails for landscape videos: the AI (ai.py) comes up with the idea and writes the image prompt from what's
+said in the video, then an image model on OpenRouter draws it. Frames of the video go along as references, so the
 people in it look like themselves.
 
-Public figures the video talks about can be in it too. Claude names them, and a photo of each is looked up
+Public figures the video talks about can be in it too. The AI names them, and a photo of each is looked up
 (their Wikipedia picture, else the picture of the YouTube channel a search finds first) and sent along as
-another reference, so the image model knows what they look like. Without a photo they're drawn from Claude's
+another reference, so the image model knows what they look like. Without a photo they're drawn from the AI's
 description.
 
-Claude Code only writes text, so the drawing is done on OpenRouter (CLIPPER_OPENROUTER_API_KEY, with the
-model in CLIPPER_THUMBNAIL_MODEL). Each picture costs a few cents there, on top of a small Claude call.
+The drawing is done on OpenRouter (CLIPPER_OPENROUTER_API_KEY, with the model in CLIPPER_THUMBNAIL_MODEL). Each
+picture costs a few cents there, on top of a small call to the AI.
 
 Shorts don't get one: YouTube doesn't show custom thumbnails in the Shorts feed.
 """
@@ -27,7 +27,7 @@ from pydantic import BaseModel, Field
 from . import ffmpeg
 from .config import Settings
 from .db import ClipRecord
-from .llm import ClaudeCode
+from . import ai
 from .models import Transcript
 from .timecode import to_timecode
 from .workspace import Workspace
@@ -80,9 +80,9 @@ class Photo:
 
 def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", http: httpx.Client | None = None,
          channel_picture: ChannelPicture | None = None, idea: Idea | None = None, rules: str = "") -> tuple[Path, Idea, str]:
-    """Make the clip's thumbnail: a JPEG next to its renders, Claude's idea for it, and who's in it and where
+    """Make the clip's thumbnail: a JPEG next to its renders, the AI's idea for it, and who's in it and where
     their likeness came from. `rules` are what the show wants on every thumbnail. Given an `idea` (a saved one,
-    perhaps with its prompt changed), Claude isn't asked for a new one: it's drawn again, with fresh frames and
+    perhaps with its prompt changed), the AI isn't asked for a new one: it's drawn again, with fresh frames and
     photos of the same people."""
     if not settings.openrouter_api_key:
         raise ThumbnailError("Thumbnails need an OpenRouter key: set CLIPPER_OPENROUTER_API_KEY (see the README).")
@@ -116,7 +116,7 @@ def reference_guide(idea: Idea, frame_count: int, photos: list[Photo]) -> str:
 
 
 def cast_list(idea: Idea, photos: list[Photo]) -> str:
-    """E.g. "Don (from the video), Ethan Klein (Wikipedia photo), Hasan (from a description)"."""
+    """E.g. "Sam (from the video), John Doe (Wikipedia photo), Alex (from a description)"."""
     sources = {p.person.name: f"{p.source} photo" for p in photos}
     return ", ".join(
         f"{p.name} ({'from the video' if p.in_video else sources.get(p.name, 'from a description')})" for p in idea.people
@@ -156,9 +156,9 @@ def _channel(person: Person, channel_picture: ChannelPicture | None) -> str:
 
 
 def _same_person(person: Person, title: str) -> bool:
-    """Whether a page or channel name is theirs, by the name the video uses or their full name: "The Quartering" for
-    TheQuartering, "Jeremy Hambly" for Jer if Claude knows that's who Jer is. Short names must match exactly, since a
-    nickname like "Jer" on its own could be any Jeremy."""
+    """Whether a page or channel name is theirs, by the name the video uses or their full name: "John Doe Show" for
+    JohnDoeShow, "John Doe" for Jay if the AI knows that's who Jay is. Short names must match exactly, since a
+    nickname like "Jay" on its own could be anyone."""
     found = _squash(title)
 
     def matches(name: str) -> bool:
@@ -196,7 +196,7 @@ def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str
         lines += ["", "# The channel owner's idea for this thumbnail (build on it)", clip.thumbnail_hint.strip()]
     if transcript:
         lines += ["", "# What's said in it", transcript]
-    llm = ClaudeCode(bin=settings.claude_bin, model=settings.llm_model, effort="medium", timeout_s=600)
+    llm = ai.model(settings, effort="medium", timeout_s=600)
     return llm.structured(
         system_prompt=(PROMPTS_DIR / "thumbnail.md").read_text(encoding="utf-8"),
         task=f"Come up with this video's thumbnail and write the image prompt. {FRAMES} frames of the video go to "

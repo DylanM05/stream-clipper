@@ -16,25 +16,54 @@ export function go(path: string) {
   location.hash = `#/${path}`;
 }
 
+/** Go to `path` in place of the page you're on, so Back skips that page: moving on from one clip to the next, Back
+ * then goes to where you started instead of through every clip on the way. */
+export function goInstead(path: string) {
+  location.replace(`#/${path}`);
+}
+
 export function goBack(fallback: string) {
   if (history.length > 1) history.back();
   else go(fallback);
 }
 
+// --- Screen size: the desktop layout from Tailwind's lg breakpoint (64rem, 1024px) up ---
+
+const DESKTOP = "(min-width: 64rem)";
+
+/** Whether the desktop layout is showing. Parts only it shows aren't rendered on a phone, so they don't load anything there. */
+export function useDesktop(): boolean {
+  const [desktop, setDesktop] = useState(() => matchMedia(DESKTOP).matches);
+  useEffect(() => {
+    const query = matchMedia(DESKTOP);
+    const onChange = () => setDesktop(query.matches);
+    onChange();
+    query.addEventListener("change", onChange);
+    return () => query.removeEventListener("change", onChange);
+  }, []);
+  return desktop;
+}
+
 // --- Data loading that refreshes on an interval while the page is visible ---
+
+const STUCK_MS = 30000; // a refresh still out after this long is taken as lost, and another goes
 
 export function usePoll<T>(load: () => Promise<T>, intervalMs: number, key: unknown = null) {
   const [data, setData] = useState<T>();
   const [error, setError] = useState<string>();
   const loadRef = useRef(load);
   loadRef.current = load;
+  const sentAt = useRef(0); // when the refresh still out was sent; 0 when none is
 
   const refresh = useCallback(async () => {
+    sentAt.current = Date.now();
     try {
       setData(await loadRef.current());
       setError(undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      sentAt.current = 0;
     }
   }, []);
 
@@ -42,7 +71,10 @@ export function usePoll<T>(load: () => Promise<T>, intervalMs: number, key: unkn
     void refresh();
     if (!intervalMs) return;
     const timer = setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
+      // Not while the last one is still out: when the server is slow (a render keeping it busy), refreshes that
+      // overlap pile up and slow it down further, until nothing comes back at all.
+      const waiting = sentAt.current && Date.now() - sentAt.current < STUCK_MS;
+      if (document.visibilityState === "visible" && !waiting) void refresh();
     }, intervalMs);
     return () => clearInterval(timer);
   }, [refresh, intervalMs, key]);
@@ -178,6 +210,20 @@ export function fileName(title: string): string {
 
 export function formatBytes(bytes: number): string {
   return bytes >= 1e9 ? `${(bytes / 1e9).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1e6))} MB`;
+}
+
+/** The middle value, or null for none. */
+export function median(values: (number | null)[]): number | null {
+  const sorted = values.filter((v): v is number => v !== null).sort((a, b) => a - b);
+  if (!sorted.length) return null;
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+/** The sum of the values there are, or null for none. */
+export function total(values: (number | null)[]): number | null {
+  const known = values.filter((v): v is number => v !== null);
+  return known.length ? known.reduce((a, b) => a + b, 0) : null;
 }
 
 export const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));

@@ -1,14 +1,14 @@
 import { useState, type FormEvent } from "react";
-import { api, errorText, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type AiProviderId, type AiSetup, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
-import { LinkIcon, PauseIcon, PlayIcon, TrashIcon } from "../icons";
-import { ago, applyTitlePattern, cn, go, length, platformName, timeOfDay, titleDate, usePoll } from "../lib";
-import { PauseBar } from "../PauseBar";
+import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
+import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, timeOfDay, titleDate, useDesktop, usePoll } from "../lib";
+import { PauseBar, usePauses } from "../PauseBar";
 import { Button, ErrorNote, MODE_LABEL, ProgressBar, Screen, VodStatusChip, useToast } from "../ui";
 
-const WITH_PROGRESS = ["downloading", "preparing", "transcribing"];
+export const WITH_PROGRESS = ["downloading", "preparing", "transcribing"];
 const RUNNING = [...WITH_PROGRESS, "analysing", "segmenting"]; // being worked on right now
-const ACTIVE = [...RUNNING, "queued"];
+export const ACTIVE = [...RUNNING, "queued"];
 const PAUSABLE = [...ACTIVE, "waiting"];
 
 /** A video can be deleted unless it's being worked on (pause it first) or has clips on YouTube. */
@@ -34,17 +34,25 @@ function useDeleteVod() {
 
 export function Videos() {
   const { data: vods, error, refresh } = usePoll(api.vods, 4000);
-  const { data: pauses, setData: setPauses } = usePoll(api.pauses, 10000);
+  const { pauses, setPauses } = usePauses();
   return (
-    <Screen title="Videos" subtitle="Add a link and the clips land in your inbox.">
-      <AddVideo onAdded={refresh} />
-      <div className="mt-3">
-        <PauseBar parts={["downloads", "processing", "renders", "uploads"]} pauses={pauses} onChange={setPauses} />
-      </div>
-      <DownloadAndDisk />
-      {error && <ErrorNote>{error}</ErrorNote>}
-      <div className="mt-6 space-y-3">
-        {vods?.map((v) => <VodRow key={v.id} vod={v} pauses={pauses} onChanged={refresh} />)}
+    <Screen title="Videos" subtitle="Add a link and the clips land in your inbox." wide>
+      {/* On a wide screen, adding a video and the settings sit beside the list instead of above it. */}
+      <div className="xl:grid xl:grid-cols-[24rem_minmax(0,1fr)] xl:items-start xl:gap-8">
+        <div>
+          <AddVideo onAdded={refresh} />
+          <div className="mt-3">
+            <PauseBar parts={["downloads", "processing", "renders", "uploads"]} pauses={pauses} onChange={setPauses} />
+          </div>
+          <DownloadAndDisk />
+        </div>
+        <div>
+          {error && <ErrorNote>{error}</ErrorNote>}
+          <div className={cn("mt-6 space-y-3", !error && "xl:mt-0")}>
+            {vods?.length === 0 && <p className="hidden pt-10 text-center text-sm text-zinc-500 xl:block">No videos yet. Paste a link to add one.</p>}
+            {vods?.map((v) => <VodRow key={v.id} vod={v} pauses={pauses} onChanged={refresh} />)}
+          </div>
+        </div>
       </div>
     </Screen>
   );
@@ -147,12 +155,12 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
           value={notes}
           onChange={(e) => setNotes(e.target.value)}
           rows={3}
-          placeholder="Notes for Claude: who's on the show, running jokes, title style…"
+          placeholder="Notes for the AI: who's on the show, running jokes, title style…"
           className="w-full rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none ring-violet-500 placeholder:text-zinc-500 focus:ring-2"
         />
       ) : (
         <button type="button" onClick={() => setShowNotes(true)} className="text-sm font-medium text-violet-300">
-          + Add notes for Claude
+          + Add notes for the AI
         </button>
       )}
       <Button type="submit" tone="primary" disabled={!url.trim() || busy} className="w-full">
@@ -196,10 +204,11 @@ function DownloadAndDisk() {
         }
         warning={lowSpace ? `Below ${storage!.min_free_gb} GB free: new downloads wait for space.` : undefined}
         label="Delete finished streams' files after (days)"
-        hint="The transcript and Claude's picks are kept; the clips can't be re-cut after this. Each rendered clip is deleted as soon as it's uploaded."
+        hint="The transcript and the AI's picks are kept; the clips can't be re-cut after this. Each rendered clip is deleted as soon as it's uploaded."
         value={days}
         onSave={async (v) => setData(await api.updateSettings({ cleanup_after_days: v }))}
       />
+      <AiChoice />
       <Notifications />
     </div>
   );
@@ -289,6 +298,101 @@ function FullSpeedHours({ settings, onChange }: { settings: AppSettings; onChang
         ? `Full speed from ${hourLabel(settings.full_speed_from)} to ${hourLabel(settings.full_speed_until)} (${zone}). `
         : "No full-speed hours. "}
       <span className="font-semibold text-violet-300">{on ? "Change" : "Set some"}</span>
+    </button>
+  );
+}
+
+const AI_HINT: Record<AiProviderId, string> = {
+  claude: "On your Claude plan, signed in once on the server (README). The model is opus, sonnet or a full model name.",
+  codex:
+    "On your ChatGPT plan, signed in once on the server with codex login --device-auth (README). Leave the model " +
+    "empty for Codex's own default.",
+  openrouter:
+    "Paid per use from your OpenRouter credit, with CLIPPER_OPENROUTER_API_KEY. Any model whose page lists " +
+    "structured outputs works; anthropic/claude-opus-5.5 costs about $0.75 for an 8-hour stream.",
+};
+
+function aiText(setup: AiSetup): string {
+  const { id, model } = setup.providers.find((p) => p.id === setup.provider)!;
+  const who = {
+    claude: `Claude (${model}) on your Claude plan`,
+    codex: `Codex (${model || "its default model"}) on your ChatGPT plan`,
+    openrouter: `${model} on OpenRouter`,
+  }[id];
+  return `${who} picks the clips and writes their titles and thumbnail ideas.`;
+}
+
+/** Which AI picks the clips and writes the titles and thumbnail ideas, and its model. */
+function AiChoice() {
+  const toast = useToast();
+  const { data: setup, setData } = usePoll(api.ai, 0);
+  const [editing, setEditing] = useState(false);
+  const [provider, setProvider] = useState<AiProviderId>("claude");
+  const [model, setModel] = useState("");
+  if (!setup) return null;
+
+  const modelOf = (id: AiProviderId) => setup.providers.find((p) => p.id === id)!;
+  const choose = (id: AiProviderId) => {
+    setProvider(id);
+    setModel(modelOf(id).model);
+  };
+  const save = async () => {
+    try {
+      // The default stays the default, rather than being kept as this model's name.
+      const name = model.trim() === modelOf(provider).default_model ? "" : model.trim();
+      setData(await api.setAi({ provider, model: name }));
+      setEditing(false);
+      toast({ text: "Saved. It takes over from the next video." });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
+  if (editing) {
+    const problem = provider === setup.provider ? setup.problem : "";
+    return (
+      <div className="space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">The AI</label>
+        <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
+          {setup.providers.map((p) => (
+            <button
+              key={p.id}
+              type="button"
+              onClick={() => choose(p.id)}
+              className={cn("rounded-lg py-2 text-xs font-semibold", provider === p.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            >
+              {p.name}
+            </button>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <input
+            value={model}
+            onChange={(e) => setModel(e.target.value)}
+            placeholder={modelOf(provider).default_model || "Codex's default"}
+            aria-label="Model"
+            className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+          />
+          <Button onClick={() => setEditing(false)}>Cancel</Button>
+          <Button tone="primary" onClick={save}>
+            Save
+          </Button>
+        </div>
+        <p className="text-xs text-zinc-500">{AI_HINT[provider]}</p>
+        {problem && <p className="text-xs text-amber-300">{problem}</p>}
+      </div>
+    );
+  }
+  return (
+    <button
+      onClick={() => {
+        choose(setup.provider);
+        setEditing(true);
+      }}
+      className="block w-full text-left text-xs text-zinc-500"
+    >
+      {aiText(setup)} {setup.problem && <span className="text-amber-300">{setup.problem} </span>}
+      <span className="font-semibold text-violet-300">Change</span>
     </button>
   );
 }
@@ -437,7 +541,7 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
     <div
       role="button"
       onClick={() => go(`videos/${vod.id}`)}
-      className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5 active:bg-zinc-800/70"
+      className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
     >
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
@@ -495,6 +599,7 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
 
 export function VideoDetail({ id }: { id: number }) {
   const toast = useToast();
+  const desktop = useDesktop();
   const deleteVod = useDeleteVod();
   const { data, error, refresh } = usePoll(() => api.vod(id), 5000, id);
   const vod = data?.vod;
@@ -520,52 +625,97 @@ export function VideoDetail({ id }: { id: number }) {
       title={vod?.title || "Video"}
       subtitle={vod && <VodStatusChip status={vod.status} paused={vod.paused} />}
       onBack={() => go("videos")}
+      wide
     >
       {error && <ErrorNote>{error}</ErrorNote>}
       {vod && (
         <div className="mb-4 space-y-2 text-sm text-zinc-400">
-          <a href={vod.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-violet-300">
+          <a href={vod.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-violet-300 hover:text-violet-200">
             <LinkIcon className="size-4" /> Open the original
           </a>
-          {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for Claude: {vod.notes}</p>}
+          {vod.status === "ready" && !vod.cleaned && (
+            <button onClick={() => go(`new/${vod.id}`)} className="flex items-center gap-1.5 text-violet-300 hover:text-violet-200">
+              <ScissorsIcon className="size-4" /> Make a clip from any part of it
+            </button>
+          )}
+          {desktop && <VodFacts vod={vod} />}
+          {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for the AI: {vod.notes}</p>}
         </div>
       )}
-      <div className="space-y-3">
+      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
         {offered.map((c) => <ClipCard key={c.id} clip={c} showStatus />)}
         {data && data.clips.length === 0 && <p className="text-sm text-zinc-500">No clips yet.</p>}
       </div>
       {extras.length > 0 && <Extras clips={extras} />}
-      {canDeleteFiles && (
-        <Button tone="danger" onClick={deleteFiles} className="mt-8 w-full">
-          <TrashIcon className="size-4" /> Delete this stream's video files
-        </Button>
-      )}
-      {vod && deletable(vod) && (
-        <Button
-          tone="danger"
-          onClick={() => void deleteVod(vod).then((deleted) => deleted && go("videos"))}
-          className={cn("w-full", canDeleteFiles ? "mt-3" : "mt-8")}
-        >
-          <TrashIcon className="size-4" /> Delete this video
-        </Button>
+      {(canDeleteFiles || (vod && deletable(vod))) && (
+        // Full width, one above the other, on a phone; side by side on a desktop.
+        <div className="mt-8 flex flex-col gap-3 lg:flex-row">
+          {canDeleteFiles && (
+            <Button tone="danger" onClick={deleteFiles} className="w-full lg:w-auto">
+              <TrashIcon className="size-4" /> Delete this stream's video files
+            </Button>
+          )}
+          {vod && deletable(vod) && (
+            <Button
+              tone="danger"
+              onClick={() => void deleteVod(vod).then((deleted) => deleted && go("videos"))}
+              className="w-full lg:w-auto"
+            >
+              <TrashIcon className="size-4" /> Delete this video
+            </Button>
+          )}
+        </div>
       )}
       {vod?.cleaned && <p className="mt-8 text-center text-xs text-zinc-500">Video files deleted to free space.</p>}
     </Screen>
   );
 }
 
-/** Claude's picks beyond the show's best few: not in the inbox, but there to approve if you want more. */
+/** More about a video, on a desktop where there's room: where it's from, how long it is, and where its clips stand. */
+function VodFacts({ vod }: { vod: Vod }) {
+  const c = vod.counts;
+  const clips = [
+    c.proposed && `${c.proposed} to review`,
+    (c.approved || c.rendering) && `${(c.approved ?? 0) + (c.rendering ?? 0)} rendering`,
+    c.failed && `${c.failed} failed to render`,
+    c.rendered && `${c.rendered} ready`,
+    c.uploaded && `${c.uploaded} uploaded`,
+    c.extra && `${c.extra} extra`,
+    c.rejected && `${c.rejected} rejected`,
+  ].filter(Boolean);
+  const facts: [string, string][] = [
+    ["Show", vod.show_name || "None matched"],
+    ["Makes", MODE_LABEL[vod.mode]],
+    ["From", [vod.platform && platformName(vod.platform), vod.channel].filter(Boolean).join(" · ") || "–"],
+    ["Length", vod.duration ? length(vod.duration) : "–"],
+    ["Added", `${pastDay(vod.created_at)}, ${ago(vod.created_at)}`],
+    ["Clips", clips.join(", ") || "None yet"],
+  ];
+  return (
+    <dl className="grid grid-cols-5 gap-x-6 gap-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5 xl:grid-cols-7">
+      {facts.map(([label, value]) => (
+        // The clip counts run long: a row of their own, or two columns on a wide screen.
+        <div key={label} className={cn("min-w-0", label === "Clips" && "col-span-5 xl:col-span-2")}>
+          <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{label}</dt>
+          <dd className="mt-0.5 break-words text-sm text-zinc-200">{value}</dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+/** The AI's picks beyond the show's best few: not in the inbox, but there to approve if you want more. */
 function Extras({ clips }: { clips: Clip[] }) {
   const [open, setOpen] = useState(false);
   return (
     <section className="mt-6">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-baseline gap-2 px-1 pb-2 text-left">
+      <button onClick={() => setOpen((o) => !o)} className="group flex w-full items-baseline gap-2 px-1 pb-2 text-left">
         <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Extras · {clips.length}</h2>
         <span className="flex-1 text-xs text-zinc-500">Lower-scored picks, not in your inbox.</span>
-        <span className="text-xs font-semibold text-violet-300">{open ? "Hide" : "Show"}</span>
+        <span className="text-xs font-semibold text-violet-300 group-hover:text-violet-200">{open ? "Hide" : "Show"}</span>
       </button>
       {open && (
-        <div className="space-y-3">
+        <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
           {[...clips].sort((a, b) => b.score - a.score).map((c) => (
             <ClipCard key={c.id} clip={c} showStatus />
           ))}

@@ -132,3 +132,85 @@ export const LinkIcon = outline(
     <path d="M14 10a4 4 0 0 0-5.66 0l-3 3a4 4 0 0 0 5.66 5.66l1-1" />
   </>,
 );
+export const GridIcon = outline(
+  <>
+    <rect x="3.5" y="3.5" width="7" height="7" rx="1.5" />
+    <rect x="13.5" y="3.5" width="7" height="7" rx="1.5" />
+    <rect x="3.5" y="13.5" width="7" height="7" rx="1.5" />
+    <rect x="13.5" y="13.5" width="7" height="7" rx="1.5" />
+  </>,
+);
+export const AlertIcon = outline(
+  <>
+    <path d="M12 4l9 16H3z" />
+    <path d="M12 10v4M12 17h.01" />
+  </>,
+);
+export const UndoIcon = outline(
+  <>
+    <path d="M9 14L4 9l5-5" />
+    <path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11" />
+  </>,
+);
+export const RedoIcon = outline(
+  <>
+    <path d="M15 14l5-5-5-5" />
+    <path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13" />
+  </>,
+);
+export const ScissorsIcon = outline(
+  <>
+    <circle cx="6" cy="6" r="3" />
+    <circle cx="6" cy="18" r="3" />
+    <path d="M20 4L8.1 15.9M14.5 14.5L20 20M8.1 8.1L12 12" />
+  </>,
+);
+export const LoopIcon = outline(
+  <>
+    <path d="M17 2l4 4-4 4" />
+    <path d="M3 11V9a3 3 0 0 1 3-3h15" />
+    <path d="M7 22l-4-4 4-4" />
+    <path d="M21 13v2a3 3 0 0 1-3 3H3" />
+  </>,
+);
+export const MagnetIcon = outline(
+  <>
+    <path d="M6 3v8a6 6 0 0 0 12 0V3" />
+    <path d="M6 3h4v8a2 2 0 0 0 4 0V3h4" />
+    <path d="M6 7h4M14 7h4" />
+  </>,
+);
+export const KeyboardIcon = outline(
+  <>
+    <rect x="2.5" y="6" width="19" height="12" rx="2" />
+    <path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10" />
+  </>,
+);
+export const ToStartIcon = outline(
+  <>
+    <path d="M6 5v14" />
+    <path d="M18 6l-8 6 8 6z" />
+  </>,
+);
+export const ToEndIcon = outline(
+  <>
+    <path d="M18 5v14" />
+    <path d="M6 6l8 6-8 6z" />
+  </>,
+);
+export const FrameBackIcon = outline(<path d="M15 6l-6 6 6 6" />);
+export const FrameForwardIcon = outline(<path d="M9 6l6 6-6 6" />);
+export const ZoomInIcon = outline(
+  <>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="M20.5 20.5l-4.9-4.9M8 11h6M11 8v6" />
+  </>,
+);
+export const ZoomOutIcon = outline(
+  <>
+    <circle cx="11" cy="11" r="6.5" />
+    <path d="M20.5 20.5l-4.9-4.9M8 11h6" />
+  </>,
+);
+export const FitIcon = outline(<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />);
+export const PlusIcon = outline(<path d="M12 5v14M5 12h14" />);
