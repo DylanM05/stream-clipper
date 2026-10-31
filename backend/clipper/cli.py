@@ -337,11 +337,15 @@ def breakdown(
     vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: every stream of the shows with breakdown categories that has none yet.")] = None,
     again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories.")] = False,
     imported: Annotated[bool, typer.Option("--imported", help="Instead, the transcripts added to the shows' folders from elsewhere, e.g. an archive of past streams.")] = False,
+    model: Annotated[Optional[str], typer.Option(help="Another of the AI's models for this run, e.g. sonnet, instead of the one chosen in the app, which new streams keep using.")] = None,
+    effort: Annotated[Optional[str], typer.Option(help="How hard the AI thinks for this run (low, medium, high, xhigh, max), instead of CLIPPER_LLM_EFFORT.")] = None,
+    limit: Annotated[int, typer.Option(help="Do at most this many, newest first. Default: all.")] = 0,
+    wait: Annotated[bool, typer.Option("--wait", help="When the AI's usage limit is reached, wait for it to reset and carry on, instead of stopping. The app's own streams go first.")] = False,
 ) -> None:
     """Ask the AI what past streams' time went on, from their saved transcripts, and save it with them (see transcripts.py).
 
     Nothing is downloaded or transcribed again, and the streams' clips stay as they are. Each stream is one AI request
-    over its whole transcript.
+    over its whole transcript; the newest go first.
     """
     from sqlmodel import Session, col, select
 
@@ -353,10 +357,11 @@ def breakdown(
     settings = get_settings()
     with Session(get_engine(settings)) as s:
         shows = {show.id: show for show in s.exec(select(Show))}
-        query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id))
+        query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id).desc())
         vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids and not imported else query).all()
+    run = _Run(settings, model, effort, limit, wait)
     if imported:
-        _break_down_imported(settings, list(shows.values()), {vod.workspace for vod in vods}, again)
+        _break_down_imported(run, list(shows.values()), {vod.workspace for vod in vods}, again)
         return
     todo = []
     for vod in vods:
@@ -373,54 +378,111 @@ def breakdown(
             continue  # has one already
         if vod_ids:  # asked for by its id, so say why not
             typer.echo(f"{vod.id}  {vod.title[:80]}\n    {why_not}")
-    for i, (vod, show, ws) in enumerate(todo):
-        typer.echo(f"{vod.id}  {vod.title[:80]}")
-        transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
-        try:
-            parts = segment.break_down(ws, settings, transcript, show.breakdown_categories(), context=show.notes)
-        except UsageLimitError as e:
-            when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
-            rest = " ".join(str(v.id) for v, _, _ in todo[i:])
-            typer.secho(f"    {e.note}{when} Carry on after that with: clipper breakdown {rest}", fg="yellow", err=True)
-            raise typer.Exit(2)
-        except LLMError as e:
-            typer.secho(f"    {e}", fg="red", err=True)
-            continue
-        transcripts.save(settings, show, vod, ws, transcript)
-        typer.secho(f"    {len(parts)} parts, saved with its transcript", fg="green")
+
+    def job(vod, show, ws):
+        def do() -> int:
+            transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
+            parts = segment.break_down(ws, settings, transcript, show.breakdown_categories(), context=show.notes,
+                                       model=run.model, effort=run.effort)
+            transcripts.save(settings, show, vod, ws, transcript)
+            return len(parts)
+        return f"{vod.id}  {vod.title[:80]}", do
+
+    jobs = [job(*t) for t in todo]
+    run.go(jobs, lambda left: "Carry on after that with: clipper breakdown " + " ".join(str(todo[i][0].id) for i in left))
     if not todo:
         typer.echo("Nothing to break down." + ("" if vod_ids or again else " To do ones that have a breakdown again, add --again."))
 
 
-def _break_down_imported(settings, shows, made_here: set[str], again: bool) -> None:
-    """`breakdown --imported`: the transcripts in the shows' folders that came from elsewhere."""
+def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -> None:
+    """`breakdown --imported`: the transcripts in the shows' folders that came from elsewhere, newest first."""
     from . import transcripts
 
     todo = []
     for show in shows:
         if show.breakdown_categories():
-            for path in transcripts.from_elsewhere(settings, show, made_here):
+            for path in transcripts.from_elsewhere(run.settings, show, made_here):
                 if again or not transcripts.read(path)[0].get("breakdown"):
                     todo.append((show, path))
-    for i, (show, path) in enumerate(todo, 1):
-        data, transcript = transcripts.read(path)
-        typer.echo(f"{i}/{len(todo)}  {data.get('date')}  {(data.get('title') or path.stem)[:80]}")
-        try:
-            answer = segment.ask_breakdown(settings, transcripts.meta(data), transcript, show.breakdown_categories(),
-                                           context=show.notes)
-        except UsageLimitError as e:
-            when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
-            typer.secho(f"    {e.note}{when} Run `clipper breakdown --imported` again after that: it carries on with the "
-                        f"{len(todo) - i + 1} left.", fg="yellow", err=True)
-            raise typer.Exit(2)
-        except LLMError as e:
-            typer.secho(f"    {e}", fg="red", err=True)
-            continue
-        transcripts.add_breakdown(path, data, show, answer, transcript.duration)
-        typer.secho(f"    {len(answer.breakdown)} parts", fg="green")
+    todo.sort(key=lambda t: t[1].name, reverse=True)  # named <date>_<id>.json
+
+    def job(show, path):
+        def do() -> int:
+            data, transcript = transcripts.read(path)
+            answer = segment.ask_breakdown(run.settings, transcripts.meta(data), transcript, show.breakdown_categories(),
+                                           context=show.notes, model=run.model, effort=run.effort)
+            transcripts.add_breakdown(path, data, show, answer, transcript.duration)
+            return len(answer.breakdown)
+        return path.stem.replace("_", "  ", 1), do
+
+    run.go([job(*t) for t in todo], lambda left: (
+        f"Run the same command again after that to carry on with the {len(left)} left"
+        + (" (with --again, it starts over; --wait carries on by itself instead)." if again else ".")))
     if not todo:
         typer.echo("Nothing to break down: no transcripts from elsewhere without a breakdown, in the folders of the shows "
                    "with breakdown categories." + ("" if again else " To do them all again, add --again."))
+
+
+class _Run:
+    """How `breakdown` runs its requests: which model and effort, how many, and whether it waits out usage limits."""
+
+    HEAD_START = timedelta(minutes=10)  # after a limit resets, the app's own waiting streams go first
+    LIMIT_RETRY = timedelta(minutes=30)  # when the AI doesn't say when its limit resets
+
+    def __init__(self, settings, model: str | None, effort: str | None, limit: int, wait: bool):
+        self.settings, self.model, self.effort, self.limit, self.wait = settings, model, effort, limit, wait
+
+    def go(self, jobs: list, carry_on) -> None:
+        """Run each job (what it's called, and what asks the AI and saves the answer, returning how many parts) in
+        order. `carry_on(left)` says how to carry on with the jobs left (their indexes) after stopping at a limit."""
+        from .db import utcnow
+
+        jobs = jobs[:self.limit] if self.limit else jobs
+        for i, (label, do) in enumerate(jobs):
+            typer.echo(f"{i + 1}/{len(jobs)}  {label}")
+            while True:
+                if self.wait:
+                    self._give_way()
+                try:
+                    parts = do()
+                except UsageLimitError as e:
+                    if not self.wait:
+                        when = f" It resets at {e.resets_at:%Y-%m-%d %H:%M %Z}." if e.resets_at else ""
+                        typer.secho(f"    {e.note}{when} {carry_on(range(i, len(jobs)))}", fg="yellow", err=True)
+                        raise typer.Exit(2)
+                    until = (_aware(e.resets_at) if e.resets_at else utcnow() + self.LIMIT_RETRY) + self.HEAD_START
+                    typer.echo(f"    {e.note} Carrying on at {until.astimezone():%Y-%m-%d %H:%M %Z}.")
+                    time.sleep(max(0.0, (until - utcnow()).total_seconds()))
+                    continue
+                except LLMError as e:
+                    typer.secho(f"    {e}", fg="red", err=True)
+                    break
+                typer.secho(f"    {parts} parts", fg="green")
+                break
+
+    def _give_way(self) -> None:
+        """Wait while the app is picking a stream's clips: its own streams go first."""
+        from sqlmodel import Session, select
+
+        from .db import Vod, get_engine
+
+        said = False
+        while True:
+            with Session(get_engine(self.settings)) as s:
+                busy = s.exec(select(Vod).where(Vod.status == "segmenting")).first()
+            if not busy:
+                return
+            if not said:
+                typer.echo(f"    Waiting while the app picks video {busy.id}'s clips…")
+                said = True
+            time.sleep(60)
+
+
+def _aware(when):
+    """A time from the AI's limit message, in UTC if it doesn't say."""
+    from datetime import timezone
+
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended

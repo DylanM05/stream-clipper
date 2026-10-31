@@ -192,6 +192,9 @@ def settings(tmp_path, monkeypatch):
 def test_claude_code_until_another_is_chosen_with_each_ones_model(settings):
     llm = ai.model(settings, effort="low", timeout_s=300)
     assert isinstance(llm, ClaudeCode) and (llm.model, llm.effort, llm.timeout_s) == ("opus", "low", 300)
+    # A piece of work can use another of the chosen AI's models, e.g. a cheaper one for a backfill.
+    llm = ai.model(settings, effort="low", timeout_s=300, model_name="sonnet")
+    assert isinstance(llm, ClaudeCode) and llm.model == "sonnet"
 
     client = TestClient(web_app.create_app(settings))
     setup = client.patch("/api/ai", json={"provider": "codex", "model": "gpt-6.1-sol"}).json()

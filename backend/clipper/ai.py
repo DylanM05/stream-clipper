@@ -30,10 +30,13 @@ def chosen(s: Session, settings: Settings) -> Choice:
     return Choice(provider, get_app_setting(s, f"{provider}_model") or default_model(settings, provider))
 
 
-def model(settings: Settings, effort: str | None, timeout_s: int) -> LLM:
-    """The chosen AI, set up for one piece of work: how hard it thinks, and how long it may take."""
+def model(settings: Settings, effort: str | None, timeout_s: int, model_name: str | None = None) -> LLM:
+    """The chosen AI, set up for one piece of work: how hard it thinks, and how long it may take. `model_name` is
+    another of its models to use for this work instead of the chosen one (e.g. sonnet for a cheaper backfill)."""
     with Session(get_engine(settings)) as s:
         choice = chosen(s, settings)
+    if model_name:
+        choice = Choice(choice.provider, model_name)
     return backend(settings, choice, effort, timeout_s)
 
 

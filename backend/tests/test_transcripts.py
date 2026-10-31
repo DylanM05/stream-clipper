@@ -143,10 +143,12 @@ class TestBreakdownCommand:
         from clipper.db import get_engine
 
         monkeypatch.setattr(cli, "get_settings", lambda: settings)
-        asked = []
+        asked, used = [], []
+        self.used = used
 
-        def break_down(ws, settings_, transcript, categories, context=""):
+        def break_down(ws, settings_, transcript, categories, context="", model=None, effort=None):
             asked.append(ws.root.name)
+            used.append((model, effort))
             write_text(ws.breakdown_json, Breakdown(breakdown=[part("00:00:00", "00:10:00", "News")]).model_dump_json())
             return transcripts.parts(ws)
 
@@ -189,7 +191,7 @@ class TestBreakdownCommand:
     def test_again_redoes_the_ones_with_one_and_ids_pick_streams_saying_why_one_cant_be_done(self, setup):
         cli, asked, ids = setup
         self.run(cli, "--again")
-        assert asked == ["kick-1", "kick-2"]
+        assert asked == ["kick-2", "kick-1"]  # newest first
         output = self.run(cli, str(ids["kick-2"]), str(ids["kick-3"]))
         assert asked[2:] == ["kick-2"] and "Its show has no breakdown categories" in output
 
@@ -203,7 +205,7 @@ class TestBreakdownCommand:
         }))
         got = []
 
-        def ask(settings_, meta, transcript, categories, context=""):
+        def ask(settings_, meta, transcript, categories, context="", model=None, effort=None):
             got.append((meta["title"], meta["upload_date"], transcript.segments[0].text, context))
             return Breakdown(breakdown=[part("00:00:00", "00:10:00", "news")], other_summary="Nothing else.")
 
@@ -216,3 +218,29 @@ class TestBreakdownCommand:
         assert "breakdown" not in read_json(folder / "2026-10-30_kick-1.json")  # the app's own: done the usual way
         self.run(cli, "--imported")
         assert len(got) == 1  # it has one now
+
+    def test_limit_does_the_newest_few_with_the_model_and_effort_asked_for(self, setup):
+        cli, asked, _ = setup
+        self.run(cli, "--again", "--limit", "1", "--model", "sonnet", "--effort", "low")
+        assert asked == ["kick-2"] and self.used == [("sonnet", "low")]
+
+    def test_wait_rides_out_a_usage_limit_and_carries_on(self, setup, monkeypatch):
+        from datetime import timedelta
+
+        from clipper.db import utcnow
+        from clipper.llm import UsageLimitError
+
+        cli, asked, _ = setup
+        real, calls, slept = cli.segment.break_down, [], []
+
+        def limited_once(*args, **kwargs):
+            calls.append(1)
+            if len(calls) == 1:
+                raise UsageLimitError("limit", resets_at=utcnow() + timedelta(hours=1))
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(cli.segment, "break_down", limited_once)
+        monkeypatch.setattr(cli.time, "sleep", slept.append)
+        output = self.run(cli, "--wait")
+        assert asked == ["kick-1"] and len(calls) == 2  # the same stream, again after the wait
+        assert 60 * 60 < slept[0] <= 70 * 60 and "Carrying on at" in output  # until it resets, and a head start
