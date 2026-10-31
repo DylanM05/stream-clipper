@@ -26,7 +26,7 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import ai, cuts, ffmpeg, notify, stats, titles
+from .. import ai, cuts, ffmpeg, learning, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
@@ -201,6 +201,7 @@ class ShowIn(BaseModel):
     chapter_thumbnails: bool = False
     episode_thumbnails: bool = False
     thumbnail_guidance: str = Field(default="", max_length=2000)
+    learning_notes: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     overlay_episodes: bool = False
@@ -234,6 +235,7 @@ class ShowPatch(BaseModel):
     chapter_thumbnails: bool | None = None
     episode_thumbnails: bool | None = None
     thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
+    learning_notes: str | None = Field(default=None, max_length=4000)  # what you've noticed works (learning.py)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     overlay_episodes: bool | None = None
@@ -460,6 +462,7 @@ class ShowOut(BaseModel):
     chapter_thumbnails: bool
     episode_thumbnails: bool
     thumbnail_guidance: str
+    learning_notes: str
     short_video_top: float | None
     short_video_width: float
     short_background: str  # the image's address in the app, or "" for none
@@ -1089,6 +1092,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.get("/api/shows/{show_id}")
     def get_show(show_id: int, s: Session = Depends(db)) -> ShowOut:
         return show_out(s, found(s, Show, show_id, "show"))
+
+    @app.get("/api/shows/{show_id}/track-record")
+    def show_track_record(show_id: int, s: Session = Depends(db)) -> dict:
+        """What the show's past clips teach the AI, as it goes into its input for the next stream (learning.py)."""
+        return {"text": learning.track_record(s, settings, found(s, Show, show_id, "show"))}
 
     @app.patch("/api/shows/{show_id}")
     def update_show(show_id: int, patch: ShowPatch, s: Session = Depends(db)) -> ShowOut:

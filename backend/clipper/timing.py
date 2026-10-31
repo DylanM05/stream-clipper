@@ -84,6 +84,8 @@ def fix_clips(s: Session, vod_id: int, found: Timing, picked: dict[str, tuple[fl
             continue
         if untouched:
             clip.start, clip.end = found.video_time(clip.start), found.video_time(clip.end)
+            if clip.picked_start is not None:  # the AI's pick moves with it, or it would look changed by hand
+                clip.picked_start, clip.picked_end = clip.start, clip.end
             fixed.moved.append(clip)
         if clip.status in RENDERED:
             for job in jobs:

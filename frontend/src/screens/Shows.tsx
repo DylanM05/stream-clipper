@@ -454,6 +454,7 @@ const BLANK: ShowFields = {
   chapter_thumbnails: false,
   episode_thumbnails: false,
   thumbnail_guidance: "",
+  learning_notes: "",
   short_video_top: null,
   short_video_width: 1,
   overlay_episodes: false,
@@ -766,6 +767,26 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             }
             className={input}
           />
+        </Field>
+      )}
+
+      {hasClips(fields.mode) && (
+        <Field label="What to learn from past clips" hint="the AI follows this over the numbers">
+          <textarea
+            value={fields.learning_notes}
+            onChange={(e) => set({ learning_notes: e.target.value })}
+            rows={4}
+            maxLength={4000}
+            placeholder={
+              "e.g. Clips that start right on the topic do better than ones with a lead-in.\n" +
+              "Viewers stay for the long debates, so keep those whole."
+            }
+            className={input}
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            With each new stream, the AI also gets how this show's past uploads did, and how you changed or turned down
+            its picks. Stats shows what it's given.
+          </p>
         </Field>
       )}
 

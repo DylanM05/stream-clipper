@@ -148,6 +148,9 @@ class Show(SQLModel, table=True):
     chapter_thumbnails: bool = False
     episode_thumbnails: bool = False
     thumbnail_guidance: str = ""  # for Claude: what every thumbnail of the show must have, e.g. words on it
+    # For the AI: what you've noticed works for the show, which it puts first among what its past clips teach it
+    # (learning.py).
+    learning_notes: str = ""
     # Shorts: where the video sits on the show's background image (Settings.short_background), as fractions
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
@@ -216,7 +219,7 @@ class ClipRecord(SQLModel, table=True):
     end: float
     title: str
     description: str = ""
-    why: str = ""  # highlights: why Claude picked the moment
+    why: str = ""  # why the AI picked it
     score: float = 0
     vertical_ok: bool = False
     make_short: bool = False  # also render a vertical Short
@@ -247,7 +250,13 @@ class ClipRecord(SQLModel, table=True):
     # Parts taken out of the middle in the app's editor (cuts.py): JSON [[start, end], ...] in the stream's
     # seconds, inside start-end; "" for none. The video jumps over them.
     cuts: str = ""
-    manual: bool = False  # made in the app rather than picked by Claude, so its score means nothing
+    manual: bool = False  # made in the app rather than picked by the AI, so its score means nothing
+    # The AI's pick as it was first offered, before any change in the app: where it started and ended, and the part of
+    # the title it wrote (without the show's pattern). What the owner changed teaches the AI (learning.py). Unset for
+    # clips made in the app, full episodes, and older clips whose pick couldn't be found.
+    picked_start: float | None = None
+    picked_end: float | None = None
+    picked_title: str = ""
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
     reviewed_at: datetime | None = None

@@ -16,6 +16,12 @@ export function go(path: string) {
   location.hash = `#/${path}`;
 }
 
+/** Go to `path` in place of the page you're on, so Back skips that page: moving on from one clip to the next, Back
+ * then goes to where you started instead of through every clip on the way. */
+export function goInstead(path: string) {
+  location.replace(`#/${path}`);
+}
+
 export function goBack(fallback: string) {
   if (history.length > 1) history.back();
   else go(fallback);

@@ -256,6 +256,7 @@ export interface Show {
   chapter_thumbnails: boolean; // clips (kind "chapter") get a thumbnail once rendered
   episode_thumbnails: boolean; // and full episodes
   thumbnail_guidance: string; // what every thumbnail of the show must have, e.g. words on it
+  learning_notes: string; // what you've noticed works, which the AI follows over how past clips did
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
@@ -452,6 +453,8 @@ export const api = {
 
   shows: () => request<Show[]>("/api/shows"),
   show: (id: number) => request<Show>(`/api/shows/${id}`),
+  /** What the show's past clips teach the AI, as it's given with each new stream. */
+  trackRecord: (id: number) => request<{ text: string }>(`/api/shows/${id}/track-record`),
   addShow: (fields: ShowFields) => post<Show>("/api/shows", fields),
   updateShow: (id: number, fields: Partial<ShowFields>) => patch<Show>(`/api/shows/${id}`, fields),
   deleteShow: (id: number) => remove(`/api/shows/${id}`),

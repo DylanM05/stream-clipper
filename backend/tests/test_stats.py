@@ -119,16 +119,6 @@ def test_the_monday_summary_goes_once_a_week(settings, show, monkeypatch):
     assert note.message == "2 uploads · 13.1K views so far\n\nMost viewed:\n1. Huck Blend Is Back: 12.3K\n2. Jer Wins: 800"
 
 
-def test_the_shows_most_viewed_titles_go_to_claude_without_the_pattern(settings, show):
-    add_upload(settings, title="Old Hit | Don Clips | Oct 1, 2026", views=50_000)  # no day-one number: ranked after
-    add_upload(settings, title="TheQuartering Segment: Lawsuit | Don Clips | Oct 20, 2026", views=9_000, views_day1=4_000)
-    add_upload(settings, title="Edited by hand", views=3_000, views_day1=1_000)
-    add_upload(settings, title="Full | Don Clips | Oct 20, 2026", kind="whole", views=90_000, views_day1=90_000)
-    with Session(get_engine(settings)) as s:
-        show_ = s.get(Show, 1)
-        assert stats.best_titles(s, show_) == ["TheQuartering Segment: Lawsuit", "Edited by hand", "Old Hit"]
-
-
 def test_views_by_score_band_and_the_stats_page(settings, show, monkeypatch):
     add_upload(settings, score=0.95, views=10_000, views_day1=4_000)
     add_upload(settings, score=0.92, views=6_000, views_day1=2_000)

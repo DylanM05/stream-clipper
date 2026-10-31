@@ -57,6 +57,7 @@ export function Stats() {
             <KindBreakdown uploads={stats.uploads} />
           </div>
         )}
+        <WhatTheAiLearns showId={showId} className="mb-6" />
         {stats && uploads.length === 0 && <p className="mt-6 text-center text-sm text-zinc-500">No uploads by the app yet.</p>}
         {uploads.length > 0 && <UploadTable uploads={uploads} order={order} onOrder={setOrder} />}
       </Screen>
@@ -71,6 +72,7 @@ export function Stats() {
       <ShowPicker value={showId} shows={shows} onChange={pickShow} className="mb-4 w-full" />
 
       {stats && <ScoreBands bands={stats.bands} />}
+      <WhatTheAiLearns showId={showId} className="mt-6" />
 
       <div className="mb-3 mt-6 flex items-center gap-2">
         <KindTabs value={kind} onChange={setKind} className="flex flex-1 gap-1 overflow-x-auto rounded-xl bg-zinc-800 p-1" />
@@ -89,6 +91,30 @@ export function Stats() {
         ))}
       </ul>
     </Screen>
+  );
+}
+
+/** What the show's past clips teach the AI, exactly as it's given with the show's next stream (learning.py). */
+function WhatTheAiLearns({ showId, className }: { showId: number | null; className: string }) {
+  const { data } = usePoll(() => (showId === null ? Promise.resolve(null) : api.trackRecord(showId)), 0, showId);
+  if (showId === null || data === undefined) return null;
+  return (
+    <section className={cn("rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5", className)}>
+      <h2 className="text-sm font-bold">What the AI learns from this show's past clips</h2>
+      <p className="mt-1 text-xs text-zinc-500">
+        What it's given with each new stream of the show: how the uploads did, how you changed or turned down its picks,
+        and your notes from the show's settings.
+      </p>
+      {data?.text ? (
+        <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-zinc-300">
+          {data.text}
+        </pre>
+      ) : (
+        <p className="mt-3 text-sm text-zinc-500">
+          Nothing yet. It needs a few uploads with views, or picks you've changed or turned down.
+        </p>
+      )}
+    </section>
   );
 }
 

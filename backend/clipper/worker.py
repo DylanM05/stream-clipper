@@ -25,7 +25,7 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import cuts, ffmpeg, notify, rumble_upload, stats, thumbnails, titles
+from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles
 from .config import Settings
 from .db import (
     CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show, get_app_setting,
@@ -111,6 +111,12 @@ class Worker:
 
     def run(self) -> None:
         self.recover()
+        try:
+            with Session(self.engine) as s:
+                if filled := learning.backfill_picks(s, self.settings):
+                    log.info("Found the AI's picks of %d older clips, to learn from what was changed in them", filled)
+        except Exception:
+            log.exception("Couldn't look up the AI's picks of older clips")
         threads = [
             threading.Thread(target=self._loop, args=(self.process_next_vod,), name="videos", daemon=True),
             threading.Thread(target=self._loop, args=(self.render_next_clip,), name="renders", daemon=True),
@@ -248,7 +254,7 @@ class Worker:
                     title_room=titles.room_for_title(clip_template, day),
                     title_prefixed=clip_template != "{title}",
                     episode_room=titles.room_for_title(episode_template, day),
-                    top_titles=self._top_titles(show),
+                    track_record=self._track_record(show),
                 )
                 clips = refine.run(ws, segmentation, transcript)
                 for c in clips:
@@ -355,11 +361,17 @@ class Worker:
                 s.expunge(show)
             return show
 
-    def _top_titles(self, show: Show | None) -> list[str]:
+    def _track_record(self, show: Show | None) -> str:
+        """What the show's past clips teach the AI (learning.py); empty if there's nothing yet, or working it out
+        went wrong, which shouldn't hold up the video."""
         if not show:
-            return []
-        with Session(self.engine) as s:
-            return stats.best_titles(s, show)
+            return ""
+        try:
+            with Session(self.engine) as s:
+                return learning.track_record(s, self.settings, show)
+        except Exception:
+            log.exception("Couldn't work out what the show's past clips teach the AI")
+            return ""
 
     def _preview_title(self, text: str, room: int, notes: str) -> str:
         """The AI's short title for a whole video; empty if the AI isn't available right now."""
@@ -393,11 +405,15 @@ class Worker:
                     status = "approved"
                 else:
                     status = "proposed"
+                # The AI's pick as offered, to learn from what the owner changes (learning.py).
+                picked = c.kind != "whole"
                 s.add(ClipRecord(
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
                     description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
                     make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
                     status=status, reviewed_at=utcnow() if status == "approved" else None,
+                    picked_start=c.start if picked else None, picked_end=c.end if picked else None,
+                    picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
                 ))
                 added[status] = added.get(status, 0) + 1
             s.commit()

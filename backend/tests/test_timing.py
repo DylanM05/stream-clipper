@@ -79,7 +79,8 @@ def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_p
         s.add(vod)
         s.commit()
         clips = [
-            ClipRecord(vod_id=vod.id, key="hl01", kind="highlight", start=65, end=80, title="In the inbox"),
+            ClipRecord(vod_id=vod.id, key="hl01", kind="highlight", start=65, end=80, title="In the inbox",
+                       picked_start=65, picked_end=80),
             ClipRecord(vod_id=vod.id, key="hl02", kind="highlight", start=65, end=80, title="Ready to go", status="rendered",
                        make_short=True, short_path="/data/hl02-short.mp4"),
             ClipRecord(vod_id=vod.id, key="hl03", kind="highlight", start=67, end=84, title="Trimmed", status="rendered",
@@ -117,6 +118,9 @@ def test_timing_check_fixes_a_transcript_and_the_clips_not_trimmed_by_hand(tmp_p
         "hl05": (65, 80, "proposed"),
     }
     assert "hl02  Ready to go" in out.split("upload them again")[1]
+    with Session(get_engine(settings)) as s:  # the AI's pick moved with it: still not changed by hand (learning.py)
+        moved = s.exec(select(ClipRecord).where(ClipRecord.key == "hl01")).one()
+        assert (moved.picked_start, moved.picked_end) == (68.0, 83.0)
 
     out = CliRunner().invoke(cli.app, ["timing-check", "--fix"]).output
     assert "Lines up with the video" in out

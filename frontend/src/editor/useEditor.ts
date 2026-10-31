@@ -3,7 +3,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, errorText, media, type Clip, type ClipPatch, type Line, type NewClipInfo, type Vod } from "../api";
-import { go, goBack, loadSetting, saveSetting, usePoll } from "../lib";
+import { go, goBack, goInstead, loadSetting, saveSetting, usePoll } from "../lib";
 import { useToast } from "../ui";
 import { createClock } from "./clock";
 import {
@@ -354,11 +354,11 @@ export function useEditor(source: Source, desktop: boolean) {
     }
   };
 
-  const nextClipAfter = async (id: number): Promise<string> => {
+  const nextClipAfter = async (id: number): Promise<string | null> => {
     const inbox = await api.clips(["proposed"]);
     const i = inbox.findIndex((c) => c.id === id);
     const next = inbox[i + 1] ?? inbox.find((c) => c.id !== id);
-    return next ? `clip/${next.id}` : "inbox";
+    return next ? `clip/${next.id}` : null;
   };
 
   const save = () =>
@@ -379,12 +379,16 @@ export function useEditor(source: Source, desktop: boolean) {
       const next = c.status === "proposed" ? await nextClipAfter(c.id) : null;
       if (dirty) await api.updateClip(c.id, changes);
       await (approve ? api.approve(c.id) : api.reject(c.id));
+      // Undo opens the clip again, in place of the next one if that's still showing.
+      const reopen = () => (location.hash.startsWith("#/clip/") ? goInstead : go)(`clip/${c.id}`);
       toast({
         text: approve ? "Approved: it will render shortly" : "Rejected",
-        action: { label: "Undo", run: () => void api.restore(c.id).then(() => go(`clip/${c.id}`)) },
+        action: { label: "Undo", run: () => void api.restore(c.id).then(reopen) },
       });
-      if (next) go(next);
-      else goBack("videos");
+      // The next clip takes this one's place, so Back goes straight to where you started; after the last, that's
+      // where this goes.
+      if (next) goInstead(next);
+      else goBack(c.status === "proposed" ? "inbox" : "videos");
     });
 
   const restore = () =>

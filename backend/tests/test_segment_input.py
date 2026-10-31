@@ -23,11 +23,12 @@ def test_input_has_stream_details_hints_notes_and_timestamped_transcript():
     assert "00:01:00-00:01:35" in text
     assert "01:06:40 (+12 dB)" in text
     assert "# Big visual changes" not in text  # empty hint sections are left out
-    assert "most-viewed" not in text
+    assert "past uploads" not in text
     assert text.endswith("# Transcript\n[00:00:05] Hello chat.\n[01:02:05] Okay let's start the podcast.\n")
 
 
-def test_the_channels_most_viewed_titles_come_before_the_hints():
+def test_the_shows_track_record_comes_before_the_hints():
     t = transcript(line(5.0, "Hello chat."))
-    text = build_input({}, t, Signals(), top_titles=["TheQuartering Segment: Lawsuit", "Jer Wins"])
-    assert "# The channel's most-viewed clip titles, most viewed first\n- TheQuartering Segment: Lawsuit\n- Jer Wins\n" in text
+    record = "# How the show's past uploads did\n\nTheir usual views:\n- Clips: 500 views a week after going up (6 uploads)"
+    text = build_input({}, t, Signals(long_silences=[Span(start=60, end=95)]), track_record=record)
+    assert record + "\n" in text and text.index(record) < text.index("# Long silences")
