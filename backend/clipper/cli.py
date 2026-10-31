@@ -10,6 +10,7 @@
 - `clipper timing-check` finds, and with --fix puts right, transcripts timed early against their video.
 - `clipper save-transcripts` saves the transcripts of past streams of the shows with Save transcripts on.
 - `clipper breakdown` asks the AI for past streams' breakdowns, from their saved transcripts.
+- `clipper usage` shows how much of the AI plan's usage limits is used.
 - `clipper deploy-wait` and `clipper deploy-done` let a deploy restart the worker between uploads (deploy/deploy.sh).
 """
 
@@ -341,6 +342,7 @@ def breakdown(
     effort: Annotated[Optional[str], typer.Option(help="How hard the AI thinks for this run (low, medium, high, xhigh, max), instead of CLIPPER_LLM_EFFORT.")] = None,
     limit: Annotated[int, typer.Option(help="Do at most this many, newest first. Default: all.")] = 0,
     wait: Annotated[bool, typer.Option("--wait", help="When the AI's usage limit is reached, wait for it to reset and carry on, instead of stopping. The app's own streams go first.")] = False,
+    reserve: Annotated[float, typer.Option(min=0, max=90, help="Leave this much (%) of each of the plan's usage limits for the app: wait for a limit to reset once it's past the rest. Needs Claude Code; `clipper usage` shows what it reads.")] = 0,
 ) -> None:
     """Ask the AI what past streams' time went on, from their saved transcripts, and save it with them (see transcripts.py).
 
@@ -359,7 +361,7 @@ def breakdown(
         shows = {show.id: show for show in s.exec(select(Show))}
         query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id).desc())
         vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids and not imported else query).all()
-    run = _Run(settings, model, effort, limit, wait)
+    run = _Run(settings, model, effort, limit, wait, reserve)
     if imported:
         _break_down_imported(run, list(shows.values()), {vod.workspace for vod in vods}, again)
         return
@@ -424,13 +426,15 @@ def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -
 
 
 class _Run:
-    """How `breakdown` runs its requests: which model and effort, how many, and whether it waits out usage limits."""
+    """How `breakdown` runs its requests: which model and effort, how many, whether it waits out usage limits, and how
+    much of the plan's usage it leaves for the app."""
 
     HEAD_START = timedelta(minutes=10)  # after a limit resets, the app's own waiting streams go first
     LIMIT_RETRY = timedelta(minutes=30)  # when the AI doesn't say when its limit resets
 
-    def __init__(self, settings, model: str | None, effort: str | None, limit: int, wait: bool):
+    def __init__(self, settings, model: str | None, effort: str | None, limit: int, wait: bool, reserve: float = 0):
         self.settings, self.model, self.effort, self.limit, self.wait = settings, model, effort, limit, wait
+        self.reserve = reserve
 
     def go(self, jobs: list, carry_on) -> None:
         """Run each job (what it's called, and what asks the AI and saves the answer, returning how many parts) in
@@ -443,6 +447,8 @@ class _Run:
             while True:
                 if self.wait:
                     self._give_way()
+                if self.reserve:
+                    self._keep_reserve()
                 try:
                     parts = do()
                 except UsageLimitError as e:
@@ -477,12 +483,77 @@ class _Run:
                 said = True
             time.sleep(60)
 
+    def _keep_reserve(self) -> None:
+        """Wait while any of the plan's usage meters (the 5-hour session, the week...) is past 100 - reserve %, leaving
+        the rest for the app's own streams; check again when the fullest resets."""
+        from . import ai
+        from .db import utcnow
+
+        llm = ai.model(self.settings, effort=None, timeout_s=120, model_name=self.model)
+        said = ""
+        while True:
+            meters = llm.plan_usage()
+            if meters is None:
+                typer.secho("    Can't read the plan's usage from the AI, so --reserve can't be kept: stopping. `clipper usage` "
+                            "says why.", fg="red", err=True)
+                raise typer.Exit(1)
+            full = [m for m in meters if (m.get("percent") or 0) >= 100 - self.reserve]
+            if not full:
+                return
+            resets = [t for t in (_when(m.get("resets_at")) for m in full) if t]
+            until = (min(resets) if resets else utcnow() + self.LIMIT_RETRY) + self.HEAD_START
+            note = ", ".join(f"{_meter(m)} {m['percent']:.0f}%" for m in full)
+            if note != said:
+                typer.echo(f"    Leaving the last {self.reserve:g}% for the app ({note} used): checking again at "
+                           f"{until.astimezone():%Y-%m-%d %H:%M %Z}.")
+                said = note
+            time.sleep(max(60.0, (until - utcnow()).total_seconds()))
+
 
 def _aware(when):
     """A time from the AI's limit message, in UTC if it doesn't say."""
     from datetime import timezone
 
     return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
+def _when(value):
+    """A usage meter's reset time (ISO text or Unix seconds) as a datetime; None if there's none."""
+    from datetime import datetime, timezone
+
+    if value in (None, ""):
+        return None
+    try:
+        if isinstance(value, (int, float)) or str(value).isdigit():
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        return _aware(datetime.fromisoformat(str(value).replace("Z", "+00:00")))
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _meter(meter: dict) -> str:
+    """What a usage meter measures, as the plan names it, e.g. "five_hour" or "seven_day (Opus)"."""
+    name = meter.get("kind") or meter.get("group") or "usage"
+    model = ((meter.get("scope") or {}).get("model") or {}).get("display_name")
+    return f"{name} ({model})" if model else name
+
+
+@app.command()
+def usage() -> None:
+    """Show how much of the AI plan's usage limits is used, as `breakdown --reserve` reads it (Claude Code's /usage)."""
+    from . import ai
+
+    meters = ai.model(get_settings(), effort=None, timeout_s=120).plan_usage()
+    if meters is None:
+        typer.echo("The AI chosen in the app doesn't report its plan's usage as data: that needs Claude Code, recent, "
+                   "signed in with a claude.ai account (with `claude` itself, not a `claude setup-token` token).")
+        raise typer.Exit(1)
+    if not meters:
+        typer.echo("The plan reports no usage limits.")
+    for m in meters:
+        when = _when(m.get("resets_at"))
+        typer.echo(f"{_meter(m):32} {m.get('percent') or 0:5.1f}% used"
+                   + (f", resets {when.astimezone():%Y-%m-%d %H:%M %Z}" if when else ""))
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended

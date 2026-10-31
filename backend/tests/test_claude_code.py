@@ -101,3 +101,25 @@ def test_saves_the_raw_response(monkeypatch, tmp_path):
     log = tmp_path / "llm" / "response.json"
     ask(FakeClaude(result(GOOD)), monkeypatch, raw_log=log)
     assert json.loads(log.read_text(encoding="utf-8"))["structured_output"] == GOOD
+
+
+def test_plan_usage_reads_the_meters_from_the_usage_report_without_asking_the_model(monkeypatch):
+    report = {"session": {}, "rate_limits": {"limits": [
+        {"kind": "five_hour", "group": "session", "percent": 42.5, "resets_at": "2026-11-01T03:00:00Z", "severity": "ok", "is_active": True},
+    ]}}
+    lines = "\n".join(json.dumps(m) for m in (
+        {"type": "system", "subtype": "init"},
+        {"type": "assistant", "message": {"content": [{"type": "text", "text": "Session: 42% used"}]}, "usage_report": report},
+        result(),
+    ))
+    fake = FakeClaude(lines)
+    monkeypatch.setattr(claude_code.subprocess, "run", fake)
+    assert ClaudeCode(bin="claude").plan_usage() == report["rate_limits"]["limits"]
+    cmd = fake.calls[0][0]
+    assert cmd[:3] == ["claude", "-p", "/usage"] and "stream-json" in cmd
+
+
+def test_plan_usage_is_none_when_claude_code_gives_no_report_as_data(monkeypatch):
+    plain = "\n".join(json.dumps(m) for m in ({"type": "assistant", "message": {"content": []}}, result()))
+    monkeypatch.setattr(claude_code.subprocess, "run", FakeClaude(plain))
+    assert ClaudeCode(bin="claude").plan_usage() is None

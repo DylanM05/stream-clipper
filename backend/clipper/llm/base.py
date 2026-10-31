@@ -69,6 +69,10 @@ class LLM:
         """One request: the whole response, which raw_log keeps, and the answer in it (None if there's none)."""
         raise NotImplementedError
 
+    def plan_usage(self) -> list[dict] | None:
+        """How much of the plan's usage limits is used (see ClaudeCode.plan_usage); None if this AI can't say."""
+        return None
+
 
 def llm_schema(model: type[BaseModel]) -> dict[str, Any]:
     """The pydantic model's JSON Schema with $refs inlined, range/length/pattern keywords dropped, and

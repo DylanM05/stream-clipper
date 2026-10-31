@@ -67,6 +67,30 @@ class ClaudeCode(LLM):
         except (json.JSONDecodeError, AttributeError):
             return False
 
+    def plan_usage(self) -> list[dict] | None:
+        """The plan's usage meters, from Claude Code's /usage report, which asks the model nothing: each with how much
+        is used (`percent`, 0-100), when it resets (`resets_at`) and what it measures (`kind`, `group`). None when
+        Claude Code can't give them as data: signed in another way than with a claude.ai account, or too old."""
+        with tempfile.TemporaryDirectory(prefix="clipper-usage-") as cwd:
+            try:
+                proc = subprocess.run(
+                    [self.bin, "-p", "/usage", "--output-format", "stream-json", "--verbose", "--no-session-persistence",
+                     "--strict-mcp-config"],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace", cwd=cwd, timeout=120,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                return None
+        for line in proc.stdout.splitlines():
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            report = message.get("usage_report") if isinstance(message, dict) else None
+            if isinstance(report, dict):
+                limits = (report.get("rate_limits") or {}).get("limits")
+                return limits if isinstance(limits, list) else None
+        return None
+
     def _ask(self, system_prompt: str, task: str, stdin_text: str, schema: type[BaseModel]) -> tuple[dict[str, Any], Any]:
         payload = self._run(system_prompt, task, stdin_text, schema)
         return payload, payload.get("structured_output")

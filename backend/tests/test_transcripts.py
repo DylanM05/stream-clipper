@@ -244,3 +244,40 @@ class TestBreakdownCommand:
         output = self.run(cli, "--wait")
         assert asked == ["kick-1"] and len(calls) == 2  # the same stream, again after the wait
         assert 60 * 60 < slept[0] <= 70 * 60 and "Carrying on at" in output  # until it resets, and a head start
+
+    def test_reserve_waits_while_the_plan_is_past_its_share_and_carries_on_after_the_reset(self, setup, monkeypatch):
+        from datetime import timedelta
+
+        from clipper import ai
+        from clipper.db import utcnow
+
+        cli, asked, _ = setup
+        resets = (utcnow() + timedelta(hours=2)).isoformat()
+        readings = [[{"kind": "five_hour", "percent": 85, "resets_at": resets}, {"kind": "seven_day", "percent": 40}],
+                    [{"kind": "five_hour", "percent": 3, "resets_at": resets}, {"kind": "seven_day", "percent": 41}]]
+
+        class Plan:
+            def plan_usage(self):
+                return readings.pop(0)
+
+        slept = []
+        monkeypatch.setattr(ai, "model", lambda *a, **k: Plan())
+        monkeypatch.setattr(cli.time, "sleep", slept.append)
+        output = self.run(cli, "--reserve", "20")
+        assert asked == ["kick-1"] and len(slept) == 1 and 2 * 3600 < slept[0] <= 2 * 3600 + 600
+        assert "Leaving the last 20% for the app (five_hour 85% used)" in output
+
+    def test_reserve_stops_when_the_plans_usage_cant_be_read(self, setup, monkeypatch):
+        from typer.testing import CliRunner
+
+        from clipper import ai
+
+        cli, asked, _ = setup
+
+        class NoReport:
+            def plan_usage(self):
+                return None
+
+        monkeypatch.setattr(ai, "model", lambda *a, **k: NoReport())
+        out = CliRunner().invoke(cli.app, ["breakdown", "--reserve", "20"])
+        assert out.exit_code == 1 and asked == [] and "can't be kept" in out.output
