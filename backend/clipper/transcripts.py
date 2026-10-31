@@ -42,20 +42,26 @@ def save(settings: Settings, show: Show, vod: Vod, ws: Workspace, transcript: Tr
     if categories := show.breakdown_categories():
         data["categories"] = categories
         data["breakdown"] = breakdown(ws, categories, transcript.duration)
+        data["other_summary"] = answer(ws).other_summary  # what the parts under Other were mostly about
     write_text(path.with_suffix(".txt"), "".join(f"[{to_timecode(s.start)}] {s.text}\n" for s in transcript.segments))
     # Without spaces or line breaks: the word timings of a long stream run to megabytes.
     write_text(path, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
     return path
 
 
-def parts(ws: Workspace) -> list[LLMBreakdownPart]:
+def answer(ws: Workspace) -> Breakdown:
     """The stream's breakdown as the AI gave it: the one asked for on its own if there is one, else the one that came
     with its clips. Empty if there's neither."""
     if ws.breakdown_json.exists():
-        return Breakdown.model_validate_json(ws.breakdown_json.read_text(encoding="utf-8")).breakdown
+        return Breakdown.model_validate_json(ws.breakdown_json.read_text(encoding="utf-8"))
     if ws.segmentation_json.exists():
-        return SegmentationWithBreakdown.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8")).breakdown
-    return []
+        found = SegmentationWithBreakdown.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
+        return Breakdown(breakdown=found.breakdown, other_summary=found.other_summary)
+    return Breakdown(breakdown=[])
+
+
+def parts(ws: Workspace) -> list[LLMBreakdownPart]:
+    return answer(ws).breakdown
 
 
 def breakdown(ws: Workspace, categories: dict[str, str], duration: float) -> list[dict]:

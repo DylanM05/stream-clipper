@@ -109,17 +109,22 @@ class LLMBreakdownPart(BaseModel):
     note: str = Field(description="What happens in it, in a few words")
 
 
+_OTHER_SUMMARY = "1-2 sentences on what the parts under Other were mostly about; empty if none are"
+
+
 class SegmentationWithBreakdown(Segmentation):
     """The same, plus what the stream's time goes on, for a show that asks for a breakdown (Show.breakdown)."""
 
-    # The default keeps answers without one readable; the AI is always asked for it when this is the schema.
+    # The defaults keep answers without them readable; the AI is always asked for them when this is the schema.
     breakdown: list[LLMBreakdownPart] = Field(default=[], description="The whole stream, in order, each part by category")
+    other_summary: str = Field(default="", description=_OTHER_SUMMARY)
 
 
 class Breakdown(BaseModel):
     """The breakdown asked for on its own, for a stream whose clips were picked already (segment.break_down)."""
 
     breakdown: list[LLMBreakdownPart] = Field(description="The whole stream, in order, each part by category")
+    other_summary: str = Field(default="", description=_OTHER_SUMMARY)  # the default keeps older answers readable
 
 
 # --- Final clips, after cut points are snapped to word boundaries -----------

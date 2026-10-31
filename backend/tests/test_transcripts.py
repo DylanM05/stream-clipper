@@ -111,11 +111,12 @@ def part(start, end, category, note=""):
 def test_a_breakdown_asked_for_on_its_own_replaces_the_one_with_the_clips_and_categories_match_however_written(settings, ws):
     write_text(ws.segmentation_json, SegmentationWithBreakdown(
         chapters=[], highlights=[], breakdown=[part("00:00:00", "00:10:00", "News")]).model_dump_json())
-    write_text(ws.breakdown_json, Breakdown(breakdown=[
+    write_text(ws.breakdown_json, Breakdown(other_summary="Small talk with chat.", breakdown=[
         part("00:00:00", "00:05:00", "dead air"), part("00:05:00", "00:10:00", "Dead_Air")]).model_dump_json())
     show = Show(name="Night Owls", save_transcripts=True, breakdown="Dead-air: waiting around")
     saved = read_json(transcripts.save(settings, show, Vod(url="u"), ws, TRANSCRIPT))
     assert [p["category"] for p in saved["breakdown"]] == ["Dead-air", "Dead-air"]
+    assert saved["other_summary"] == "Small talk with chat."
 
 
 def test_breaking_a_stream_down_on_its_own_asks_only_for_the_breakdown(settings, ws, monkeypatch):

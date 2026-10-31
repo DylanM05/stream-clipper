@@ -8,3 +8,5 @@ The show tracks what each stream's time goes on, so return `breakdown`: the whol
 - Category: the category's name exactly as given, or `Other`.
 - Note: what happens in it, in a few plain words, e.g. "Reads the latest headlines" or "Sponsor read for a VPN". Factual and neutral, like the summaries.
 - Stretches with no talking show up as gaps between the transcript's timestamps. Put them in a neighbouring part, unless one of the categories is for them.
+
+Also return `other_summary`: one or two plain sentences on what the parts under `Other` were mostly about, so the show can see what its categories miss, e.g. "Chatting with viewers about his weekend, and a long stretch playing a racing game." Factual and neutral, like the notes. Empty if no part is `Other`.
