@@ -41,6 +41,10 @@ PAUSABLE = ("downloads", "processing", "renders", "uploads")
 # Posts on these sites are short and get uploaded as they are, not split into clips.
 WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
 
+# What a show's videos are, for the instructions the AI picks clips with (segment.py): livestreams, episodes of a TV
+# show, or anything else (podcasts, vlogs, lectures).
+VIDEO_TYPES = ("streams", "episodes", "other")
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -117,9 +121,7 @@ class Show(SQLModel, table=True):
     # them, or its channel or account is one of them.
     match: str = ""
     mode: str = "segment"  # see MODES
-    # "streams" or "episodes" (of a TV show): which instructions the AI picks clips with (segment.py), and for
-    # episodes, no scene cuts among its hints and more Shorts asked for.
-    video_type: str = "streams"
+    video_type: str = "streams"  # see VIDEO_TYPES
     title_template: str = "{title}"  # clips, e.g. "NIGHT OWLS {date} - {title}"
     episode_template: str = ""  # full episodes; empty means the clip pattern
     notes: str = ""  # for Claude: about the show, who's on it, running jokes
@@ -296,11 +298,16 @@ class Channel(SQLModel, table=True):
     keywords: str = ""  # only titles (on X, post text) with one of these, comma-separated; empty means every video
     exclude: str = ""  # skip titles with any of these
     min_minutes: float = 0
-    # A folder's older episodes are queued by themselves, so that at most this many of its files are queued a day
-    # (monitor.py); 0 leaves them to be processed from the app.
-    older_per_day: int = 2
     enabled: bool = True
     baseline_done: bool = False  # the videos already there when the channel was added have been listed
+    # In the Library: its older videos (a folder's episodes, or a channel's past streams) are worked through by
+    # themselves, backlog_per_day of them a day, in order (monitor.py). Newer ones never wait for them.
+    backlog: bool = False
+    backlog_per_day: int = 2
+    backlog_paused: bool = False
+    backlog_newest_first: bool = False  # a folder's from its last episode, a channel's from its latest video
+    # The channel's whole history has been listed for its backlog, not just its newest videos. A folder's always is.
+    history_listed: bool = False
     last_checked_at: datetime | None = None
     last_error: str = ""
     created_at: datetime = Field(default_factory=utcnow)
@@ -317,10 +324,11 @@ class ChannelVideo(SQLModel, table=True):
     url: str
     title: str = ""
     duration: float | None = None
-    status: str = "waiting"  # waiting (live or not confirmed finished), queued, skipped, older
+    status: str = "waiting"  # waiting (live, being copied in, or not confirmed finished), queued, skipped, older
     reason: str = ""
     vod_id: int | None = Field(default=None, foreign_key="vod.id")
     published_at: datetime | None = None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
+    backlog_at: datetime | None = None  # when working through the channel's backlog queued it
     first_seen_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -447,10 +455,10 @@ def _engine(db_path: str) -> Engine:
 
 
 # Columns renamed since a database was made, by (table, old name, new name): renamed in place, keeping their values.
-_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails")]
-# Columns that start out as a copy of another when they're added, by (table, column, copied from): one setting that
-# became two keeps doing what it did.
-_COPIED = {("show", "episode_thumbnails"): "chapter_thumbnails"}
+_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails"), ("channel", "older_per_day", "backlog_per_day")]
+# Columns that start out from the row's other columns when they're added, by (table, column): SQL for the value. One
+# setting that became two keeps doing what it did, and the folders watched before the Library are in it.
+_FILLED = {("show", "episode_thumbnails"): '"chapter_thumbnails"', ("channel", "backlog"): "platform = 'folder'"}
 
 
 def _rename_columns(engine: Engine) -> None:
@@ -475,8 +483,8 @@ def _add_missing_columns(engine: Engine) -> None:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
                 )
-                if source := _COPIED.get((table.name, column.name)):
-                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = "{source}"')
+                if value := _FILLED.get((table.name, column.name)):
+                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = {value}')
 
 
 def _sql_literal(value) -> str:

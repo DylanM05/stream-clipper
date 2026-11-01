@@ -5,8 +5,11 @@ A new video is queued once it's finished: not live, and the same length on two c
 because Twitch doesn't say whether a VOD is still recording. A video posted on X is finished as soon as
 it's seen, and a file in a folder once it hasn't changed for FILE_SETTLE, so one still being copied in waits.
 Videos that were already on a channel when it was added are listed as "older" and only processed if you ask
-for them in the app, except a stream that was live at the time, which is treated as new. A folder's older
-episodes are also queued a few a day by themselves (Channel.older_per_day), in season and episode order.
+for them in the app, except a stream that was live at the time, which is treated as new.
+
+A channel or folder in the Library (Channel.backlog) has its older videos worked through by itself instead, a few a
+day, in order (backlog_order): a folder's in season and episode order, a channel's oldest first. A channel's whole
+history is listed for that, once, where the platform can list it (HISTORY_PLATFORMS).
 
 A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
 long it is, so of the newest few, those that haven't been settled yet are each read for that (list_rumble).
@@ -36,6 +39,8 @@ from .rumble import RumbleError
 log = logging.getLogger(__name__)
 
 RECENT = 15  # newest videos looked at on each listing
+HISTORY_PLATFORMS = ("kick", "twitch", "youtube")  # can list every past video; Rumble's and X's pages only list the newest
+EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 RUMBLE_RECENT = 5  # Rumble's are each read on their own, so fewer
 # Videos read per check at most, so Rumble isn't asked too often: enough for the other channels' live streams every
 # page links plus the channel's own newest five. Later checks only read what's new.
@@ -116,7 +121,7 @@ def list_folder(folder: str, media_dir: Path | None) -> list[Listed]:
     root = Path(parse_folder(folder, media_dir))
     now = time.time()
     found: list[Listed] = []
-    for base, dirs, files in os.walk(root):  # doesn't go into links to folders
+    for base, dirs, files in os.walk(root, onerror=_unreadable):  # doesn't go into links to folders
         dirs[:] = [d for d in dirs if not d.startswith(".")]
         for name in files:
             path = Path(base, name)
@@ -130,7 +135,7 @@ def list_folder(folder: str, media_dir: Path | None) -> list[Listed]:
                 id=path.relative_to(root).as_posix(), url=str(path), title=path.stem, duration=None,
                 live=now - changed < FILE_SETTLE.total_seconds(), final=True, published=changed,
             ))
-    return sorted(found, key=lambda item: _episode_order(item.id))
+    return sorted(found, key=lambda item: episode_order(item.id))
 
 
 def listing_urls(platform: str, channel_url: str) -> list[str]:
@@ -141,11 +146,11 @@ def listing_urls(platform: str, channel_url: str) -> list[str]:
     }[platform]
 
 
-def list_recent(platform: str, channel_url: str) -> list[Listed]:
-    """The channel's newest videos, without downloading anything."""
+def list_recent(platform: str, channel_url: str, limit: int | None = RECENT) -> list[Listed]:
+    """The channel's newest `limit` videos (None: all of them), without downloading anything."""
     found: list[Listed] = []
     for listing in listing_urls(platform, channel_url):
-        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": RECENT,
+        opts = {"quiet": True, "no_warnings": True, "extract_flat": "in_playlist", "playlistend": limit,
                 # YouTube's lists only say "3 days ago"; this turns that into a date.
                 "extractor_args": {"youtubetab": {"approximate_date": [""]}}}
         try:
@@ -264,11 +269,28 @@ def skip_reason(channel: Channel, item: Listed) -> str:
     return ""
 
 
+def backlog_order(channel: Channel, rows: list[ChannelVideo]) -> list[ChannelVideo]:
+    """A channel's videos in the order its backlog works through them: a folder's in season and episode order, a
+    channel's oldest first, by when they were posted, or as the channel listed them where it doesn't say; the other
+    way round when it goes newest first."""
+    if channel.platform == "folder":
+        return sorted(rows, key=lambda row: episode_order(row.video_id), reverse=channel.backlog_newest_first)
+    # The channel lists newest first, so a later row is an older video.
+    return sorted(rows, key=lambda row: (row.published_at or EPOCH, -(row.id or 0)), reverse=channel.backlog_newest_first)
+
+
+def older_reason(channel: Channel) -> str:
+    return f"Already {'in the folder' if channel.platform == 'folder' else 'on the channel'} when you added it"
+
+
 class Monitor:
-    def __init__(self, settings: Settings, lister: Callable[[str, str], list[Listed]] | None = None):
+    def __init__(self, settings: Settings, lister: Callable[[str, str], list[Listed]] | None = None,
+                 history: Callable[[str, str], list[Listed]] | None = None):
+        """`lister` lists a channel's newest videos and `history` all of them (HISTORY_PLATFORMS only)."""
         self.settings = settings
         self.engine = get_engine(settings)
         self.lister = lister or self._list
+        self.history = history or (lambda platform, url: list_recent(platform, url, limit=None))
         self._rumble_others: dict[str, set[str]] = {}  # other channels' streams seen on each Rumble channel's page
 
     def _list(self, platform: str, channel_url: str) -> list[Listed]:
@@ -307,8 +329,10 @@ class Monitor:
         with Session(self.engine) as s:
             channel = s.get(Channel, channel_id)
             platform, url, was_failing = channel.platform, channel.url, bool(channel.last_error)
+            wants_history = channel.backlog and not channel.history_listed and platform in HISTORY_PLATFORMS
         try:
             listed = self.lister(platform, url)
+            history = self.history(platform, url) if wants_history else []
         except Exception as e:
             log.warning("Checking %s failed: %s", url, e)
             error = str(e) if isinstance(e, (xposts.XError, RumbleError)) else f"{type(e).__name__}: {e}"
@@ -330,10 +354,9 @@ class Monitor:
                 if row is None:
                     # A stream that's live when the channel is added still counts as new: its VOD isn't done yet.
                     if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
-                        where = "in the folder" if channel.platform == "folder" else "on the channel"
                         s.add(ChannelVideo(
                             channel_id=channel_id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                            duration=item.duration, status="older", reason=f"Already {where} when you added it",
+                            duration=item.duration, status="older", reason=older_reason(channel),
                         ))
                         continue
                     row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
@@ -355,8 +378,10 @@ class Monitor:
                     queued += 1
                     new_titles.append((row.vod_id, row.title or row.url))
                 s.add(row)
-            if channel.platform == "folder" and channel.older_per_day:
-                for row in self._queue_older(s, channel, show, listed):
+            if wants_history:
+                self._add_history(s, channel, history)
+            if channel.backlog and not channel.backlog_paused and channel.backlog_per_day > 0:
+                for row in self._work_through(s, channel, show, listed):
                     queued += 1
                     new_titles.append((row.vod_id, row.title or row.url))
             s.commit()
@@ -368,23 +393,39 @@ class Monitor:
         self._finish(channel_id, last_error="", baseline_done=True)
 
     @staticmethod
-    def _queue_older(s: Session, channel: Channel, show: Show, listed: list[Listed]) -> list[ChannelVideo]:
-        """Queue the next of a folder's older episodes, in order, so that at most channel.older_per_day of its files
-        are queued in 24 hours: new ones count too, though they never wait. One that's gone from the folder, or is
-        being copied in again, is left for later."""
+    def _add_history(s: Session, channel: Channel, history: list[Listed]) -> None:
+        """The channel's past videos that weren't among its newest, for its backlog."""
+        seen = set(s.exec(select(ChannelVideo.video_id).where(ChannelVideo.channel_id == channel.id)))
+        for item in history:
+            if item.id in seen or item.live:
+                continue
+            seen.add(item.id)
+            when = datetime.fromtimestamp(item.published, timezone.utc) if item.published else None
+            s.add(ChannelVideo(
+                channel_id=channel.id, video_id=item.id, url=item.url, title=item.title, published_at=when,
+                duration=item.duration, status="older", reason=older_reason(channel),
+            ))
+        channel.history_listed = True
+        s.add(channel)
+
+    @staticmethod
+    def _work_through(s: Session, channel: Channel, show: Show, listed: list[Listed]) -> list[ChannelVideo]:
+        """Queue the next of the backlog's older videos, so that it queues at most channel.backlog_per_day in 24
+        hours. A folder's file that's gone, or is being copied in again, is left for later."""
         recent = s.exec(select(func.count()).select_from(ChannelVideo).where(
-            ChannelVideo.channel_id == channel.id, ChannelVideo.status == "queued",
-            ChannelVideo.updated_at >= utcnow() - timedelta(days=1),
+            ChannelVideo.channel_id == channel.id, col(ChannelVideo.backlog_at) >= utcnow() - timedelta(days=1),
         )).one()
-        if recent >= channel.older_per_day:
+        if recent >= channel.backlog_per_day:
             return []
-        there = {item.id for item in listed if not item.live}
-        older = s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == channel.id, ChannelVideo.status == "older"))
-        rows = sorted((row for row in older if row.video_id in there), key=lambda row: _episode_order(row.video_id))
-        rows = rows[:channel.older_per_day - recent]
+        older = list(s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == channel.id, ChannelVideo.status == "older")))
+        if channel.platform == "folder":
+            there = {item.id for item in listed if not item.live}
+            older = [row for row in older if row.video_id in there]
+        rows = backlog_order(channel, older)[:channel.backlog_per_day - recent]
         for row in rows:
             row.vod_id = queue_vod(s, row.url, show=show).id
-            row.status, row.reason, row.updated_at = "queued", "", utcnow()
+            row.status, row.reason = "queued", ""
+            row.updated_at = row.backlog_at = utcnow()
             s.add(row)
         return rows
 
@@ -414,6 +455,10 @@ def _waiting_reason(channel: Channel, item: Listed) -> str:
     return "Still live" if item.live or not item.duration else "Making sure the stream has ended"
 
 
-def _episode_order(path: str) -> tuple:
+def _unreadable(error: OSError) -> None:
+    raise error  # a season that can't be read (its permissions) shouldn't look like it isn't there
+
+
+def episode_order(path: str) -> tuple:
     """A file's path with its numbers compared as numbers: Season 2 before Season 10, S02E09 before S02E10."""
     return tuple(int(part) if i % 2 else part.casefold() for i, part in enumerate(re.split(r"(\d+)", path)))

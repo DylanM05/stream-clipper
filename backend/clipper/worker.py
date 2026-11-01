@@ -246,8 +246,9 @@ class Worker:
                 preview = preview or self._preview(vod_id, ws)
                 self._start(vod_id, "analysing", "processing")
                 video_type = show.video_type if show else "streams"
-                # A TV episode changes shot every few seconds, so its scene cuts would only be noise to the AI.
-                hints = signals.run(ws, settings, detect_scenes=video_type != "episodes")
+                # A TV episode or an edited video changes shot every few seconds, so its scene cuts would only be noise
+                # to the AI. A stream's mark its BRB screens and game changes.
+                hints = signals.run(ws, settings, detect_scenes=video_type == "streams")
                 self._start(vod_id, "segmenting", "processing")
                 segmentation = segment.run(
                     ws, settings, transcript, hints,

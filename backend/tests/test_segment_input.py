@@ -38,8 +38,12 @@ def test_the_shows_track_record_comes_before_the_hints():
     assert record + "\n" in text and text.index(record) < text.index("# Long silences")
 
 
-@pytest.mark.parametrize("video_type", ["streams", "episodes"])
-def test_a_tv_episode_gets_its_own_instructions_and_more_highlights_asked_for(tmp_path, monkeypatch, video_type):
+@pytest.mark.parametrize("video_type, prompt, noun, highlights", [
+    ("streams", "segment.md", "stream", 3),
+    ("episodes", "segment_episode.md", "episode", 8),  # the Shorts offered, and some to spare
+    ("other", "segment_other.md", "video", 8),
+])
+def test_each_kind_of_video_gets_its_own_instructions(tmp_path, monkeypatch, video_type, prompt, noun, highlights):
     settings = Settings(data_dir=tmp_path)
     ws = Workspace.open(settings.vods_dir, "local-abc")
     write_json(ws.meta_json, {"title": "S01E01", "extractor_key": "Local"})
@@ -56,12 +60,8 @@ def test_a_tv_episode_gets_its_own_instructions_and_more_highlights_asked_for(tm
     t = transcript(line(5.0, "Hello there."), duration=22 * 60)
     segment.run(ws, settings, t, Signals(), video_type=video_type, offered_shorts=5)
 
-    prompt = "segment_episode.md" if video_type == "episodes" else "segment.md"
     assert asked["system_prompt"] == segment.PROMPTS_DIR.joinpath(prompt).read_text(encoding="utf-8")
-    if video_type == "episodes":  # the Shorts offered, and some to spare
-        assert asked["task"].startswith("Split this 00:22:00 episode into chapters and pick up to 8 highlights. ")
-        assert asked["stdin_text"].startswith("# Episode\nTitle: S01E01\n")
+    assert asked["task"].startswith(f"Split this 00:22:00 {noun} into chapters and pick up to {highlights} highlights. ")
+    assert asked["stdin_text"].startswith(f"# {noun.capitalize()}\nTitle: S01E01\n")
+    if video_type != "streams":
         assert "given permission" not in asked["system_prompt"]
-    else:
-        assert asked["task"].startswith("Split this 00:22:00 stream into chapters and pick up to 3 highlights. ")
-        assert asked["stdin_text"].startswith("# Stream\n")

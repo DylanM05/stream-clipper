@@ -1,7 +1,7 @@
 // Small shared building blocks: screen layout, status chips, buttons, toasts.
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
-import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VodStatus } from "./api";
+import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VideoType, VodStatus } from "./api";
 import { BackIcon } from "./icons";
 import { cn } from "./lib";
 
@@ -53,6 +53,7 @@ const CLIP_STATUS: Record<ClipStatus, [string, string]> = {
 };
 
 export const MODE_LABEL: Record<Mode, string> = { segment: "Clips", whole: "Full episode", both: "Full episode + clips" };
+export const VIDEO_TYPE_LABEL: Record<VideoType, string> = { streams: "Streams", episodes: "TV episodes", other: "Other videos" };
 
 const VOD_STATUS: Record<VodStatus, [string, string]> = {
   queued: ["Queued", "bg-zinc-500/15 text-zinc-300"],
@@ -92,7 +93,7 @@ export function VodStatusChip({ status, paused }: { status: VodStatus; paused?: 
   return <Chip tone={tone}>{label}</Chip>;
 }
 
-function Chip({ tone, children }: { tone: string; children: ReactNode }) {
+export function Chip({ tone, children }: { tone: string; children: ReactNode }) {
   return (
     <span className={cn("inline-flex shrink-0 items-center rounded-full px-2 py-0.5 text-[11px] font-semibold", tone)}>
       {children}
@@ -149,6 +150,25 @@ export function Button(props: {
     >
       {props.children}
     </button>
+  );
+}
+
+/** One of a few choices, side by side. */
+export function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
+  const keys = Object.keys(props.options) as T[];
+  return (
+    <div className="grid flex-1 gap-1 rounded-xl bg-zinc-800 p-1" style={{ gridTemplateColumns: `repeat(${keys.length}, 1fr)` }}>
+      {keys.map((key) => (
+        <button
+          key={key}
+          type="button"
+          onClick={() => props.onChange(key)}
+          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
+        >
+          {props.options[key]}
+        </button>
+      ))}
+    </div>
   );
 }
 

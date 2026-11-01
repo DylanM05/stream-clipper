@@ -5,6 +5,7 @@ import { ago, cn, compact, length, platformName, timeOfDay, total, upcoming, use
 import { usePauses } from "../PauseBar";
 import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, StatTile, VodStatusChip } from "../ui";
 import { GOING_UP, inUploadOrder } from "./Approved";
+import { LibraryPanel } from "./Library";
 import { UploadBrowserStatus } from "./UploadKit";
 import { ACTIVE, WITH_PROGRESS } from "./Videos";
 
@@ -103,6 +104,7 @@ export function Overview({ summary }: { summary?: Summary }) {
         </div>
         <div className="min-w-0 space-y-6">
           <RecentUploads stats={stats} />
+          <LibraryPanel />
           <Channels destinations={destinations} />
         </div>
       </div>

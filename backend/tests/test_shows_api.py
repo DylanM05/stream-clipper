@@ -187,21 +187,104 @@ def test_a_show_can_watch_a_folder_of_tv_episodes_inside_the_media_folder(tmp_pa
     assert (show["video_type"], show["max_chapters"]) == ("episodes", 0)
     added = unset.post(f"/api/shows/{show['id']}/channels", json={"url": str(media / "TV" / "Show")})
     assert added.status_code == 422 and "CLIPPER_HOST_MEDIA_DIR" in added.json()["detail"]
+    assert unset.get("/api/folders").status_code == 422
 
     client = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", media_dir=media)))
     url = f"/api/shows/{show['id']}/channels"
     for outside in (str(tmp_path / "elsewhere"), f"{media}/TV/../../elsewhere", str(media / "TV" / "Missing")):
         assert client.post(url, json={"url": outside}).status_code == 422
     folder = str((media / "TV" / "Show").resolve())
-    channel = client.post(url, json={"url": f"{media}/TV/Show/", "older_per_day": 3}).json()
-    assert (channel["platform"], channel["url"], channel["older_per_day"]) == ("folder", folder, 3)
+    channel = client.post(url, json={"url": f"{media}/TV/Show/", "backlog": True, "backlog_per_day": 3}).json()
+    assert (channel["platform"], channel["url"], channel["backlog"], channel["backlog_per_day"]) == ("folder", folder, True, 3)
     assert client.post(url, json={"url": folder}).status_code == 409
     assert client.get(f"/api/shows/{show['id']}").json()["match"] == folder  # a file added by its path is the show's
 
-    other = client.post("/api/shows", json={"name": "Other"}).json()
-    assert client.patch(f"/api/channels/{channel['id']}", json={"show_id": other["id"], "older_per_day": 0}).json()["older_per_day"] == 0
+    other = client.post("/api/shows", json={"name": "Other", "video_type": "other"}).json()
+    moved = client.patch(f"/api/channels/{channel['id']}", json={"show_id": other["id"], "backlog_paused": True}).json()
+    assert moved["backlog_paused"] is True
     assert (client.get(f"/api/shows/{show['id']}").json()["match"], client.get(f"/api/shows/{other['id']}").json()["match"]) == ("", folder)
     assert client.patch(f"/api/shows/{show['id']}", json={"video_type": "movies"}).status_code == 422
+    assert client.patch(f"/api/channels/{channel['id']}", json={"backlog_per_day": 0}).status_code == 422
+
+
+def test_choosing_a_folder_from_the_media_folder(tmp_path):
+    media = tmp_path / "media"
+    for name in ("TV/Show/Season 10/S10E01.mkv", "TV/Show/Season 2/S02E01.mkv", "TV/Show/Season 1/S01E02.mkv",
+                 "TV/Show/Season 1/S01E01.mkv", "TV/Show/Pilot.mp4", "TV/Show/Pilot.srt", "TV/Show/.hidden/x.mkv"):
+        (media / name).parent.mkdir(parents=True, exist_ok=True)
+        (media / name).write_bytes(b"video")
+    (media / "Movies").mkdir()
+    client = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", media_dir=media)))
+
+    top = client.get("/api/folders").json()
+    assert (top["path"], top["parent"], top["folders"], top["videos"]) == (str(media.resolve()), None, ["Movies", "TV"], 0)
+    show = client.get("/api/folders", params={"path": f"{media}/TV/Show"}).json()
+    assert (show["parent"], show["folders"], show["videos"]) == (str((media / "TV").resolve()), ["Season 1", "Season 2", "Season 10"], 1)
+    assert client.get("/api/folders", params={"path": str(tmp_path)}).status_code == 422
+
+    videos = client.get("/api/folders/videos", params={"path": f"{media}/TV/Show"}).json()
+    assert videos == {"videos": 5, "first": ["Pilot.mp4", "Season 1/S01E01.mkv", "Season 1/S01E02.mkv",
+                                             "Season 2/S02E01.mkv", "Season 10/S10E01.mkv"]}
+
+
+def test_the_library_shows_how_far_each_backlog_is_and_can_skip_and_put_back(tmp_path):
+    settings = Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", media_dir=tmp_path)
+    client = TestClient(web_app.create_app(settings))
+    show = client.post("/api/shows", json={"name": "Kino", "video_type": "streams"}).json()
+    kick = client.post(f"/api/shows/{show['id']}/channels", json={"url": "kick.com/kino"}).json()
+    assert kick["backlog"] is False and client.get("/api/library").json() == []
+
+    with Session(get_engine(settings)) as s:  # as if the watcher had listed it, and gone through some of it
+        s.add(done := Vod(url="https://kick.com/kino/videos/a", status="ready"))
+        s.add(working := Vod(url="https://kick.com/kino/videos/b", status="transcribing", progress=0.4))
+        s.flush()
+        s.add(ClipRecord(vod_id=done.id, key="hl01", kind="highlight", start=0, end=30, title="A"))
+        s.add_all([
+            ChannelVideo(channel_id=kick["id"], video_id=f"v{n}", url=f"https://kick.com/kino/videos/{n}", title=f"Stream {n}",
+                         published_at=datetime(2026, month, day, tzinfo=timezone.utc), status=status, vod_id=vod)
+            for n, (month, day, status, vod) in enumerate([
+                (9, 1, "queued", done.id), (9, 20, "queued", working.id), (10, 2, "older", None),
+                (10, 5, "older", None), (10, 9, "skipped", None), (10, 30, "waiting", None),
+            ])
+        ])
+        s.commit()
+
+    # The show already watches it, so adding it to the Library puts it in, checked straight away.
+    added = client.post(f"/api/shows/{show['id']}/channels", json={"url": "https://kick.com/kino", "backlog": True,
+                                                                  "backlog_per_day": 1, "backlog_newest_first": False})
+    assert added.status_code == 201 and added.json()["id"] == kick["id"] and added.json()["backlog"] is True
+    assert added.json()["last_checked_at"] is None
+
+    [summary] = client.get("/api/library").json()
+    assert {k: summary[k] for k in ("name", "show_name", "video_type", "total", "done", "working", "failed", "left",
+                                    "skipped", "copying", "next", "today")} == {
+        "name": "kino", "show_name": "Kino", "video_type": "streams", "total": 5, "done": 1, "working": 1, "failed": 0,
+        "left": 2, "skipped": 1, "copying": 1, "next": "Stream 2", "today": 0,
+    }
+    detail = client.get(f"/api/channels/{kick['id']}/backlog").json()
+    assert [(i["title"], i["group"], i["state"]) for i in detail["items"]] == [  # oldest first, by month
+        ("Stream 0", "September 2026", "done"), ("Stream 1", "September 2026", "working"),
+        ("Stream 2", "October 2026", "left"), ("Stream 3", "October 2026", "left"),
+        ("Stream 4", "October 2026", "skipped"), ("Stream 5", "October 2026", "copying"),
+    ]
+    first, second = detail["items"][:2]
+    assert (first["vod_status"], first["counts"], second["vod_progress"]) == ("ready", {"proposed": 1}, 0.4)
+
+    ids = {i["title"]: i["id"] for i in detail["items"]}
+    skip = f"/api/channels/{kick['id']}/backlog/skip"
+    assert client.post(skip, json={"ids": [ids["Stream 2"], ids["Stream 0"]], "skip": True}).status_code == 204
+    assert client.get("/api/library").json()[0]["next"] == "Stream 3"  # one already done isn't skipped
+    assert client.post(skip, json={"ids": [ids["Stream 2"], ids["Stream 4"]], "skip": False}).status_code == 204
+    detail = client.get(f"/api/channels/{kick['id']}/backlog").json()
+    assert [i["state"] for i in detail["items"]] == ["done", "working", "left", "left", "left", "copying"]
+    assert detail["items"][4]["reason"] == "Already on the channel when you added it"
+
+    newest = client.patch(f"/api/channels/{kick['id']}", json={"backlog_newest_first": True}).json()
+    assert newest["last_checked_at"] is None
+    assert client.get("/api/library").json()[0]["next"] == "Stream 4"
+    client.patch(f"/api/channels/{kick['id']}", json={"backlog": False})
+    assert client.get("/api/library").json() == []
+
 
 def test_watching_an_x_account(client):
     show = client.post("/api/shows", json=PRESHOW).json()

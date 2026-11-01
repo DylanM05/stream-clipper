@@ -17,6 +17,9 @@ from ..workspace import Workspace, write_text
 log = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+# The instructions for each kind of video (db.VIDEO_TYPES), and what they call one.
+PROMPTS = {"streams": "segment.md", "episodes": "segment_episode.md", "other": "segment_other.md"}
+NOUNS = {"streams": "stream", "episodes": "episode", "other": "video"}
 
 
 def run(
@@ -40,14 +43,15 @@ def run(
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
     means the show name and date get added to them. `track_record` is what the show's past clips teach it
     (learning.py). `breakdown` is the categories, by name with what each covers, that it also sorts the stream's
-    time into; the answer is then a SegmentationWithBreakdown. `video_type` is the show's (Show.video_type); a TV
-    episode gets its own instructions, and enough highlights asked for to fill the `offered_shorts` with some to spare.
+    time into; the answer is then a SegmentationWithBreakdown. `video_type` is the show's (Show.video_type): each kind
+    has its own instructions, and a TV episode or other video gets enough highlights asked for to fill the
+    `offered_shorts` with some to spare.
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
 
     max_highlights = max(3, round(transcript.duration / 3600 * settings.highlights_per_hour))
-    if video_type == "episodes":  # a 22-minute episode would only get the 3
+    if video_type != "streams":  # a 22-minute episode would only get the 3
         max_highlights = max(max_highlights, offered_shorts + 3)
     title_rule = (
         f"Keep chapter and highlight titles within {title_room} characters and the episode title within "
@@ -55,9 +59,8 @@ def run(
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    prompt_name = "segment_episode.md" if video_type == "episodes" else "segment.md"
-    system_prompt = (PROMPTS_DIR / prompt_name).read_text(encoding="utf-8")
-    noun = "episode" if video_type == "episodes" else "stream"
+    system_prompt = (PROMPTS_DIR / PROMPTS[video_type]).read_text(encoding="utf-8")
+    noun = NOUNS[video_type]
     task = f"Split this {to_timecode(transcript.duration)} {noun} into chapters and pick up to {max_highlights} highlights"
     schema = Segmentation
     if breakdown:

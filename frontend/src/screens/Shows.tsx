@@ -10,23 +10,31 @@ import {
   type Mode,
   type Show,
   type ShowFields,
+  type VideoType,
   type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, sitesOf, titleDate, usePoll, type Sites } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
-import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
+import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, Segmented, useToast, VIDEO_TYPE_LABEL } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
 const SAMPLE_TITLE = "Short title written by the AI";
-const PLATFORM_NAME: Record<Channel["platform"], string> = {
+export const PLATFORM_NAME: Record<Channel["platform"], string> = {
   kick: "Kick",
   twitch: "Twitch",
   youtube: "YouTube",
   rumble: "Rumble",
   x: "X",
   folder: "Folder",
+};
+
+const VIDEO_NOUN: Record<VideoType, string> = { streams: "stream", episodes: "episode", other: "video" };
+const VIDEO_TYPE_HINT: Record<VideoType, string> = {
+  streams: "Livestreams: the AI looks for segments, topics and the best moments.",
+  episodes: "The AI looks for scenes and jokes that work without the rest of the episode, mostly as Shorts. For Shorts only, set the clips offered per episode to 0.",
+  other: "Podcasts, interviews, vlogs, talks and anything else: the AI looks for parts that stand on their own and the best moments for Shorts.",
 };
 
 const hasClips = (mode: Mode) => mode !== "whole";
@@ -114,7 +122,7 @@ function ChannelBadge({ channel }: { channel: Channel }) {
   );
 }
 
-const channelName = (c: Channel) => c.url.replace(/^https?:\/\/(www\.)?[^/]+\//, "");
+export const channelName = (c: Channel) => c.url.replace(/^https?:\/\/(www\.)?[^/]+\//, "");
 
 // --- YouTube channels to upload to ---
 
@@ -430,7 +438,7 @@ export function ShowEditor({ id }: { id: number | null }) {
   );
 }
 
-const BLANK: ShowFields = {
+export const BLANK_SHOW: ShowFields = {
   name: "",
   match: "",
   mode: "segment",
@@ -471,7 +479,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const { show, destinations } = props;
   const toast = useToast();
   const [fields, setFields] = useState<ShowFields>(() => {
-    if (!show) return BLANK;
+    if (!show) return BLANK_SHOW;
     // The images are saved on their own, straight away, so they aren't part of the form.
     const { id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s, ...rest } =
       show;
@@ -549,23 +557,10 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
 
       {hasClips(fields.mode) && (
         <Field label="Its videos are">
-          <div className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
-            {(["streams", "episodes"] as const).map((video_type) => (
-              <button
-                key={video_type}
-                type="button"
-                onClick={() => set({ video_type })}
-                className={cn("rounded-lg py-2 text-xs font-semibold", fields.video_type === video_type ? "bg-zinc-600 text-white" : "text-zinc-400")}
-              >
-                {video_type === "streams" ? "Streams" : "TV episodes"}
-              </button>
-            ))}
+          <div className="flex">
+            <Segmented options={VIDEO_TYPE_LABEL} value={fields.video_type} onChange={(video_type) => set({ video_type })} />
           </div>
-          <p className="mt-1.5 text-xs text-zinc-500">
-            {fields.video_type === "streams"
-              ? "Livestreams: the AI looks for segments, topics and the best moments."
-              : "The AI looks for scenes and jokes that work without the rest of the episode, mostly as Shorts. For Shorts only, set the clips offered per episode to 0."}
-          </p>
+          <p className="mt-1.5 text-xs text-zinc-500">{VIDEO_TYPE_HINT[fields.video_type]}</p>
         </Field>
       )}
 
@@ -636,7 +631,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       </button>
 
       {hasClips(fields.mode) && (
-        <Group label={`Offered per ${fields.video_type === "episodes" ? "episode" : "stream"}`} hint="best first, by the AI's score">
+        <Group label={`Offered per ${VIDEO_NOUN[fields.video_type]}`} hint="best first, by the AI's score">
           <div className="grid grid-cols-2 gap-2">
             <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
             <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
@@ -937,24 +932,6 @@ function Tick(props: { label: string; checked: boolean; onChange: (checked: bool
       />
       <span className="text-sm text-zinc-300">{props.label}</span>
     </label>
-  );
-}
-
-function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
-  const keys = Object.keys(props.options) as T[];
-  return (
-    <div className="grid flex-1 gap-1 rounded-xl bg-zinc-800 p-1" style={{ gridTemplateColumns: `repeat(${keys.length}, 1fr)` }}>
-      {keys.map((key) => (
-        <button
-          key={key}
-          type="button"
-          onClick={() => props.onChange(key)}
-          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
-        >
-          {props.options[key]}
-        </button>
-      ))}
-    </div>
   );
 }
 
@@ -1313,7 +1290,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   const { data: shows } = usePoll(api.shows, 0);
   const otherShows = shows?.filter((s) => s.id !== show.id) ?? [];
   const [url, setUrl] = useState("");
-  const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0, older_per_day: 2 });
+  const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0 });
   const [showFilters, setShowFilters] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -1322,7 +1299,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
     try {
       await api.addChannel(show.id, { url: url.trim(), ...filters });
       setUrl("");
-      setFilters({ keywords: "", exclude: "", min_minutes: 0, older_per_day: 2 });
+      setFilters({ keywords: "", exclude: "", min_minutes: 0 });
       setShowFilters(false);
       toast({ text: "Watching. The first check lists what's already there." });
       onChanged();
@@ -1338,7 +1315,9 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
       <h2 className="text-lg font-bold tracking-tight">Channels to watch</h2>
       <p className="mt-1 text-sm text-zinc-400">
         Checked every 10 minutes. A new stream's VOD is picked up once the stream has ended, and a video posted on X as
-        soon as it's seen. Videos already there are listed but not processed; tap one to process it.
+        soon as it's seen. Videos already there are listed but not processed; tap one to process it, or add the channel
+        to the <a href="#/library" className="font-medium text-violet-300">Library</a> to work through them a few a day.
+        Folders of videos on the server are added there too.
       </p>
 
       <div className="mt-3 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
@@ -1347,18 +1326,18 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name, x.com/name, or a folder like /media/TV/Show"
+          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name or x.com/name"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
-        {showFilters || url.trim().startsWith("/") ? (
-          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} folder={url.trim().startsWith("/")} />
+        {showFilters ? (
+          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} />
         ) : (
           <button type="button" onClick={() => setShowFilters(true)} className="text-sm font-medium text-violet-300">
             + Filters (keywords, minimum length)
           </button>
         )}
         <Button tone="primary" onClick={add} disabled={!url.trim() || busy} className="w-full">
-          {busy ? "Adding…" : "Watch"}
+          {busy ? "Adding…" : "Watch channel"}
         </Button>
       </div>
 
@@ -1372,35 +1351,20 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
 }
 
 /** `posts`: an X account, whose filters match the text of each post. */
-function FilterFields({ value, onChange, posts, folder }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean; folder?: boolean }) {
+function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean }) {
   const what = posts ? "posts" : "titles";
   return (
     <div className="space-y-3">
-      {folder && <Field label="Older episodes a day" hint="0 leaves them to you">
-        <input
-          type="number"
-          inputMode="numeric"
-          min={0}
-          max={100}
-          value={value.older_per_day}
-          onChange={(e) => onChange({ ...value, older_per_day: Number(e.target.value) || 0 })}
-          className={cn(input, "bg-zinc-800 ring-0")}
-        />
-        <p className="mt-1.5 text-xs text-zinc-500">
-          The episodes already in the folder are processed this many a day, in season and episode order, counting new ones. New
-          ones never wait: each starts once it's copied in.
-        </p>
-      </Field>}
-      {!folder && <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
+      <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
         <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + night owls" : "night owls, full show"} className={cn(input, "bg-zinc-800 ring-0")} />
         <p className="mt-1.5 text-xs text-zinc-500">
           Any one keyword will do. Join words with + to need all of them, e.g. “tonight on + night owls”.
         </p>
-      </Field>}
-      {!folder && <Field label={`Skip ${what} with`} hint="comma-separated">
+      </Field>
+      <Field label={`Skip ${what} with`} hint="comma-separated">
         <input value={value.exclude} onChange={(e) => onChange({ ...value, exclude: e.target.value })} placeholder="rerun, test stream" className={cn(input, "bg-zinc-800 ring-0")} />
-      </Field>}
-      {!folder && <Field label="Minimum length" hint="minutes">
+      </Field>
+      <Field label="Minimum length" hint="minutes">
         <input
           type="number"
           inputMode="numeric"
@@ -1410,7 +1374,7 @@ function FilterFields({ value, onChange, posts, folder }: { value: ChannelFields
           placeholder="0"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
-      </Field>}
+      </Field>
     </div>
   );
 }
@@ -1423,7 +1387,6 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     keywords: channel.keywords,
     exclude: channel.exclude,
     min_minutes: channel.min_minutes,
-    older_per_day: channel.older_per_day,
   });
 
   const act = async (work: () => Promise<unknown>, done?: string) => {
@@ -1464,10 +1427,10 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
             {status}
             {channel.waiting > 0 && ` · ${channel.waiting} waiting for ${folder ? "copying to finish" : "a stream to end"}`}
           </p>
-          {folder && (
-            <p className="mt-0.5 text-xs text-zinc-500">
-              {channel.older_per_day > 0 ? `Older episodes: ${channel.older_per_day} a day` : "Older episodes: when you process them"}
-            </p>
+          {channel.backlog && (
+            <a href={`#/library/${channel.id}`} className="mt-0.5 block text-xs font-medium text-violet-300">
+              In the Library: {channel.backlog_paused ? "paused" : `${channel.backlog_per_day} older ${folder ? "episodes" : "videos"} a day`}
+            </a>
           )}
           {rules.length > 0 && <p className="mt-0.5 text-xs text-zinc-500">Filters: {rules.join(", ")}</p>}
           {channel.last_error && <p className="mt-1 line-clamp-3 break-words text-xs text-red-300">{channel.last_error}</p>}
@@ -1495,14 +1458,18 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
 
       {editing && (
         <div className="space-y-3 border-t border-white/5 p-4">
-          <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} folder={folder} />
-          <Button
-            tone="primary"
-            className="w-full"
-            onClick={() => act(() => api.updateChannel(channel.id, filters), "Filters saved").then(() => setEditing(false))}
-          >
-            Save filters
-          </Button>
+          {!folder && (
+            <>
+              <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
+              <Button
+                tone="primary"
+                className="w-full"
+                onClick={() => act(() => api.updateChannel(channel.id, filters), "Filters saved").then(() => setEditing(false))}
+              >
+                Save filters
+              </Button>
+            </>
+          )}
           {otherShows.length > 0 && (
             <Field label="Belongs to another show?">
               <select
