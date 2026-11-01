@@ -41,6 +41,10 @@ PAUSABLE = ("downloads", "processing", "renders", "uploads")
 # Posts on these sites are short and get uploaded as they are, not split into clips.
 WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
 
+# The order a backlog takes its videos in (monitor.backlog_order): from a folder's first episode or a channel's oldest
+# video, from the latest, or at random.
+BACKLOG_ORDERS = ("first", "latest", "random")
+
 # What a show's videos are, for the instructions the AI picks clips with (segment.py): livestreams, episodes of a TV
 # show, or anything else (podcasts, vlogs, lectures).
 VIDEO_TYPES = ("streams", "episodes", "other")
@@ -301,11 +305,11 @@ class Channel(SQLModel, table=True):
     enabled: bool = True
     baseline_done: bool = False  # the videos already there when the channel was added have been listed
     # In the Library: its older videos (a folder's episodes, or a channel's past streams) are worked through by
-    # themselves, backlog_per_day of them a day, in order (monitor.py). Newer ones never wait for them.
+    # themselves, backlog_per_day of them a day, in backlog_order (monitor.py). Newer ones never wait for them.
     backlog: bool = False
     backlog_per_day: int = 2
     backlog_paused: bool = False
-    backlog_newest_first: bool = False  # a folder's from its last episode, a channel's from its latest video
+    backlog_order: str = "first"  # see BACKLOG_ORDERS
     # The channel's whole history has been listed for its backlog, not just its newest videos. A folder's always is.
     history_listed: bool = False
     last_checked_at: datetime | None = None
@@ -456,9 +460,14 @@ def _engine(db_path: str) -> Engine:
 
 # Columns renamed since a database was made, by (table, old name, new name): renamed in place, keeping their values.
 _RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails"), ("channel", "older_per_day", "backlog_per_day")]
-# Columns that start out from the row's other columns when they're added, by (table, column): SQL for the value. One
-# setting that became two keeps doing what it did, and the folders watched before the Library are in it.
-_FILLED = {("show", "episode_thumbnails"): '"chapter_thumbnails"', ("channel", "backlog"): "platform = 'folder'"}
+# Columns that start out from another of the row's when they're added, by (table, column): SQL for the value, and the
+# column it's worked out from, which an older database may not have. One setting that became two keeps doing what it
+# did, the folders watched before the Library are in it, and a backlog going newest first still does.
+_FILLED = {
+    ("show", "episode_thumbnails"): ('"chapter_thumbnails"', "chapter_thumbnails"),
+    ("channel", "backlog"): ("platform = 'folder'", "platform"),
+    ("channel", "backlog_order"): ("CASE WHEN backlog_newest_first THEN 'latest' ELSE 'first' END", "backlog_newest_first"),
+}
 
 
 def _rename_columns(engine: Engine) -> None:
@@ -483,7 +492,9 @@ def _add_missing_columns(engine: Engine) -> None:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
                 )
-                if value := _FILLED.get((table.name, column.name)):
+                have.add(column.name)
+                value, source = _FILLED.get((table.name, column.name), ("", ""))
+                if source in have:
                     conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = {value}')
 
 

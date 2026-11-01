@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { api, errorText, type Backlog, type BacklogItem, type VideoType } from "../api";
+import { api, errorText, type Backlog, type BacklogItem, type BacklogOrder, type VideoType } from "../api";
 import { ChevronIcon, FolderIcon, LibraryIcon, LinkIcon } from "../icons";
 import { cn, go, goBack, goInstead, pastDay, usePoll } from "../lib";
 import { Button, Chip, ErrorNote, Panel, ProgressBar, Screen, Segmented, useToast, VIDEO_TYPE_LABEL, VodStatusChip } from "../ui";
@@ -12,6 +12,8 @@ import { BLANK_SHOW, channelName, PLATFORM_NAME } from "./Shows";
  */
 
 const HISTORY = ["kick", "twitch", "youtube"]; // can list every past video (monitor.HISTORY_PLATFORMS)
+const FOLDER_ORDER: Record<BacklogOrder, string> = { first: "In order", latest: "Latest first", random: "At random" };
+const CHANNEL_ORDER: Record<BacklogOrder, string> = { first: "Oldest first", latest: "Newest first", random: "At random" };
 const DAY_MS = 86400000;
 
 export function Library() {
@@ -151,7 +153,8 @@ export function BacklogPage({ id }: { id: number }) {
   const ch = b.channel;
   const folder = ch.platform === "folder";
   const left = b.items.filter((i) => i.state === "left");
-  const upNext = new Set(ch.backlog_paused ? [] : left.slice(0, ch.backlog_per_day).map((i) => i.id));
+  const first = left.find((i) => i.place === 1);
+  const upNext = new Set(ch.backlog_paused ? [] : left.filter((i) => i.place! <= ch.backlog_per_day).map((i) => i.id));
   const groups = groupItems(b.items);
 
   const skip = (items: BacklogItem[]) => {
@@ -170,7 +173,8 @@ export function BacklogPage({ id }: { id: number }) {
     putBack: (item) => putBack([item]),
     startHere: (item) => {
       const before = b.items.slice(0, b.items.indexOf(item)).filter((i) => i.state === "left");
-      if (before.length && confirm(`Skip the ${before.length} before it, so it starts here?`)) skip(before);
+      const after = ch.backlog_order === "random" ? "so only it and the ones after it are picked from" : "so it starts here";
+      if (before.length && confirm(`Skip the ${before.length} before it, ${after}?`)) skip(before);
     },
   };
 
@@ -184,7 +188,7 @@ export function BacklogPage({ id }: { id: number }) {
           >
             {ch.backlog_paused ? "Resume" : "Pause"}
           </Button>
-          <Button disabled={!left.length} onClick={() => actions.process(left[0])}>
+          <Button disabled={!first} onClick={() => actions.process(first!)}>
             Process next
           </Button>
           <Button onClick={() => setSettings((s) => !s)}>Settings</Button>
@@ -236,11 +240,12 @@ function BacklogSettings({ backlog: b, act }: { backlog: Backlog; act: (work: ()
       <Group label="Order">
         <div className="flex">
           <Segmented
-            options={folder ? { first: "From the first episode", last: "From the latest" } : { first: "Oldest first", last: "Newest first" }}
-            value={ch.backlog_newest_first ? "last" : "first"}
-            onChange={(v) => void act(() => api.updateChannel(ch.id, { backlog_newest_first: v === "last" }))}
+            options={folder ? FOLDER_ORDER : CHANNEL_ORDER}
+            value={ch.backlog_order}
+            onChange={(backlog_order) => void act(() => api.updateChannel(ch.id, { backlog_order }))}
           />
         </div>
+        <p className="mt-1.5 text-xs text-zinc-500">{orderHint(ch.backlog_order, folder)}</p>
       </Group>
       <p className="text-xs text-zinc-500">
         Titles, the AI's instructions and where the clips go are the show's:{" "}
@@ -403,7 +408,7 @@ export function AddToLibrary() {
   const [newName, setNewName] = useState("");
   const [kind, setKind] = useState<VideoType>("episodes");
   const [perDay, setPerDay] = useState(2);
-  const [newestFirst, setNewestFirst] = useState(false);
+  const [order, setOrder] = useState<BacklogOrder>("first");
   const [busy, setBusy] = useState(false);
 
   const show = typeof showId === "number" ? shows?.find((s) => s.id === showId) : undefined;
@@ -428,7 +433,7 @@ export function AddToLibrary() {
         url: source === "folder" ? folder! : link.trim(),
         backlog: true,
         backlog_per_day: perDay,
-        backlog_newest_first: newestFirst,
+        backlog_order: order,
       });
       toast({ text: "In the Library. The first ones start within a minute." });
       goInstead(`library/${channel.id}`);
@@ -529,12 +534,9 @@ export function AddToLibrary() {
 
         <Group label="Order">
           <div className="flex">
-            <Segmented
-              options={source === "folder" ? { first: "From the first episode", last: "From the latest" } : { first: "Oldest first", last: "Newest first" }}
-              value={newestFirst ? "last" : "first"}
-              onChange={(v) => setNewestFirst(v === "last")}
-            />
+            <Segmented options={source === "folder" ? FOLDER_ORDER : CHANNEL_ORDER} value={order} onChange={setOrder} />
           </div>
+          <p className="mt-1.5 text-xs text-zinc-500">{orderHint(order, source === "folder")}</p>
         </Group>
 
         <Button tone="primary" onClick={add} disabled={!ready || busy} className="w-full">
@@ -629,6 +631,12 @@ function FolderPicker({ value, onChange }: { value: string | null; onChange: (pa
       )}
     </Group>
   );
+}
+
+function orderHint(order: BacklogOrder, folder: boolean): string {
+  if (order === "random") return `Any ${folder ? "episode" : "video"} still to go, picked at random.`;
+  if (folder) return order === "first" ? "Season by season, from the first episode." : "From the last episode back.";
+  return order === "first" ? "From the oldest video." : "From the newest video back.";
 }
 
 function Stepper({ value, onChange }: { value: number; onChange: (n: number) => void }) {

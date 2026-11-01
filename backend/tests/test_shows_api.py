@@ -252,7 +252,7 @@ def test_the_library_shows_how_far_each_backlog_is_and_can_skip_and_put_back(tmp
 
     # The show already watches it, so adding it to the Library puts it in, checked straight away.
     added = client.post(f"/api/shows/{show['id']}/channels", json={"url": "https://kick.com/kino", "backlog": True,
-                                                                  "backlog_per_day": 1, "backlog_newest_first": False})
+                                                                  "backlog_per_day": 1, "backlog_order": "first"})
     assert added.status_code == 201 and added.json()["id"] == kick["id"] and added.json()["backlog"] is True
     assert added.json()["last_checked_at"] is None
 
@@ -280,9 +280,20 @@ def test_the_library_shows_how_far_each_backlog_is_and_can_skip_and_put_back(tmp
     assert [i["state"] for i in detail["items"]] == ["done", "working", "left", "left", "left", "copying"]
     assert detail["items"][4]["reason"] == "Already on the channel when you added it"
 
-    newest = client.patch(f"/api/channels/{kick['id']}", json={"backlog_newest_first": True}).json()
+    newest = client.patch(f"/api/channels/{kick['id']}", json={"backlog_order": "latest"}).json()
     assert newest["last_checked_at"] is None
     assert client.get("/api/library").json()[0]["next"] == "Stream 4"
+    detail = client.get(f"/api/channels/{kick['id']}/backlog").json()
+    assert [(i["title"], i["place"]) for i in detail["items"]][:3] == [("Stream 5", None), ("Stream 4", 1), ("Stream 3", 2)]
+
+    # At random, it's still shown oldest first, with each one's place in the line.
+    client.patch(f"/api/channels/{kick['id']}", json={"backlog_order": "random"})
+    detail = client.get(f"/api/channels/{kick['id']}/backlog").json()
+    assert [i["title"] for i in detail["items"]] == [f"Stream {n}" for n in range(6)]
+    places = {i["title"]: i["place"] for i in detail["items"] if i["place"]}
+    assert sorted(places.values()) == [1, 2, 3] and set(places) == {"Stream 2", "Stream 3", "Stream 4"}
+    assert detail["next"] == next(title for title, place in places.items() if place == 1)
+    assert client.patch(f"/api/channels/{kick['id']}", json={"backlog_order": "sideways"}).status_code == 422
     client.patch(f"/api/channels/{kick['id']}", json={"backlog": False})
     assert client.get("/api/library").json() == []
 

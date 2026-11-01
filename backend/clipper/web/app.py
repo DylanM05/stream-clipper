@@ -59,6 +59,7 @@ PUBLIC_PATHS = {"/api/session", "/api/login", CALLBACK_PATH}
 SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
 VideoType = Literal["streams", "episodes", "other"]  # db.VIDEO_TYPES
+BacklogOrder = Literal["first", "latest", "random"]  # db.BACKLOG_ORDERS
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
 Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
@@ -426,7 +427,7 @@ class ChannelIn(BaseModel):
     # In the Library (Channel.backlog). For a channel the show already watches, this puts it in.
     backlog: bool = False
     backlog_per_day: int = Field(default=2, ge=1, le=100)
-    backlog_newest_first: bool = False
+    backlog_order: BacklogOrder = "first"
 
 
 class ChannelPatch(BaseModel):
@@ -438,7 +439,7 @@ class ChannelPatch(BaseModel):
     backlog: bool | None = None
     backlog_per_day: int | None = Field(default=None, ge=1, le=100)
     backlog_paused: bool | None = None
-    backlog_newest_first: bool | None = None
+    backlog_order: BacklogOrder | None = None
 
 
 class ChannelOut(BaseModel):
@@ -456,7 +457,7 @@ class ChannelOut(BaseModel):
     backlog: bool
     backlog_per_day: int
     backlog_paused: bool
-    backlog_newest_first: bool
+    backlog_order: str
     history_listed: bool
 
 
@@ -563,10 +564,13 @@ class BacklogItemOut(BaseModel):
     vod_status: str  # "" when it hasn't been queued
     vod_progress: float
     counts: dict[str, int]  # its clips by status
+    place: int | None  # one still to go: its place in the line, 1 being next
 
 
 class BacklogDetailOut(BacklogOut):
-    items: list[BacklogItemOut]  # every video, in the order it works through them
+    # Every video, in the order it works through them; when that's at random, in season and episode order (or oldest
+    # first), with each one's place in the line.
+    items: list[BacklogItemOut]
 
 
 class BacklogSkip(BaseModel):
@@ -1455,8 +1459,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 platform, url = parse_channel(body.url)
         except ChannelUrlError as e:
             raise HTTPException(422, str(e)) from None
-        backlog = dict(backlog=True, backlog_per_day=body.backlog_per_day,
-                       backlog_newest_first=body.backlog_newest_first) if body.backlog else {}
+        backlog = dict(backlog=True, backlog_per_day=body.backlog_per_day, backlog_order=body.backlog_order) if body.backlog else {}
         if ch := s.exec(select(Channel).where(Channel.show_id == show_id, Channel.url == url)).first():
             if not backlog:
                 raise HTTPException(409, "This show already watches that channel")
@@ -1504,7 +1507,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ch.show_id = show_id
         for k, v in changes.items():
             setattr(ch, k, v.strip() if isinstance(v, str) else v)
-        if changes.keys() & {"backlog", "backlog_per_day", "backlog_paused", "backlog_newest_first"}:
+        if changes.keys() & {"backlog", "backlog_per_day", "backlog_paused", "backlog_order"}:
             ch.last_checked_at = None  # so it takes effect on a check within seconds
         s.add(ch)
         s.commit()
@@ -1585,12 +1588,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return FolderVideosOut(videos=len(listed), first=[item.id for item in listed[:5]])
 
     def backlog_items(s: Session, ch: Channel) -> list[tuple[ChannelVideo, Vod | None]]:
-        """The channel's videos, with what became of each, in the order its backlog works through them."""
+        """The channel's videos, with what became of each, in the order its backlog works through them, or for one
+        that goes at random, in season and episode order (or oldest first)."""
         pairs = s.exec(
             select(ChannelVideo, Vod).outerjoin(Vod, ChannelVideo.vod_id == Vod.id).where(ChannelVideo.channel_id == ch.id)
         ).all()
-        place = {item.id: i for i, item in enumerate(backlog_order(ch, [item for item, _ in pairs]))}
+        shown = "first" if ch.backlog_order == "random" else ch.backlog_order
+        place = {item.id: i for i, item in enumerate(backlog_order(ch, [item for item, _ in pairs], shown))}
         return sorted(pairs, key=lambda pair: place[pair[0].id])
+
+    def backlog_line(ch: Channel, pairs: list[tuple[ChannelVideo, Vod | None]]) -> list[ChannelVideo]:
+        """The ones still to go, in the order the backlog takes them."""
+        return backlog_order(ch, [item for item, _ in pairs if item.status == "older"])
 
     def item_state(item: ChannelVideo, vod: Vod | None) -> str:
         if item.status == "queued":
@@ -1600,7 +1609,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def backlog_summary(s: Session, ch: Channel, pairs: list[tuple[ChannelVideo, Vod | None]]) -> dict:
         show = s.get(Show, ch.show_id)
         states = Counter(item_state(item, vod) for item, vod in pairs)
-        up_next = next((item for item, _ in pairs if item.status == "older"), None)
+        up_next = next(iter(backlog_line(ch, pairs)), None)
         day_ago = utcnow() - timedelta(days=1)
         return dict(
             channel=channel_out(s, ch), show_name=show.name, video_type=show.video_type,
@@ -1633,11 +1642,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 return item.video_id.rpartition("/")[0]
             return item.published_at.strftime("%B %Y") if item.published_at else ""
 
+        line = {item.id: i for i, item in enumerate(backlog_line(ch, pairs), 1)}
         items = [BacklogItemOut(
             id=item.id, title=item.title or item.video_id, url=item.url, group=group(item), state=item_state(item, vod),
             reason=item.reason, published_at=iso(item.published_at), vod_id=vod.id if vod else None,
             vod_status=vod.status if vod else "", vod_progress=vod.progress if vod else 0,
-            counts=counts.get(vod.id, {}) if vod else {},
+            counts=counts.get(vod.id, {}) if vod else {}, place=line.get(item.id),
         ) for item, vod in pairs]
         return BacklogDetailOut(**backlog_summary(s, ch, pairs), items=items)
 

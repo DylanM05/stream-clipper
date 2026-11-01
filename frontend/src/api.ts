@@ -232,9 +232,12 @@ export interface Channel {
   backlog: boolean;
   backlog_per_day: number;
   backlog_paused: boolean;
-  backlog_newest_first: boolean;
+  backlog_order: BacklogOrder;
   history_listed: boolean; // a channel's whole history has been listed for it
 }
+
+/** The order a backlog takes its videos in: from the first episode (or oldest video), from the latest, or at random. */
+export type BacklogOrder = "first" | "latest" | "random";
 
 /** What a show's videos are, for the AI: livestreams, TV episodes, or anything else (podcasts, vlogs, talks). */
 export type VideoType = "streams" | "episodes" | "other";
@@ -288,7 +291,7 @@ export type ShowFields = Omit<
   "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen"
 >;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
-export type BacklogFields = Pick<Channel, "backlog_per_day" | "backlog_paused" | "backlog_newest_first">;
+export type BacklogFields = Pick<Channel, "backlog_per_day" | "backlog_paused" | "backlog_order">;
 
 export interface ChannelVideo {
   id: number;
@@ -340,10 +343,11 @@ export interface BacklogItem {
   vod_status: VodStatus | "";
   vod_progress: number;
   counts: Partial<Record<ClipStatus, number>>;
+  place: number | null; // one still to go: its place in the line, 1 being next
 }
 
 export interface BacklogDetail extends Backlog {
-  items: BacklogItem[]; // in the order it works through them
+  items: BacklogItem[]; // in the order it works through them; at random, in season and episode order (or oldest first)
 }
 
 /** Counts for the tab badges. */

@@ -515,9 +515,29 @@ def test_a_folders_older_episodes_go_a_few_a_day_in_order_and_new_ones_never_wai
     mon.check(channel_id)
     assert (statuses(settings)["S01E05.mkv"], statuses(settings)["S01E06.mkv"]) == ("older", "older")
 
-    change(settings, channel_id, backlog_paused=False, backlog_newest_first=True, backlog_per_day=1)
+    change(settings, channel_id, backlog_paused=False, backlog_order="latest", backlog_per_day=1)
     mon.check(channel_id)  # from the last episode
     assert (statuses(settings)["S01E05.mkv"], statuses(settings)["S01E06.mkv"]) == ("older", "queued")
+
+
+def test_a_backlog_can_go_at_random_the_same_way_on_every_check(folder):
+    settings, mon, path, channel_id = folder
+    names = [f"Season {s}/S0{s}E0{e}.mkv" for s in (1, 2, 3) for e in range(1, 6)]
+    for name in names:
+        episode(path, name)
+    change(settings, channel_id, backlog_order="random", backlog_per_day=3)
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        channel = s.get(Channel, channel_id)
+        rows = s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == channel_id)).all()
+        shuffled = [row.video_id for row in monitor.backlog_order(channel, rows)]
+    assert sorted(shuffled) == sorted(names) and shuffled != names  # all of them, not in order
+    taken = sorted(key for key, row in items(settings).items() if row.status == "queued")
+    assert taken == sorted(shuffled[:3])
+
+    a_day_later(settings)
+    mon.check(channel_id)  # the next three in the same shuffle
+    assert sorted(key for key, row in items(settings).items() if row.status == "queued") == sorted(shuffled[:6])
 
 
 def test_a_channels_whole_history_is_listed_once_for_its_backlog_and_worked_through_oldest_first(setup):
@@ -567,9 +587,18 @@ def test_folders_watched_before_the_library_are_in_it_and_channels_arent(tmp_pat
         conn.execute("INSERT INTO show (id, name) VALUES (1, 'Kino')")
         conn.execute("INSERT INTO channel VALUES (1, 1, 'https://kick.com/kino', 'kick', 2), (2, 1, '/media/TV', 'folder', 3)")
     with Session(get_engine(Settings(data_dir=tmp_path))) as s:
-        assert [(c.platform, c.backlog, c.backlog_per_day) for c in s.exec(select(Channel).order_by(Channel.id))] == [
-            ("kick", False, 2), ("folder", True, 3),
+        assert [(c.platform, c.backlog, c.backlog_per_day, c.backlog_order) for c in s.exec(select(Channel).order_by(Channel.id))] == [
+            ("kick", False, 2, "first"), ("folder", True, 3, "first"),
         ]
+
+
+def test_a_backlog_that_went_newest_first_still_does(tmp_path):
+    with sqlite3.connect(tmp_path / "clipper.db") as conn:  # as the first version of the Library left it
+        conn.execute("CREATE TABLE channel (id INTEGER PRIMARY KEY, show_id INTEGER NOT NULL, url VARCHAR NOT NULL, "
+                     "platform VARCHAR NOT NULL, backlog BOOLEAN, backlog_newest_first BOOLEAN)")
+        conn.execute("INSERT INTO channel VALUES (1, 1, '/media/A', 'folder', 1, 1), (2, 1, '/media/B', 'folder', 1, 0)")
+    with Session(get_engine(Settings(data_dir=tmp_path))) as s:
+        assert [c.backlog_order for c in s.exec(select(Channel).order_by(Channel.id))] == ["latest", "first"]
 
 
 def test_a_watched_folder_that_goes_missing_is_reported(folder):

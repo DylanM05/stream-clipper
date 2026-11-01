@@ -8,13 +8,14 @@ Videos that were already on a channel when it was added are listed as "older" an
 for them in the app, except a stream that was live at the time, which is treated as new.
 
 A channel or folder in the Library (Channel.backlog) has its older videos worked through by itself instead, a few a
-day, in order (backlog_order): a folder's in season and episode order, a channel's oldest first. A channel's whole
-history is listed for that, once, where the platform can list it (HISTORY_PLATFORMS).
+day (backlog_order): a folder's in season and episode order, a channel's oldest first, the other way round, or at
+random. A channel's whole history is listed for that, once, where the platform can list it (HISTORY_PLATFORMS).
 
 A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
 long it is, so of the newest few, those that haven't been settled yet are each read for that (list_rumble).
 """
 
+import hashlib
 import logging
 import os
 import re
@@ -269,14 +270,19 @@ def skip_reason(channel: Channel, item: Listed) -> str:
     return ""
 
 
-def backlog_order(channel: Channel, rows: list[ChannelVideo]) -> list[ChannelVideo]:
-    """A channel's videos in the order its backlog works through them: a folder's in season and episode order, a
-    channel's oldest first, by when they were posted, or as the channel listed them where it doesn't say; the other
-    way round when it goes newest first."""
+def backlog_order(channel: Channel, rows: list[ChannelVideo], order: str | None = None) -> list[ChannelVideo]:
+    """A channel's videos in the order its backlog works through them (`order`, by default Channel.backlog_order): a
+    folder's in season and episode order, a channel's oldest first, by when they were posted, or as the channel listed
+    them where it doesn't say; from the latest, the other way round. At random, they're shuffled the same way on every
+    check, so what the app says is next is what goes next."""
+    order = order or channel.backlog_order
+    if order == "random":
+        return sorted(rows, key=lambda row: hashlib.sha256(f"{channel.id}/{row.video_id}".encode()).digest())
+    latest = order == "latest"
     if channel.platform == "folder":
-        return sorted(rows, key=lambda row: episode_order(row.video_id), reverse=channel.backlog_newest_first)
+        return sorted(rows, key=lambda row: episode_order(row.video_id), reverse=latest)
     # The channel lists newest first, so a later row is an older video.
-    return sorted(rows, key=lambda row: (row.published_at or EPOCH, -(row.id or 0)), reverse=channel.backlog_newest_first)
+    return sorted(rows, key=lambda row: (row.published_at or EPOCH, -(row.id or 0)), reverse=latest)
 
 
 def older_reason(channel: Channel) -> str:
