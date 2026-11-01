@@ -275,6 +275,9 @@ export interface Show {
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
+  // Its Shorts: "crop" fills them with the middle of the picture, "blur" puts the whole picture on the background.
+  // A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
+  short_layout: "" | "crop" | "blur";
   overlay: string; // the overlay image's address, or "" for none
   overlay_box: [number, number, number, number] | null; // x, y, w, h of its visible part, as drawn, in its 1920×1080
   overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen

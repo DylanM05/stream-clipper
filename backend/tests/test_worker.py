@@ -352,7 +352,7 @@ def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(setting
     w.process_vod(add_vod(settings))
     approve(settings, "hl01")
     w.render_next_clip()
-    assert layouts == [{"background": None, "video_top": 0.32, "video_width": 0.9}]  # no image uploaded yet
+    assert layouts == [{"crop": False, "background": None, "video_top": 0.32, "video_width": 0.9}]  # no image uploaded yet
 
     background = settings.short_background(show_id)
     background.parent.mkdir(parents=True)
@@ -360,6 +360,26 @@ def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(setting
     approve(settings, "hl01")
     w.render_next_clip()
     assert layouts[-1]["background"] == background
+
+    with Session(get_engine(settings)) as s:  # cropped to fill instead, which leaves the image out
+        show = s.get(Show, show_id)
+        show.short_layout = "crop"
+        s.add(show)
+        s.commit()
+    approve(settings, "hl01")
+    w.render_next_clip()
+    assert (layouts[-1]["crop"], layouts[-1]["background"]) == (True, None)
+
+
+def test_shorts_are_cropped_as_the_show_says_or_else_as_the_server_does():
+    show = Show(name="Kino")
+    assert not show.short_crop("blur", background=False)
+    assert show.short_crop("crop", background=False)
+    assert not show.short_crop("crop", background=True)  # the show's background image goes ahead of the server's crop
+    show.short_layout = "crop"
+    assert show.short_crop("blur", background=True)
+    show.short_layout = "blur"
+    assert not show.short_crop("crop", background=False)
 
 
 def test_the_shows_overlay_goes_on_clips_and_on_full_episodes_only_when_switched_on(settings, fake_pipeline, monkeypatch):

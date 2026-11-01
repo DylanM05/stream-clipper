@@ -169,6 +169,9 @@ class Show(SQLModel, table=True):
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
     short_video_width: float = 1.0
+    # Shorts: "crop" fills them with the middle of the picture instead; "blur" puts the whole picture on the background,
+    # as above; "" goes by CLIPPER_SHORT_LAYOUT (short_crop).
+    short_layout: str = ""
     # The overlay on its landscape videos (Settings.show_overlay, overlay.py): where its design and, for a
     # frame, its screen are (JSON [x, y, w, h], found when it's uploaded), and whether full episodes get it
     # too, which means re-encoding the whole stream.
@@ -194,6 +197,13 @@ class Show(SQLModel, table=True):
         if kind != "whole" and self.auto_upload_score and score >= self.auto_upload_score:
             return "upload"
         return self.auto_for(kind)
+
+    def short_crop(self, default: str, background: bool) -> bool:
+        """Whether its Shorts are cropped to fill the screen: as the show is set, or else as CLIPPER_SHORT_LAYOUT
+        (`default`) is, unless the show has a `background` image for them."""
+        if self.short_layout:
+            return self.short_layout == "crop"
+        return default == "crop" and not background
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]

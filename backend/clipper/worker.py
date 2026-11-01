@@ -520,9 +520,11 @@ class Worker:
                     words = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")).words()
                     short = ws.clips_dir / f"{stem}-short.mp4"
                     background = settings.short_background(show.id) if show else None
+                    background = background if background and background.exists() else None
+                    crop = show.short_crop(settings.short_layout, bool(background)) if show else settings.short_layout == "crop"
                     render.render_short(
-                        source, pipeline_clip, words, short, settings, on_progress=check,
-                        background=background if background and background.exists() else None,
+                        source, pipeline_clip, words, short, settings, on_progress=check, crop=crop,
+                        background=None if crop else background,
                         video_top=show.short_video_top if show else None,
                         video_width=show.short_video_width if show else 1.0,
                     )

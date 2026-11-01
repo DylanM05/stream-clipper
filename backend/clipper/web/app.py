@@ -213,6 +213,7 @@ class ShowIn(BaseModel):
     breakdown: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
+    short_layout: Literal["", "crop", "blur"] = ""  # "" goes by CLIPPER_SHORT_LAYOUT
     overlay_episodes: bool = False
     overlay_x: float | None = Field(default=None, ge=0, le=1)
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -250,6 +251,7 @@ class ShowPatch(BaseModel):
     breakdown: str | None = Field(default=None, max_length=4000)  # categories the AI sorts streams' time into
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
+    short_layout: Literal["crop", "blur"] | None = None
     overlay_episodes: bool | None = None
     overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -493,6 +495,7 @@ class ShowOut(BaseModel):
     breakdown: str
     short_video_top: float | None
     short_video_width: float
+    short_layout: str  # "crop" or "blur", as its Shorts are made
     short_background: str  # the image's address in the app, or "" for none
     overlay: str  # the overlay image's address in the app, or "" for none
     overlay_box: list[int] | None  # x, y, w, h of its visible part, as drawn (in its 1920x1080)
@@ -750,8 +753,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         channels = s.exec(select(Channel).where(Channel.show_id == show.id).order_by(col(Channel.id)))
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
         overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen)
-        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen"}),
-                       short_background=image_url(settings.short_background(show.id), f"/media/shows/{show.id}/short-background.png"),
+        background = settings.short_background(show.id)
+        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout"}),
+                       short_layout="crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
+                       short_background=image_url(background, f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
                        overlay_box=list(overlay.box) if overlay else None,
                        overlay_screen=list(overlay.screen) if overlay and overlay.screen else None,

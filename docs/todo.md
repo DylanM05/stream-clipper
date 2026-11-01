@@ -7,7 +7,6 @@ Ideas agreed on but not built yet, newest first.
 Since Nov 1, 2026, the Library works through folders of videos on the server (`CLIPPER_HOST_MEDIA_DIR`) and channels' past videos a few a day (monitor.py), and a show's videos can be TV episodes or other videos for the AI (`prompts/segment_episode.md`, `segment_other.md`). Still to do:
 - `{episode}` (S05E04, from the file name) in title patterns.
 - The file's own subtitles instead of Whisper: exact dialogue, but the editor needs each word's timing.
-- A zoomed crop for Shorts.
 - **Copyright:** Paramount uses Content ID heavily on South Park. Expect claims or blocks, and strikes from manual takedowns. YouTube usually turns down monetization for channels of lightly edited TV clips ("reused content"). Try it on a throwaway channel first.
 
 ## Clip editor: a more professional design

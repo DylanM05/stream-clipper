@@ -469,6 +469,7 @@ export const BLANK_SHOW: ShowFields = {
   breakdown: "",
   short_video_top: null,
   short_video_width: 1,
+  short_layout: "",
   overlay_episodes: false,
   overlay_x: null,
   overlay_y: null,
@@ -752,6 +753,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       {hasClips(fields.mode) && (
         <ShortsLayout
           show={show}
+          layout={fields.short_layout || "blur"}
           top={fields.short_video_top}
           width={fields.short_video_width}
           onChange={set}
@@ -941,19 +943,44 @@ function Tick(props: { label: string; checked: boolean; onChange: (checked: bool
  */
 function ShortsLayout(props: {
   show: Show | null;
+  layout: "crop" | "blur";
   top: number | null;
   width: number;
   onChange: (fields: Partial<ShowFields>) => void;
   onChanged: () => void;
 }) {
   const { show, top, width } = props;
+  const crop = props.layout === "crop";
   const height = (width * 1080 * 9) / 16 / 1920; // a 16:9 video, as a fraction of the Short's height
   const videoTop = top ?? (1 - height) / 2;
   const background = show?.short_background;
 
+  if (crop) {
+    return (
+      <Group label="Shorts" hint="the vertical videos made from highlights">
+        <ShortsChoice layout={props.layout} onChange={props.onChange} />
+        <div className="mt-3 flex gap-4">
+          <div className="relative grid aspect-[9/16] w-36 shrink-0 place-items-center overflow-hidden rounded-xl bg-violet-500/60 text-[10px] font-semibold ring-1 ring-white/10">
+            Middle of the video
+            {/* in the lower third, as render.render_short puts them over a cropped Short */}
+            <p className="absolute inset-x-0 top-[70%] text-center text-[9px] font-extrabold text-white [text-shadow:0_0_2px_black,0_0_2px_black]">
+              <span className="text-yellow-300">YOUR</span> CAPTIONS
+            </p>
+          </div>
+          <p className="min-w-0 flex-1 text-xs text-zinc-500">
+            The video fills the Short: the middle of the picture, cut down to 9:16, so whatever's at the sides is left out.
+            Best when what matters is in the middle, such as one person talking or a cartoon's characters. The captions go
+            in the lower third.
+          </p>
+        </div>
+      </Group>
+    );
+  }
+
   return (
     <Group label="Shorts" hint="the vertical videos made from highlights">
-      <div className="flex gap-4">
+      <ShortsChoice layout={props.layout} onChange={props.onChange} />
+      <div className="mt-3 flex gap-4">
         <div
           className="relative aspect-[9/16] w-36 shrink-0 overflow-hidden rounded-xl bg-gradient-to-b from-zinc-600 to-zinc-800 bg-cover bg-center ring-1 ring-white/10"
           style={background ? { backgroundImage: `url(${background})` } : undefined}
@@ -1029,6 +1056,18 @@ function ShortsLayout(props: {
         show.
       </p>
     </Group>
+  );
+}
+
+function ShortsChoice({ layout, onChange }: { layout: "crop" | "blur"; onChange: (fields: Partial<ShowFields>) => void }) {
+  return (
+    <div className="flex">
+      <Segmented
+        options={{ crop: "Cropped to fill", blur: "On a background" }}
+        value={layout}
+        onChange={(short_layout) => onChange({ short_layout })}
+      />
+    </div>
   );
 }
 

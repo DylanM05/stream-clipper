@@ -208,6 +208,19 @@ def test_a_show_can_watch_a_folder_of_tv_episodes_inside_the_media_folder(tmp_pa
     assert client.patch(f"/api/channels/{channel['id']}", json={"backlog_per_day": 0}).status_code == 422
 
 
+
+def test_each_show_says_how_its_shorts_are_laid_out(tmp_path):
+    settings = Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", short_layout="crop")
+    client = TestClient(web_app.create_app(settings))
+    show = client.post("/api/shows", json={"name": "Kino"}).json()
+    assert show["short_layout"] == "crop"  # as the server's CLIPPER_SHORT_LAYOUT is
+    background = settings.short_background(show["id"])
+    background.parent.mkdir(parents=True)
+    background.write_bytes(b"png")
+    assert client.get(f"/api/shows/{show['id']}").json()["short_layout"] == "blur"  # its own background goes ahead
+    assert client.patch(f"/api/shows/{show['id']}", json={"short_layout": "crop"}).json()["short_layout"] == "crop"
+    assert client.patch(f"/api/shows/{show['id']}", json={"short_layout": "zoom"}).status_code == 422
+
 def test_choosing_a_folder_from_the_media_folder(tmp_path):
     media = tmp_path / "media"
     for name in ("TV/Show/Season 10/S10E01.mkv", "TV/Show/Season 2/S02E01.mkv", "TV/Show/Season 1/S01E02.mkv",
