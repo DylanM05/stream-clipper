@@ -66,6 +66,7 @@ ENV PATH=/home/clipper/.local/bin:$PATH \
     DISABLE_AUTOUPDATER=1 \
     HF_HOME=/models \
     CLIPPER_DATA_DIR=/data \
+    CLIPPER_MEDIA_DIR=/media \
     CLIPPER_WEB_DIR=/app/web
 
 ENTRYPOINT ["clipper"]

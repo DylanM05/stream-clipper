@@ -220,10 +220,11 @@ export interface Channel {
   id: number;
   show_id: number;
   url: string;
-  platform: "kick" | "twitch" | "youtube" | "rumble" | "x";
+  platform: "kick" | "twitch" | "youtube" | "rumble" | "x" | "folder";
   keywords: string;
   exclude: string;
   min_minutes: number;
+  older_per_day: number;
   enabled: boolean;
   last_checked_at: string | null;
   last_error: string;
@@ -235,6 +236,7 @@ export interface Show {
   name: string;
   match: string;
   mode: Mode;
+  video_type: "streams" | "episodes";
   title_template: string;
   episode_template: string;
   notes: string;
@@ -277,7 +279,7 @@ export type ShowFields = Omit<
   Show,
   "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen"
 >;
-export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
+export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes" | "older_per_day">;
 
 export interface ChannelVideo {
   id: number;

@@ -32,7 +32,7 @@ from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
     get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, sites_name, upload_sites, utcnow,
 )
-from ..monitor import ChannelUrlError, parse_channel
+from ..monitor import ChannelUrlError, parse_channel, parse_folder
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
@@ -180,6 +180,7 @@ class ShowIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     match: str = Field(default="", max_length=2000)
     mode: Mode = "segment"
+    video_type: Literal["streams", "episodes"] = "streams"
     title_template: str = Field(default="{title}", max_length=200)
     episode_template: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=10000)
@@ -216,6 +217,7 @@ class ShowPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     match: str | None = Field(default=None, max_length=2000)
     mode: Mode | None = None
+    video_type: Literal["streams", "episodes"] | None = None
     title_template: str | None = Field(default=None, max_length=200)
     episode_template: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=10000)
@@ -416,12 +418,14 @@ class ChannelIn(BaseModel):
     keywords: str = Field(default="", max_length=1000)
     exclude: str = Field(default="", max_length=1000)
     min_minutes: float = Field(default=0, ge=0, le=1440)
+    older_per_day: int = Field(default=2, ge=0, le=100)
 
 
 class ChannelPatch(BaseModel):
     keywords: str | None = Field(default=None, max_length=1000)
     exclude: str | None = Field(default=None, max_length=1000)
     min_minutes: float | None = Field(default=None, ge=0, le=1440)
+    older_per_day: int | None = Field(default=None, ge=0, le=100)
     enabled: bool | None = None
     show_id: int | None = None  # move it to another show; what it has already seen stays seen
 
@@ -434,6 +438,7 @@ class ChannelOut(BaseModel):
     keywords: str
     exclude: str
     min_minutes: float
+    older_per_day: int
     enabled: bool
     last_checked_at: str | None
     last_error: str
@@ -445,6 +450,7 @@ class ShowOut(BaseModel):
     name: str
     match: str
     mode: str
+    video_type: str
     title_template: str
     episode_template: str
     notes: str
@@ -1371,13 +1377,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_channel(show_id: int, body: ChannelIn, s: Session = Depends(db)) -> ChannelOut:
         found(s, Show, show_id, "show")
         try:
-            platform, url = parse_channel(body.url)
+            if body.url.strip().startswith("/"):  # a folder on the server
+                platform, url = "folder", parse_folder(body.url, settings.media_dir)
+            else:
+                platform, url = parse_channel(body.url)
         except ChannelUrlError as e:
             raise HTTPException(422, str(e)) from None
         if s.exec(select(Channel).where(Channel.show_id == show_id, Channel.url == url)).first():
             raise HTTPException(409, "This show already watches that channel")
         ch = Channel(show_id=show_id, url=url, platform=platform, keywords=body.keywords.strip(),
-                     exclude=body.exclude.strip(), min_minutes=body.min_minutes)
+                     exclude=body.exclude.strip(), min_minutes=body.min_minutes, older_per_day=body.older_per_day)
         s.add(ch)
         add_term(s, s.get(Show, show_id), url)
         s.commit()
@@ -1385,7 +1394,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return channel_out(s, ch)
 
     def channel_term(url: str) -> str:
-        return url.split("://", 1)[1].removeprefix("www.")
+        """A channel's link without https://www., or a folder's path, which a file from it is added by."""
+        return url.split("://", 1)[-1].removeprefix("www.")
 
     def add_term(s: Session, show: Show, url: str) -> None:
         """Links pasted from a watched channel belong to its show too."""

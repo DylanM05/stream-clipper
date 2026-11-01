@@ -177,6 +177,32 @@ def test_channels(client, settings):
     assert client.get(f"/api/channels/{channel['id']}/videos").status_code == 404
 
 
+
+def test_a_show_can_watch_a_folder_of_tv_episodes_inside_the_media_folder(tmp_path):
+    media = tmp_path / "media"
+    (media / "TV" / "Show").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    unset = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web")))
+    show = unset.post("/api/shows", json={"name": "Cartoon Shorts", "video_type": "episodes", "max_chapters": 0}).json()
+    assert (show["video_type"], show["max_chapters"]) == ("episodes", 0)
+    added = unset.post(f"/api/shows/{show['id']}/channels", json={"url": str(media / "TV" / "Show")})
+    assert added.status_code == 422 and "CLIPPER_HOST_MEDIA_DIR" in added.json()["detail"]
+
+    client = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", media_dir=media)))
+    url = f"/api/shows/{show['id']}/channels"
+    for outside in (str(tmp_path / "elsewhere"), f"{media}/TV/../../elsewhere", str(media / "TV" / "Missing")):
+        assert client.post(url, json={"url": outside}).status_code == 422
+    folder = str((media / "TV" / "Show").resolve())
+    channel = client.post(url, json={"url": f"{media}/TV/Show/", "older_per_day": 3}).json()
+    assert (channel["platform"], channel["url"], channel["older_per_day"]) == ("folder", folder, 3)
+    assert client.post(url, json={"url": folder}).status_code == 409
+    assert client.get(f"/api/shows/{show['id']}").json()["match"] == folder  # a file added by its path is the show's
+
+    other = client.post("/api/shows", json={"name": "Other"}).json()
+    assert client.patch(f"/api/channels/{channel['id']}", json={"show_id": other["id"], "older_per_day": 0}).json()["older_per_day"] == 0
+    assert (client.get(f"/api/shows/{show['id']}").json()["match"], client.get(f"/api/shows/{other['id']}").json()["match"]) == ("", folder)
+    assert client.patch(f"/api/shows/{show['id']}", json={"video_type": "movies"}).status_code == 422
+
 def test_watching_an_x_account(client):
     show = client.post("/api/shows", json=PRESHOW).json()
     url = f"/api/shows/{show['id']}/channels"

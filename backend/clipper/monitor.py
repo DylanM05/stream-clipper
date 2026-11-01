@@ -1,23 +1,28 @@
-"""Watches channels on Kick, Twitch, YouTube and Rumble, and accounts on X, and queues their new videos for
-processing.
+"""Watches channels on Kick, Twitch, YouTube and Rumble, accounts on X, and folders of TV episodes on the server, and
+queues their new videos for processing.
 
 A new video is queued once it's finished: not live, and the same length on two checks in a row,
 because Twitch doesn't say whether a VOD is still recording. A video posted on X is finished as soon as
-it's seen. Videos that were already on a channel when it was added are listed as "older" and only
-processed if you ask for them in the app, except a stream that was live at the time, which is treated
-as new.
+it's seen, and a file in a folder once it hasn't changed for FILE_SETTLE, so one still being copied in waits.
+Videos that were already on a channel when it was added are listed as "older" and only processed if you ask
+for them in the app, except a stream that was live at the time, which is treated as new. A folder's older
+episodes are also queued a few a day by themselves (Channel.older_per_day), in season and episode order.
 
 A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
 long it is, so of the newest few, those that haven't been settled yet are each read for that (list_rumble).
 """
 
 import logging
+import os
 import re
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlparse
 
+from sqlalchemy import func
 from sqlmodel import Session, col, or_, select
 from yt_dlp import YoutubeDL
 from yt_dlp.utils import DownloadError, unsmuggle_url
@@ -39,6 +44,9 @@ RUMBLE_MAX_READS = 10
 TWITCH_STARTED = re.compile(r"/cf_vods/[^/]+/[0-9a-f]+_\w+_\d+_(\d{10})/")
 # x.com pages that aren't accounts
 X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "settings", "compose", "login", "hashtag"}
+# Files in a watched folder that are videos. A partial download's name ends in something else (.part, .!qB).
+VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".mpeg", ".mpg"}
+FILE_SETTLE = timedelta(minutes=3)  # a file in a watched folder that changed more recently is still being copied in
 
 
 class ChannelUrlError(ValueError):
@@ -83,6 +91,46 @@ def parse_channel(url: str) -> tuple[str, str]:
     raise ChannelUrlError(
         "Use a channel link like kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name or x.com/name"
     )
+
+
+def parse_folder(path: str, media_dir: Path | None) -> str:
+    """The full path of a folder to watch, which must be inside the media folder (Settings.media_dir)."""
+    if media_dir is None:
+        raise ChannelUrlError("Set CLIPPER_HOST_MEDIA_DIR to the server's media folder to watch folders on it (README)")
+    try:
+        folder = Path(path.strip()).resolve(strict=True)
+        inside = folder.is_dir() and folder.is_relative_to(media_dir.resolve(strict=True))
+    except OSError:
+        inside = False
+    if not inside:
+        raise ChannelUrlError(
+            f"Use a folder inside {media_dir}, where the server's CLIPPER_HOST_MEDIA_DIR is, e.g. {media_dir}/TV/Show"
+        )
+    return str(folder)
+
+
+def list_folder(folder: str, media_dir: Path | None) -> list[Listed]:
+    """The video files in a watched folder and its subfolders (Season 01/…), in season and episode order. One that
+    changed in the last FILE_SETTLE is listed as live: it's still being copied in. Hidden files (a Mac's ._ copies)
+    and links, which could lead out of the media folder, are left out."""
+    root = Path(parse_folder(folder, media_dir))
+    now = time.time()
+    found: list[Listed] = []
+    for base, dirs, files in os.walk(root):  # doesn't go into links to folders
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        for name in files:
+            path = Path(base, name)
+            if name.startswith(".") or path.suffix.lower() not in VIDEO_SUFFIXES or path.is_symlink():
+                continue
+            try:
+                changed = path.stat().st_mtime
+            except OSError:  # gone since the folder was read
+                continue
+            found.append(Listed(
+                id=path.relative_to(root).as_posix(), url=str(path), title=path.stem, duration=None,
+                live=now - changed < FILE_SETTLE.total_seconds(), final=True, published=changed,
+            ))
+    return sorted(found, key=lambda item: _episode_order(item.id))
 
 
 def listing_urls(platform: str, channel_url: str) -> list[str]:
@@ -224,6 +272,8 @@ class Monitor:
         self._rumble_others: dict[str, set[str]] = {}  # other channels' streams seen on each Rumble channel's page
 
     def _list(self, platform: str, channel_url: str) -> list[Listed]:
+        if platform == "folder":
+            return list_folder(channel_url, self.settings.media_dir)
         if platform == "rumble":
             with Session(self.engine) as s:
                 settled = set(s.exec(
@@ -280,9 +330,10 @@ class Monitor:
                 if row is None:
                     # A stream that's live when the channel is added still counts as new: its VOD isn't done yet.
                     if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
+                        where = "in the folder" if channel.platform == "folder" else "on the channel"
                         s.add(ChannelVideo(
                             channel_id=channel_id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                            duration=item.duration, status="older", reason="Already on the channel when you added it",
+                            duration=item.duration, status="older", reason=f"Already {where} when you added it",
                         ))
                         continue
                     row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
@@ -295,7 +346,7 @@ class Monitor:
                 row.title, row.duration, row.updated_at = item.title, item.duration, utcnow()
                 row.published_at = when or row.published_at
                 if not finished:
-                    row.status, row.reason = "waiting", _waiting_reason(item)
+                    row.status, row.reason = "waiting", _waiting_reason(channel, item)
                 elif reason := skip_reason(channel, item):
                     row.status, row.reason = "skipped", reason
                 else:
@@ -304,6 +355,10 @@ class Monitor:
                     queued += 1
                     new_titles.append((row.vod_id, row.title or row.url))
                 s.add(row)
+            if channel.platform == "folder" and channel.older_per_day:
+                for row in self._queue_older(s, channel, show, listed):
+                    queued += 1
+                    new_titles.append((row.vod_id, row.title or row.url))
             s.commit()
             show_name = show.name
         if queued:
@@ -311,6 +366,27 @@ class Monitor:
         for vod_id, title in new_titles:
             notify.send(self.settings, Note(f"New for {show_name}", title[:300], link=f"videos/{vod_id}", tone="quiet"))
         self._finish(channel_id, last_error="", baseline_done=True)
+
+    @staticmethod
+    def _queue_older(s: Session, channel: Channel, show: Show, listed: list[Listed]) -> list[ChannelVideo]:
+        """Queue the next of a folder's older episodes, in order, so that at most channel.older_per_day of its files
+        are queued in 24 hours: new ones count too, though they never wait. One that's gone from the folder, or is
+        being copied in again, is left for later."""
+        recent = s.exec(select(func.count()).select_from(ChannelVideo).where(
+            ChannelVideo.channel_id == channel.id, ChannelVideo.status == "queued",
+            ChannelVideo.updated_at >= utcnow() - timedelta(days=1),
+        )).one()
+        if recent >= channel.older_per_day:
+            return []
+        there = {item.id for item in listed if not item.live}
+        older = s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == channel.id, ChannelVideo.status == "older"))
+        rows = sorted((row for row in older if row.video_id in there), key=lambda row: _episode_order(row.video_id))
+        rows = rows[:channel.older_per_day - recent]
+        for row in rows:
+            row.vod_id = queue_vod(s, row.url, show=show).id
+            row.status, row.reason, row.updated_at = "queued", "", utcnow()
+            s.add(row)
+        return rows
 
     def _finish(self, channel_id: int, **fields) -> None:
         with Session(self.engine) as s:
@@ -332,5 +408,12 @@ def _has(text: str, keyword: str) -> bool:
     return all(_words(part) in text for part in keyword.split("+") if part.strip())
 
 
-def _waiting_reason(item: Listed) -> str:
+def _waiting_reason(channel: Channel, item: Listed) -> str:
+    if channel.platform == "folder":
+        return "Still being copied in"
     return "Still live" if item.live or not item.duration else "Making sure the stream has ended"
+
+
+def _episode_order(path: str) -> tuple:
+    """A file's path with its numbers compared as numbers: Season 2 before Season 10, S02E09 before S02E10."""
+    return tuple(int(part) if i % 2 else part.casefold() for i, part in enumerate(re.split(r"(\d+)", path)))

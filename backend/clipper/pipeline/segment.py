@@ -31,6 +31,8 @@ def run(
     episode_room: int | None = None,
     track_record: str = "",
     breakdown: dict[str, str] | None = None,
+    video_type: str = "streams",
+    offered_shorts: int = 5,
 ) -> Segmentation:
     """Ask the AI for chapters, highlights and an episode title.
 
@@ -38,20 +40,25 @@ def run(
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
     means the show name and date get added to them. `track_record` is what the show's past clips teach it
     (learning.py). `breakdown` is the categories, by name with what each covers, that it also sorts the stream's
-    time into; the answer is then a SegmentationWithBreakdown.
+    time into; the answer is then a SegmentationWithBreakdown. `video_type` is the show's (Show.video_type); a TV
+    episode gets its own instructions, and enough highlights asked for to fill the `offered_shorts` with some to spare.
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
 
     max_highlights = max(3, round(transcript.duration / 3600 * settings.highlights_per_hour))
+    if video_type == "episodes":  # a 22-minute episode would only get the 3
+        max_highlights = max(max_highlights, offered_shorts + 3)
     title_rule = (
         f"Keep chapter and highlight titles within {title_room} characters and the episode title within "
         f"{episode_room or title_room}"
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    system_prompt = (PROMPTS_DIR / "segment.md").read_text(encoding="utf-8")
-    task = f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to {max_highlights} highlights"
+    prompt_name = "segment_episode.md" if video_type == "episodes" else "segment.md"
+    system_prompt = (PROMPTS_DIR / prompt_name).read_text(encoding="utf-8")
+    noun = "episode" if video_type == "episodes" else "stream"
+    task = f"Split this {to_timecode(transcript.duration)} {noun} into chapters and pick up to {max_highlights} highlights"
     schema = Segmentation
     if breakdown:
         system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
@@ -60,8 +67,8 @@ def run(
     llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
     result = llm.structured(
         system_prompt=system_prompt,
-        task=f"{task}. {title_rule}. The stream details, hints and transcript follow.",
-        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown),
+        task=f"{task}. {title_rule}. The {noun} details, hints and transcript follow.",
+        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown, noun),
         schema=schema,
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
@@ -99,10 +106,10 @@ def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakd
 
 
 def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",
-                track_record: str = "", breakdown: dict[str, str] | None = None) -> str:
+                track_record: str = "", breakdown: dict[str, str] | None = None, noun: str = "stream") -> str:
     tc = to_timecode
     lines = [
-        "# Stream",
+        f"# {noun.capitalize()}",
         f"Title: {meta.get('title') or 'unknown'}",
         f"Channel: {meta.get('channel') or meta.get('uploader') or 'unknown'}",
         f"Platform: {meta.get('extractor_key') or 'unknown'}",
@@ -111,7 +118,7 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
         lines.append(f"Date: {date[:4]}-{date[4:6]}-{date[6:]}")
     lines.append(f"Length: {tc(transcript.duration)}")
     if description := (meta.get("description") or "").strip():
-        lines += ["", "# Stream description", description[:1000]]
+        lines += ["", f"# {noun.capitalize()} description", description[:1000]]
     if context.strip():
         lines += ["", "# About the show", context.strip()]
     if guidance.strip():

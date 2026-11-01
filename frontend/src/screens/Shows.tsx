@@ -26,6 +26,7 @@ const PLATFORM_NAME: Record<Channel["platform"], string> = {
   youtube: "YouTube",
   rumble: "Rumble",
   x: "X",
+  folder: "Folder",
 };
 
 const hasClips = (mode: Mode) => mode !== "whole";
@@ -433,6 +434,7 @@ const BLANK: ShowFields = {
   name: "",
   match: "",
   mode: "segment",
+  video_type: "streams",
   title_template: "",
   episode_template: "",
   notes: "",
@@ -545,6 +547,28 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         </p>
       </Field>
 
+      {hasClips(fields.mode) && (
+        <Field label="Its videos are">
+          <div className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
+            {(["streams", "episodes"] as const).map((video_type) => (
+              <button
+                key={video_type}
+                type="button"
+                onClick={() => set({ video_type })}
+                className={cn("rounded-lg py-2 text-xs font-semibold", fields.video_type === video_type ? "bg-zinc-600 text-white" : "text-zinc-400")}
+              >
+                {video_type === "streams" ? "Streams" : "TV episodes"}
+              </button>
+            ))}
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            {fields.video_type === "streams"
+              ? "Livestreams: the AI looks for segments, topics and the best moments."
+              : "The AI looks for scenes and jokes that work without the rest of the episode, mostly as Shorts. For Shorts only, set the clips offered per episode to 0."}
+          </p>
+        </Field>
+      )}
+
       {hasEpisode(fields.mode) && (
         <PatternField
           label="Full episode title"
@@ -612,7 +636,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       </button>
 
       {hasClips(fields.mode) && (
-        <Group label="Offered per stream" hint="best first, by the AI's score">
+        <Group label={`Offered per ${fields.video_type === "episodes" ? "episode" : "stream"}`} hint="best first, by the AI's score">
           <div className="grid grid-cols-2 gap-2">
             <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
             <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
@@ -1289,7 +1313,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   const { data: shows } = usePoll(api.shows, 0);
   const otherShows = shows?.filter((s) => s.id !== show.id) ?? [];
   const [url, setUrl] = useState("");
-  const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0 });
+  const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0, older_per_day: 2 });
   const [showFilters, setShowFilters] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -1298,7 +1322,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
     try {
       await api.addChannel(show.id, { url: url.trim(), ...filters });
       setUrl("");
-      setFilters({ keywords: "", exclude: "", min_minutes: 0 });
+      setFilters({ keywords: "", exclude: "", min_minutes: 0, older_per_day: 2 });
       setShowFilters(false);
       toast({ text: "Watching. The first check lists what's already there." });
       onChanged();
@@ -1323,18 +1347,18 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           inputMode="url"
           value={url}
           onChange={(e) => setUrl(e.target.value)}
-          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name or x.com/name"
+          placeholder="kick.com/name, twitch.tv/name, youtube.com/@name, rumble.com/c/name, x.com/name, or a folder like /media/TV/Show"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
-        {showFilters ? (
-          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} />
+        {showFilters || url.trim().startsWith("/") ? (
+          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} folder={url.trim().startsWith("/")} />
         ) : (
           <button type="button" onClick={() => setShowFilters(true)} className="text-sm font-medium text-violet-300">
             + Filters (keywords, minimum length)
           </button>
         )}
         <Button tone="primary" onClick={add} disabled={!url.trim() || busy} className="w-full">
-          {busy ? "Adding…" : "Watch channel"}
+          {busy ? "Adding…" : "Watch"}
         </Button>
       </div>
 
@@ -1348,20 +1372,35 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
 }
 
 /** `posts`: an X account, whose filters match the text of each post. */
-function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean }) {
+function FilterFields({ value, onChange, posts, folder }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean; folder?: boolean }) {
   const what = posts ? "posts" : "titles";
   return (
     <div className="space-y-3">
-      <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
+      {folder && <Field label="Older episodes a day" hint="0 leaves them to you">
+        <input
+          type="number"
+          inputMode="numeric"
+          min={0}
+          max={100}
+          value={value.older_per_day}
+          onChange={(e) => onChange({ ...value, older_per_day: Number(e.target.value) || 0 })}
+          className={cn(input, "bg-zinc-800 ring-0")}
+        />
+        <p className="mt-1.5 text-xs text-zinc-500">
+          The episodes already in the folder are processed this many a day, in season and episode order, counting new ones. New
+          ones never wait: each starts once it's copied in.
+        </p>
+      </Field>}
+      {!folder && <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
         <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + night owls" : "night owls, full show"} className={cn(input, "bg-zinc-800 ring-0")} />
         <p className="mt-1.5 text-xs text-zinc-500">
           Any one keyword will do. Join words with + to need all of them, e.g. “tonight on + night owls”.
         </p>
-      </Field>
-      <Field label={`Skip ${what} with`} hint="comma-separated">
+      </Field>}
+      {!folder && <Field label={`Skip ${what} with`} hint="comma-separated">
         <input value={value.exclude} onChange={(e) => onChange({ ...value, exclude: e.target.value })} placeholder="rerun, test stream" className={cn(input, "bg-zinc-800 ring-0")} />
-      </Field>
-      <Field label="Minimum length" hint="minutes">
+      </Field>}
+      {!folder && <Field label="Minimum length" hint="minutes">
         <input
           type="number"
           inputMode="numeric"
@@ -1371,7 +1410,7 @@ function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChan
           placeholder="0"
           className={cn(input, "bg-zinc-800 ring-0")}
         />
-      </Field>
+      </Field>}
     </div>
   );
 }
@@ -1384,6 +1423,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     keywords: channel.keywords,
     exclude: channel.exclude,
     min_minutes: channel.min_minutes,
+    older_per_day: channel.older_per_day,
   });
 
   const act = async (work: () => Promise<unknown>, done?: string) => {
@@ -1401,6 +1441,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     : channel.last_checked_at
       ? `Checked ${ago(channel.last_checked_at)}`
       : "Checking soon…";
+  const folder = channel.platform === "folder";
   const rules = [
     channel.keywords && `only “${channel.keywords}”`,
     channel.exclude && `not “${channel.exclude}”`,
@@ -1411,14 +1452,23 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     <div className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
       <div className="flex items-start gap-3 p-4">
         <div className="min-w-0 flex-1">
-          <a href={channel.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold">
-            {PLATFORM_NAME[channel.platform]} · {channelName(channel)}
-            <LinkIcon className="size-3.5 text-zinc-500" />
-          </a>
+          {folder ? (
+            <p className="break-words font-semibold">{PLATFORM_NAME[channel.platform]} · {channelName(channel)}</p>
+          ) : (
+            <a href={channel.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold">
+              {PLATFORM_NAME[channel.platform]} · {channelName(channel)}
+              <LinkIcon className="size-3.5 text-zinc-500" />
+            </a>
+          )}
           <p className="mt-0.5 text-xs text-zinc-500">
             {status}
-            {channel.waiting > 0 && ` · ${channel.waiting} waiting for a stream to end`}
+            {channel.waiting > 0 && ` · ${channel.waiting} waiting for ${folder ? "copying to finish" : "a stream to end"}`}
           </p>
+          {folder && (
+            <p className="mt-0.5 text-xs text-zinc-500">
+              {channel.older_per_day > 0 ? `Older episodes: ${channel.older_per_day} a day` : "Older episodes: when you process them"}
+            </p>
+          )}
           {rules.length > 0 && <p className="mt-0.5 text-xs text-zinc-500">Filters: {rules.join(", ")}</p>}
           {channel.last_error && <p className="mt-1 line-clamp-3 break-words text-xs text-red-300">{channel.last_error}</p>}
         </div>
@@ -1445,7 +1495,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
 
       {editing && (
         <div className="space-y-3 border-t border-white/5 p-4">
-          <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
+          <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} folder={folder} />
           <Button
             tone="primary"
             className="w-full"
@@ -1488,7 +1538,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
         </CardAction>
       </div>
 
-      {open && <ChannelVideos channelId={channel.id} roughDates={channel.platform === "youtube"} />}
+      {open && <ChannelVideos channelId={channel.id} roughDates={channel.platform === "youtube"} files={folder} />}
     </div>
   );
 }
@@ -1514,8 +1564,9 @@ const ITEM_STATUS: Record<ChannelVideo["status"], [string, string]> = {
   older: ["Older", "text-zinc-500"],
 };
 
-/** What the watcher found on a channel, newest first, each with when it was posted where the platform says. */
-function ChannelVideos({ channelId, roughDates }: { channelId: number; roughDates: boolean }) {
+/** What the watcher found on a channel, newest first, each with when it was posted where the platform says.
+ * `files`: a folder's, which have no page to link to. */
+function ChannelVideos({ channelId, roughDates, files }: { channelId: number; roughDates: boolean; files: boolean }) {
   const toast = useToast();
   const { data: videos, refresh } = usePoll(() => api.channelVideos(channelId), 10000, channelId);
 
@@ -1540,9 +1591,13 @@ function ChannelVideos({ channelId, roughDates }: { channelId: number; roughDate
         return (
           <li key={v.id} className="flex items-start gap-3 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm leading-snug">
-                {v.title || v.url}
-              </a>
+              {files ? (
+                <p className="line-clamp-2 break-words text-sm leading-snug">{v.title || v.url}</p>
+              ) : (
+                <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm leading-snug">
+                  {v.title || v.url}
+                </a>
+              )}
               <p className="mt-0.5 text-xs text-zinc-500">
                 <span className={cn("font-semibold", tone)}>{label}</span>
                 {/* YouTube only says "3 days ago", so its dates are rough */}

@@ -245,7 +245,9 @@ class Worker:
                 transcript = transcribe.run(ws, settings, on_progress=self._progress(vod_id, "processing"))
                 preview = preview or self._preview(vod_id, ws)
                 self._start(vod_id, "analysing", "processing")
-                hints = signals.run(ws, settings)
+                video_type = show.video_type if show else "streams"
+                # A TV episode changes shot every few seconds, so its scene cuts would only be noise to the AI.
+                hints = signals.run(ws, settings, detect_scenes=video_type != "episodes")
                 self._start(vod_id, "segmenting", "processing")
                 segmentation = segment.run(
                     ws, settings, transcript, hints,
@@ -256,6 +258,8 @@ class Worker:
                     episode_room=titles.room_for_title(episode_template, day),
                     track_record=self._track_record(show),
                     breakdown=show.breakdown_categories() if show else None,
+                    video_type=video_type,
+                    offered_shorts=show.max_shorts if show else 5,
                 )
                 if show and show.save_transcripts:
                     self._save_transcript(show, vod, ws, transcript)

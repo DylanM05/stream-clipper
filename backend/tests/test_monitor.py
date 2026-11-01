@@ -1,5 +1,6 @@
 ﻿import io
 import json
+import os
 import re
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -386,3 +387,137 @@ def test_errors_are_shown_on_the_channel_and_checks_wait_for_the_interval(setup)
     assert mon.check_next() is True
     with Session(get_engine(settings)) as s:
         assert s.get(Channel, channel_id).last_error == ""
+
+
+def episode(folder, name, minutes_ago=60):
+    """A video file in a watched folder, last changed `minutes_ago`."""
+    path = folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"video")
+    when = utcnow().timestamp() - minutes_ago * 60
+    os.utime(path, (when, when))
+    return path
+
+
+def test_a_folder_lists_its_video_files_in_season_and_episode_order(tmp_path):
+    media = tmp_path / "media"
+    show = media / "TV" / "Show"
+    for name in ("Season 10/S10E01.mkv", "Season 2/S02E10.mkv", "Season 2/S02E09.MP4", "Season 1/S01E01.mkv"):
+        episode(show, name)
+    episode(show, "Season 2/S02E11.mkv", minutes_ago=1)  # still being copied in
+    episode(show, "Season 1/S01E02.mkv.part")  # a partial download
+    episode(show, "Season 1/S01E01.srt")
+    episode(show, "Season 1/._S01E01.mkv")  # a Mac's copy of its details
+    episode(show, ".Trash/Old.mkv")
+    (show / "Season 1" / "Elsewhere.mkv").symlink_to(episode(tmp_path, "outside.mkv"))
+
+    listed = monitor.list_folder(str(show), media)
+    assert [(item.id, item.live) for item in listed] == [
+        ("Season 1/S01E01.mkv", False), ("Season 2/S02E09.MP4", False), ("Season 2/S02E10.mkv", False),
+        ("Season 2/S02E11.mkv", True), ("Season 10/S10E01.mkv", False),
+    ]
+    first = listed[0]
+    assert (first.url, first.title, first.duration, first.final) == (str(show / "Season 1/S01E01.mkv"), "S01E01", None, True)
+
+
+def test_a_watched_folder_must_be_inside_the_media_folder(tmp_path):
+    media = tmp_path / "media"
+    (media / "TV").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (media / "TV" / "Link").symlink_to(tmp_path / "elsewhere")
+    assert monitor.parse_folder(f" {media}/TV/../TV ", media) == str((media / "TV").resolve())
+    for outside in (str(tmp_path / "elsewhere"), str(media / "TV" / "Link"), str(media / "Missing"), f"{media}/../elsewhere"):
+        with pytest.raises(ChannelUrlError, match="Use a folder inside"):
+            monitor.parse_folder(outside, media)
+    with pytest.raises(ChannelUrlError, match="CLIPPER_HOST_MEDIA_DIR"):
+        monitor.parse_folder(str(media / "TV"), None)
+
+
+@pytest.fixture
+def folder(tmp_path):
+    media = tmp_path / "media"
+    path = media / "TV" / "Show"
+    path.mkdir(parents=True)
+    settings = Settings(data_dir=tmp_path / "data", media_dir=media)
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Cartoon Shorts", video_type="episodes")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url=str(path.resolve()), platform="folder", older_per_day=2)
+        s.add(channel)
+        s.commit()
+        channel_id = channel.id
+    return settings, Monitor(settings), path, channel_id
+
+
+def a_day_later(settings):
+    """As if what was queued was queued a day ago."""
+    with Session(get_engine(settings)) as s:
+        for row in s.exec(select(ChannelVideo).where(ChannelVideo.status == "queued")):
+            row.updated_at -= timedelta(days=1)
+            s.add(row)
+        s.commit()
+
+
+def statuses(settings) -> dict[str, str]:
+    return {key.rsplit("/", 1)[-1]: row.status for key, row in items(settings).items()}
+
+
+def test_a_folders_older_episodes_go_a_few_a_day_in_order_and_new_ones_never_wait(folder):
+    settings, mon, path, channel_id = folder
+    for n in (3, 1, 2, 4, 5):
+        episode(path, f"Season 1/S01E0{n}.mkv")
+    episode(path, "Season 2/S02E01.mkv", minutes_ago=1)  # being copied in when the folder is added: new
+
+    mon.check(channel_id)  # the first two older episodes start right away
+    assert statuses(settings) == {"S01E01.mkv": "queued", "S01E02.mkv": "queued", "S01E03.mkv": "older",
+                                  "S01E04.mkv": "older", "S01E05.mkv": "older", "S02E01.mkv": "waiting"}
+    found = items(settings)
+    assert found["Season 1/S01E03.mkv"].reason == "Already in the folder when you added it"
+    assert found["Season 2/S02E01.mkv"].reason == "Still being copied in"
+    with Session(get_engine(settings)) as s:
+        vods = s.exec(select(Vod).order_by(Vod.id)).all()
+        assert [v.url for v in vods] == [str(path / "Season 1/S01E01.mkv"), str(path / "Season 1/S01E02.mkv")]
+        assert {v.show_id for v in vods} == {s.get(Channel, channel_id).show_id}
+
+    mon.check(channel_id)  # nothing more today
+    assert statuses(settings)["S01E03.mkv"] == "older"
+
+    episode(path, "Season 2/S02E01.mkv")  # finished copying
+    mon.check(channel_id)
+    assert statuses(settings)["S02E01.mkv"] == "queued"  # new ones don't wait for the day's older ones...
+
+    a_day_later(settings)
+    episode(path, "Season 2/S02E02.mkv")
+    mon.check(channel_id)  # ...but count towards them
+    assert sorted(k for k, v in statuses(settings).items() if v == "queued") == [
+        "S01E01.mkv", "S01E02.mkv", "S01E03.mkv", "S02E01.mkv", "S02E02.mkv",
+    ]
+
+    a_day_later(settings)
+    (path / "Season 1/S01E04.mkv").unlink()  # gone: left for later
+    episode(path, "Season 1/S01E05.mkv", minutes_ago=1)  # being copied in again: left for later
+    mon.check(channel_id)
+    assert (statuses(settings)["S01E04.mkv"], statuses(settings)["S01E05.mkv"]) == ("older", "older")
+
+    episode(path, "Season 1/S01E05.mkv")
+    mon.check(channel_id)
+    assert statuses(settings)["S01E05.mkv"] == "queued"
+
+    with Session(get_engine(settings)) as s:  # none a day: older ones wait for the app
+        channel = s.get(Channel, channel_id)
+        channel.older_per_day = 0
+        s.add(channel)
+        s.commit()
+    a_day_later(settings)
+    episode(path, "Season 1/S01E04.mkv")
+    mon.check(channel_id)
+    assert statuses(settings)["S01E04.mkv"] == "older"
+
+
+def test_a_watched_folder_that_goes_missing_is_reported(folder):
+    settings, mon, path, channel_id = folder
+    path.rmdir()
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        assert "Use a folder inside" in s.get(Channel, channel_id).last_error

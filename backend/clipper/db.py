@@ -117,6 +117,9 @@ class Show(SQLModel, table=True):
     # them, or its channel or account is one of them.
     match: str = ""
     mode: str = "segment"  # see MODES
+    # "streams" or "episodes" (of a TV show): which instructions the AI picks clips with (segment.py), and for
+    # episodes, no scene cuts among its hints and more Shorts asked for.
+    video_type: str = "streams"
     title_template: str = "{title}"  # clips, e.g. "NIGHT OWLS {date} - {title}"
     episode_template: str = ""  # full episodes; empty means the clip pattern
     notes: str = ""  # for Claude: about the show, who's on it, running jokes
@@ -283,15 +286,19 @@ class ClipRecord(SQLModel, table=True):
 
 
 class Channel(SQLModel, table=True):
-    """A channel on Kick, Twitch or YouTube, or an account on X, that the worker checks for new videos (see monitor.py)."""
+    """A channel on Kick, Twitch or YouTube, an account on X, or a folder of TV episodes on the server, that the worker
+    checks for new videos (see monitor.py)."""
 
     id: int | None = Field(default=None, primary_key=True)
     show_id: int = Field(foreign_key="show.id", index=True)
-    url: str  # canonical channel link, e.g. https://kick.com/name
-    platform: str  # kick, twitch, youtube, x
+    url: str  # canonical channel link, e.g. https://kick.com/name, or a folder's full path
+    platform: str  # kick, twitch, youtube, x, folder
     keywords: str = ""  # only titles (on X, post text) with one of these, comma-separated; empty means every video
     exclude: str = ""  # skip titles with any of these
     min_minutes: float = 0
+    # A folder's older episodes are queued by themselves, so that at most this many of its files are queued a day
+    # (monitor.py); 0 leaves them to be processed from the app.
+    older_per_day: int = 2
     enabled: bool = True
     baseline_done: bool = False  # the videos already there when the channel was added have been listed
     last_checked_at: datetime | None = None

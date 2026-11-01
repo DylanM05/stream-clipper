@@ -2,6 +2,14 @@
 
 Ideas agreed on but not built yet, newest first.
 
+## Watch a folder of TV episodes: what's left
+
+Since Nov 1, 2026, a show can watch a folder of TV episodes on the server (`CLIPPER_HOST_MEDIA_DIR`, monitor.py), working through the ones already there a few a day, with "Its videos are: TV episodes" for the AI (`prompts/segment_episode.md`). Still to do:
+- `{episode}` (S05E04, from the file name) in title patterns.
+- The file's own subtitles instead of Whisper: exact dialogue, but the editor needs each word's timing.
+- A zoomed crop for Shorts.
+- **Copyright:** Paramount uses Content ID heavily on South Park. Expect claims or blocks, and strikes from manual takedowns. YouTube usually turns down monetization for channels of lightly edited TV clips ("reused content"). Try it on a throwaway channel first.
+
 ## Clip editor: a more professional design
 
 Redesign the clip editor (trimming, the preview, title and description, the Short) so it looks and feels polished, not just functional.
