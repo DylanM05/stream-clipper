@@ -583,6 +583,12 @@ function FolderPicker({ value, onChange }: { value: string | null; onChange: (pa
   return (
     <Group label="Folder" hint="on the server">
       {error && <ErrorNote>{error}</ErrorNote>}
+      {here && !here.parent && !here.folders.length && !here.videos && (
+        <p className="mb-3 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200 ring-1 ring-amber-500/20">
+          The media folder is empty. Set CLIPPER_HOST_MEDIA_DIR in the server's .env to the folder your videos are in (a
+          full path), then run docker compose up -d.
+        </p>
+      )}
       {here && (
         <div className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
           <div className="flex items-center gap-2 px-4 py-3">

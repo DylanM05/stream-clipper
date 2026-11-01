@@ -182,7 +182,8 @@ def test_a_show_can_watch_a_folder_of_tv_episodes_inside_the_media_folder(tmp_pa
     media = tmp_path / "media"
     (media / "TV" / "Show").mkdir(parents=True)
     (tmp_path / "elsewhere").mkdir()
-    unset = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web")))
+    # None, not left out: the Docker image's CLIPPER_MEDIA_DIR would fill it in (the tests run there in CI).
+    unset = TestClient(web_app.create_app(Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web", media_dir=None)))
     show = unset.post("/api/shows", json={"name": "Cartoon Shorts", "video_type": "episodes", "max_chapters": 0}).json()
     assert (show["video_type"], show["max_chapters"]) == ("episodes", 0)
     added = unset.post(f"/api/shows/{show['id']}/channels", json={"url": str(media / "TV" / "Show")})
