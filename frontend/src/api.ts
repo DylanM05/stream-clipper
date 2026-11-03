@@ -84,7 +84,7 @@ export interface Clip {
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
   thumbnail_idea: string; // what the AI came up with
-  thumbnail_prompt: string; // the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+  thumbnail_prompt: string; // the image prompt from the latest thumbnail attempt, if one was made
   thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from the AI
   thumbnail_error: string;
   upload_state: UploadState;

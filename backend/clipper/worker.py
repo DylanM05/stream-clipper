@@ -881,7 +881,9 @@ class Worker:
                 plan.prompt = redraw
             path, idea, cast = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes,
                                                channel_picture=self._channel_picture, idea=plan,
-                                               rules=show.thumbnail_guidance if show else "")
+                                               rules=show.thumbnail_guidance if show else "",
+                                               on_idea=lambda idea: self._update_clip(
+                                                   clip_id, thumbnail_plan=idea.model_dump_json()))
         except Exception as e:
             log.warning("No thumbnail for clip %d: %s", clip_id, e)
             error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"

@@ -129,7 +129,7 @@ class ClipOut(BaseModel):
     thumbnail_hint: str
     thumbnail_idea: str
     thumbnail_error: str
-    thumbnail_prompt: str  # the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+    thumbnail_prompt: str  # the image prompt from the latest thumbnail attempt, if one was made
     thumbnail_redrawing: bool  # it's queued or being drawn again from a prompt, rather than a new idea from Claude
     # Where its uploads stand (upload_states): "", uploading, queued, scheduled, retrying or failed; and when
     # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself.
