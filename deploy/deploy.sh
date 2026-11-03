@@ -12,13 +12,18 @@ cd "$dir"
 exec 9>"$dir/.deploy.lock"
 flock 9  # one deploy at a time
 
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+if [ -n "$(git status --porcelain)" ]; then
   echo "The checkout in $dir has changes of its own; not deploying over them. Commit or undo them first." >&2
   exit 1
 fi
 previous=$(git rev-parse HEAD)
 git fetch -q origin
-git merge -q --ff-only "$target"
+if git merge-base --is-ancestor "$previous" "$target"; then
+  git merge -q --ff-only "$target"
+else
+  echo "The checkout history diverged from $target; realigning the clean checkout."
+  git reset -q --hard "$target"
+fi
 echo "Deploying $(git log -1 --format='%h %s') (was $(git rev-parse --short "$previous"))"
 
 old_images=$(docker compose images -q 2>/dev/null | sort -u || true)
