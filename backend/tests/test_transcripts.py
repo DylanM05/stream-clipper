@@ -128,10 +128,15 @@ def test_breaking_a_stream_down_on_its_own_asks_only_for_the_breakdown(settings,
 
     assert [p.note for p in parts] == ["Headlines"]
     asked = fake.asked
-    assert asked["schema"] is Breakdown and asked["system_prompt"].startswith("You work out what a long livestream's time")
+    assert asked["schema"] is Breakdown and asked["system_prompt"].startswith("You work out what a video's time")
     assert "## Breakdown" in asked["system_prompt"] and asked["task"].startswith("Break down what this 00:10:00 stream")
     assert "# About the show\nThe host is Sam." in asked["stdin_text"] and "- News: going through headlines" in asked["stdin_text"]
     assert transcripts.parts(ws) == parts  # kept in llm/breakdown.json
+
+    # A show of TV episodes has its video called one.
+    segment.break_down(ws, settings, TRANSCRIPT, {"News": "going through headlines"}, video_type="episodes")
+    assert fake.asked["task"].startswith("Break down what this 00:10:00 episode's time goes on. The episode details")
+    assert fake.asked["stdin_text"].startswith("# Episode\nTitle: Stream\n")
 
 
 class TestBreakdownCommand:
@@ -146,7 +151,7 @@ class TestBreakdownCommand:
         asked, used = [], []
         self.used = used
 
-        def break_down(ws, settings_, transcript, categories, context="", model=None, effort=None):
+        def break_down(ws, settings_, transcript, categories, context="", model=None, effort=None, video_type="streams"):
             asked.append(ws.root.name)
             used.append((model, effort))
             write_text(ws.breakdown_json, Breakdown(breakdown=[part("00:00:00", "00:10:00", "News")]).model_dump_json())
@@ -205,7 +210,7 @@ class TestBreakdownCommand:
         }))
         got = []
 
-        def ask(settings_, meta, transcript, categories, context="", model=None, effort=None):
+        def ask(settings_, meta, transcript, categories, context="", model=None, effort=None, video_type="streams"):
             got.append((meta["title"], meta["upload_date"], transcript.segments[0].text, context))
             return Breakdown(breakdown=[part("00:00:00", "00:10:00", "news")], other_summary="Nothing else.")
 

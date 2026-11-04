@@ -81,30 +81,35 @@ def run(
 
 
 def break_down(ws: Workspace, settings: Settings, transcript: Transcript, breakdown: dict[str, str],
-               context: str = "", model: str | None = None, effort: str | None = None) -> list[LLMBreakdownPart]:
+               context: str = "", model: str | None = None, effort: str | None = None,
+               video_type: str = "streams") -> list[LLMBreakdownPart]:
     """Ask the AI for the breakdown alone, for a stream whose clips were picked already: one picked before its show
     had categories, or after they changed. Nothing about its clips changes. `context` is about the show."""
     result = ask_breakdown(settings, ws.meta(), transcript, breakdown, context,
-                           raw_log=ws.llm_dir / "breakdown.response.json", model=model, effort=effort)
+                           raw_log=ws.llm_dir / "breakdown.response.json", model=model, effort=effort,
+                           video_type=video_type)
     write_text(ws.breakdown_json, result.model_dump_json(indent=2))
     return result.breakdown
 
 
 def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakdown: dict[str, str], context: str = "",
-                  raw_log: Path | None = None, model: str | None = None, effort: str | None = None) -> Breakdown:
+                  raw_log: Path | None = None, model: str | None = None, effort: str | None = None,
+                  video_type: str = "streams") -> Breakdown:
     """The AI's breakdown of any transcript, also one from elsewhere (transcripts.read). `meta` is the stream's details
-    as yt-dlp gives them. `model` and `effort` replace the AI's own for this request (ai.model)."""
+    as yt-dlp gives them. `model` and `effort` replace the AI's own for this request (ai.model). `video_type` is the
+    show's (Show.video_type), for what the request calls the video."""
     system_prompt = "\n".join((PROMPTS_DIR / name).read_text(encoding="utf-8") for name in ("breakdown_alone.md", "breakdown.md"))
+    noun = NOUNS[video_type]
     llm = ai.model(settings, effort=effort or settings.llm_effort, timeout_s=settings.llm_timeout_s, model_name=model)
     result = llm.structured(
         system_prompt=system_prompt,
-        task=(f"Break down what this {to_timecode(transcript.duration)} stream's time goes on. The stream details, notes "
+        task=(f"Break down what this {to_timecode(transcript.duration)} {noun}'s time goes on. The {noun} details, notes "
               "and transcript follow."),
-        stdin_text=build_input(meta, transcript, Signals(), context, breakdown=breakdown),
+        stdin_text=build_input(meta, transcript, Signals(), context, breakdown=breakdown, noun=noun),
         schema=Breakdown,
         raw_log=raw_log,
     )
-    log.info("%s broke the stream down into %d parts", llm.name, len(result.breakdown))
+    log.info("%s broke the %s down into %d parts", llm.name, noun, len(result.breakdown))
     return result
 
 

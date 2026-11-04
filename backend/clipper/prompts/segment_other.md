@@ -12,7 +12,7 @@ When the show's guidance asks for something different from the defaults below (l
 
 Split the whole video into chapters, in order, covering it from start to end with no gaps or overlaps: each chapter starts where the previous one ends.
 
-- A chapter is one part a viewer would watch as its own video: one topic, question, story, guest, scene or segment. How long depends on the video: a few minutes in a short one, up to half an hour in a long conversation. Don't split one continuous discussion into tiny pieces, and don't merge unrelated topics.
+- A chapter is one part a viewer would watch as its own video: one topic, question, story, guest, scene or segment. How long depends on the video: a few minutes in a short one, up to half an hour in a long conversation; a `content` chapter under a minute isn't uploaded, so join a short part to the one next to it. Don't split one continuous discussion into tiny pieces, and don't merge unrelated topics.
 - Mark the category:
   - `pre_stream`: an intro, a "previously" recap, or waiting before it really starts.
   - `break`: ad reads, sponsor spots, long silences.

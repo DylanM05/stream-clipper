@@ -12,10 +12,10 @@ When the show's guidance asks for something different from the defaults below (l
 
 Split the whole episode into chapters, in order, covering it from start to end with no gaps or overlaps: each chapter starts where the previous one ends.
 
-- A chapter is one scene or storyline a viewer would watch as its own video. Most run 1–5 minutes. Don't split a scene at every cut or change of speaker, and don't merge unrelated storylines.
+- A chapter is one scene or storyline a viewer would watch as its own video. Most run 1–5 minutes; a `content` chapter under a minute isn't uploaded, so join a short scene to the one it leads into or follows from. Don't split a scene at every cut or change of speaker, and don't merge unrelated storylines.
 - Mark the category:
   - `pre_stream`: a "previously on" recap, or anything before the episode itself starts.
-  - `break`: an ad break or bumper left in the file.
+  - `break`: the opening theme or title sequence, and any ad break or bumper left in the file.
   - `outro`: end credits and previews of the next episode.
   - `content`: the episode itself, which is nearly all of it.
 - Title: short and snappy, saying what happens at a glance. Lead with who or what the scene is built around, e.g. "Grandpa's Science Fair: The Volcano Gets Out of Hand". Where the show's guidance sets a naming style, use that. Aim for 35–60 characters, never more than the task's limit. In the show's voice. No clickbait the video doesn't deliver, no all-caps titles, and no emojis unless the show notes ask for them.
@@ -31,7 +31,7 @@ Pick the best standalone moments for Shorts: jokes, absurd turns, reveals, memor
 - 15–90 seconds each; 20–60 is ideal.
 - Each must make sense to someone who hasn't seen the episode. Start at the setup, a beat before the moment begins, and end right after the payoff or the reaction to it. Never start or end in the middle of a sentence.
 - Loud moments in the hints (laughter, shouting, music) are worth checking, but confirm them in the transcript.
-- No two highlights may overlap. Skip recaps, credits and previews.
+- No two highlights may overlap. Skip recaps, the opening theme, credits and previews.
 - Title: a short, snappy hook that makes people want to watch, true to what happens. Aim for under 50 characters, never more than the task's limit. Name the character when that's a draw.
 - Score: 0–1, how likely the clip is to do well. Only the best-scored highlights get uploaded, so be calibrated: most good clips score 0.5–0.8; reserve 0.9 and above for standout moments.
 - vertical_ok: true if the clip still works in vertical format on a phone, where the original video is shown small; false if it depends on reading small on-screen detail.

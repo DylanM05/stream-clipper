@@ -385,7 +385,7 @@ def breakdown(
         def do() -> int:
             transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
             parts = segment.break_down(ws, settings, transcript, show.breakdown_categories(), context=show.notes,
-                                       model=run.model, effort=run.effort)
+                                       model=run.model, effort=run.effort, video_type=show.video_type)
             transcripts.save(settings, show, vod, ws, transcript)
             return len(parts)
         return f"{vod.id}  {vod.title[:80]}", do
@@ -412,7 +412,8 @@ def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -
         def do() -> int:
             data, transcript = transcripts.read(path)
             answer = segment.ask_breakdown(run.settings, transcripts.meta(data), transcript, show.breakdown_categories(),
-                                           context=show.notes, model=run.model, effort=run.effort)
+                                           context=show.notes, model=run.model, effort=run.effort,
+                                           video_type=show.video_type)
             transcripts.add_breakdown(path, data, show, answer, transcript.duration)
             return len(answer.breakdown)
         return path.stem.replace("_", "  ", 1), do
