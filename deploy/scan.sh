@@ -70,7 +70,8 @@ check_vulnerabilities() {
   trivy fs --scanners vuln --ignore-unfixed frontend/package-lock.json || failed=1
 
   echo "The upload browser's image (Chromium and the system's packages):"
-  docker build -q -t "$browser" browser >/dev/null
+  # As a deploy builds it today: with the day's packages (browser/Dockerfile).
+  docker build -q --build-arg "PACKAGES_DATE=$(date -u +%F)" -t "$browser" browser >/dev/null
   trivy image --scanners vuln --ignore-unfixed "$browser" || failed=1
 
   echo "The Dockerfiles' settings:"

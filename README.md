@@ -158,7 +158,7 @@ Every push is also checked by `deploy/scan.sh`. Each scanner is pinned to an exa
 A secret or a code finding stops the deploy. A vulnerability doesn't: it shows as a failed **Known vulnerabilities** job, since the running app has it already and a deploy may be what fixes it. (To have vulnerabilities stop deploys too, add `vulnerabilities` to the deploy job's `needs`.) To fix one:
 - **A Python package:** raise its minimum version in `backend/pyproject.toml`, adding it there if it comes in through another package. Changing that file also makes the image install every package fresh.
 - **A phone app package:** update it in `frontend/` (`npm update <package>`) and commit `package-lock.json`.
-- **The upload browser:** rebuild its image from scratch on the server, `docker compose build --pull --no-cache browser && docker compose up -d browser`.
+- **The upload browser:** deploy again. The first deploy each day installs the latest Chromium in its image, so a push, or running the **Test and deploy** workflow by hand in Forgejo's Actions, brings in the fix. Between deploys, the running browser keeps the Chromium it was built with.
 
 A finding that doesn't apply can be accepted, with a note on why: for bandit, a `# nosec B<number>` comment on the line; for shellcheck, `# shellcheck disable=SC<number>` on the line above; for gitleaks, its fingerprint in `.gitleaksignore`; for trivy, its ID in `.trivyignore`.
 
