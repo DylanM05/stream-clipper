@@ -214,3 +214,14 @@ export const ZoomOutIcon = outline(
 );
 export const FitIcon = outline(<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />);
 export const PlusIcon = outline(<path d="M12 5v14M5 12h14" />);
+export const ChevronIcon = outline(<path d="M6 9l6 6 6-6" />);
+export const FolderIcon = outline(
+  <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2.5h8.5A1.5 1.5 0 0 1 21 10v8.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 18.5z" />,
+);
+export const LibraryIcon = outline(
+  <>
+    <rect x="4" y="4" width="4" height="16" rx="1" />
+    <rect x="10" y="4" width="4" height="16" rx="1" />
+    <path d="M16.2 5.3l2.9-.8 3.4 14.5-2.9.8z" />
+  </>,
+);

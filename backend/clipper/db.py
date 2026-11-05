@@ -41,6 +41,14 @@ PAUSABLE = ("downloads", "processing", "renders", "uploads")
 # Posts on these sites are short and get uploaded as they are, not split into clips.
 WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
 
+# The order a backlog takes its videos in (monitor.backlog_order): from a folder's first episode or a channel's oldest
+# video, from the latest, or at random.
+BACKLOG_ORDERS = ("first", "latest", "random")
+
+# What a show's videos are, for the instructions the AI picks clips with (segment.py): livestreams, episodes of a TV
+# show, or anything else (podcasts, vlogs, lectures).
+VIDEO_TYPES = ("streams", "episodes", "other")
+
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
@@ -117,6 +125,7 @@ class Show(SQLModel, table=True):
     # them, or its channel or account is one of them.
     match: str = ""
     mode: str = "segment"  # see MODES
+    video_type: str = "streams"  # see VIDEO_TYPES
     title_template: str = "{title}"  # clips, e.g. "NIGHT OWLS {date} - {title}"
     episode_template: str = ""  # full episodes; empty means the clip pattern
     notes: str = ""  # for Claude: about the show, who's on it, running jokes
@@ -160,6 +169,9 @@ class Show(SQLModel, table=True):
     # of the Short: its top edge (None: centred) and its width.
     short_video_top: float | None = None
     short_video_width: float = 1.0
+    # Shorts: "crop" fills them with the middle of the picture instead; "blur" puts the whole picture on the background,
+    # as above; "" goes by CLIPPER_SHORT_LAYOUT (short_crop).
+    short_layout: str = ""
     # The overlay on its landscape videos (Settings.show_overlay, overlay.py): where its design and, for a
     # frame, its screen are (JSON [x, y, w, h], found when it's uploaded), and whether full episodes get it
     # too, which means re-encoding the whole stream.
@@ -185,6 +197,13 @@ class Show(SQLModel, table=True):
         if kind != "whole" and self.auto_upload_score and score >= self.auto_upload_score:
             return "upload"
         return self.auto_for(kind)
+
+    def short_crop(self, default: str, background: bool) -> bool:
+        """Whether its Shorts are cropped to fill the screen: as the show is set, or else as CLIPPER_SHORT_LAYOUT
+        (`default`) is, unless the show has a `background` image for them."""
+        if self.short_layout:
+            return self.short_layout == "crop"
+        return default == "crop" and not background
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]
@@ -283,17 +302,26 @@ class ClipRecord(SQLModel, table=True):
 
 
 class Channel(SQLModel, table=True):
-    """A channel on Kick, Twitch or YouTube, or an account on X, that the worker checks for new videos (see monitor.py)."""
+    """A channel on Kick, Twitch or YouTube, an account on X, or a folder of TV episodes on the server, that the worker
+    checks for new videos (see monitor.py)."""
 
     id: int | None = Field(default=None, primary_key=True)
     show_id: int = Field(foreign_key="show.id", index=True)
-    url: str  # canonical channel link, e.g. https://kick.com/name
-    platform: str  # kick, twitch, youtube, x
+    url: str  # canonical channel link, e.g. https://kick.com/name, or a folder's full path
+    platform: str  # kick, twitch, youtube, x, folder
     keywords: str = ""  # only titles (on X, post text) with one of these, comma-separated; empty means every video
     exclude: str = ""  # skip titles with any of these
     min_minutes: float = 0
     enabled: bool = True
     baseline_done: bool = False  # the videos already there when the channel was added have been listed
+    # In the Library: its older videos (a folder's episodes, or a channel's past streams) are worked through by
+    # themselves, backlog_per_day of them a day, in backlog_order (monitor.py). Newer ones never wait for them.
+    backlog: bool = False
+    backlog_per_day: int = 2
+    backlog_paused: bool = False
+    backlog_order: str = "first"  # see BACKLOG_ORDERS
+    # The channel's whole history has been listed for its backlog, not just its newest videos. A folder's always is.
+    history_listed: bool = False
     last_checked_at: datetime | None = None
     last_error: str = ""
     created_at: datetime = Field(default_factory=utcnow)
@@ -310,10 +338,11 @@ class ChannelVideo(SQLModel, table=True):
     url: str
     title: str = ""
     duration: float | None = None
-    status: str = "waiting"  # waiting (live or not confirmed finished), queued, skipped, older
+    status: str = "waiting"  # waiting (live, being copied in, or not confirmed finished), queued, skipped, older
     reason: str = ""
     vod_id: int | None = Field(default=None, foreign_key="vod.id")
     published_at: datetime | None = None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
+    backlog_at: datetime | None = None  # when working through the channel's backlog queued it
     first_seen_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
 
@@ -440,10 +469,15 @@ def _engine(db_path: str) -> Engine:
 
 
 # Columns renamed since a database was made, by (table, old name, new name): renamed in place, keeping their values.
-_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails")]
-# Columns that start out as a copy of another when they're added, by (table, column, copied from): one setting that
-# became two keeps doing what it did.
-_COPIED = {("show", "episode_thumbnails"): "chapter_thumbnails"}
+_RENAMED = [("show", "auto_thumbnails", "chapter_thumbnails"), ("channel", "older_per_day", "backlog_per_day")]
+# Columns that start out from another of the row's when they're added, by (table, column): SQL for the value, and the
+# column it's worked out from, which an older database may not have. One setting that became two keeps doing what it
+# did, the folders watched before the Library are in it, and a backlog going newest first still does.
+_FILLED = {
+    ("show", "episode_thumbnails"): ('"chapter_thumbnails"', "chapter_thumbnails"),
+    ("channel", "backlog"): ("platform = 'folder'", "platform"),
+    ("channel", "backlog_order"): ("CASE WHEN backlog_newest_first THEN 'latest' ELSE 'first' END", "backlog_newest_first"),
+}
 
 
 def _rename_columns(engine: Engine) -> None:
@@ -468,8 +502,10 @@ def _add_missing_columns(engine: Engine) -> None:
                 conn.exec_driver_sql(
                     f'ALTER TABLE "{table.name}" ADD COLUMN "{column.name}" {column.type.compile(engine.dialect)}{default_sql}'
                 )
-                if source := _COPIED.get((table.name, column.name)):
-                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = "{source}"')
+                have.add(column.name)
+                value, source = _FILLED.get((table.name, column.name), ("", ""))
+                if source in have:
+                    conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = {value}')
 
 
 def _sql_literal(value) -> str:

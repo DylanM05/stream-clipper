@@ -5,6 +5,7 @@ import gzip
 import json
 import os
 import shutil
+import subprocess
 import threading
 import time
 import wave
@@ -117,6 +118,45 @@ def test_a_clip_with_cuts_comes_out_as_long_as_the_parts_that_stay(tmp_path):
     video = next(s for s in probe["streams"] if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
     assert float(probe["format"]["duration"]) == pytest.approx(7, abs=0.1)
+
+
+def first_pixel(video: Path, x: int, y: int) -> tuple[int, ...]:
+    """The colour of one pixel of a video's first frame."""
+    rgb = subprocess.run(["ffmpeg", "-v", "error", "-i", str(video), "-frames:v", "1", "-vf", f"format=rgb24,crop=1:1:{x}:{y}",
+                          "-f", "rawvideo", "-pix_fmt", "rgb24", "-"], capture_output=True, check=True).stdout
+    return tuple(rgb[:3])
+
+
+@needs_ffmpeg
+@pytest.mark.parametrize("size, sar", [
+    ("640x360", "1"),
+    ("720x480", "32/27"),  # a DVD's widescreen picture, stored squeezed: cropped as it's shown, not as it's stored
+    ("360x640", "1"),  # already narrower than a Short: all of its width stays
+])
+def test_a_cropped_short_is_filled_with_the_middle_of_the_picture(tmp_path, size, sar):
+    source = tmp_path / "source.mp4"
+    # Red down the sides, bright green in the middle third and a bit: a little wider than the middle 9:16 of 16:9.
+    ffmpeg.run(["-f", "lavfi", "-i", f"color=red:s={size}:d=1:r=10", "-vf",
+                f"drawbox=x=iw*0.33:y=0:w=iw*0.34:h=ih:color=lime:t=fill,setsar={sar}",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)])
+    clip = CUT_CLIP.model_copy(update={"start": 0, "end": 1, "cuts": []})
+    words = [Word(start=0.1, end=0.5, text="hello")]
+    settings = Settings(hwaccel="none", video_encoder="libx264")
+
+    cropped = tmp_path / "cropped.mp4"
+    render.render_short(source, clip, words, cropped, settings, crop=True)
+    video = next(s for s in ffmpeg.probe(cropped)["streams"] if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (1080, 1920)
+    r, g, b = first_pixel(cropped, 20, 20)
+    if size == "360x640":
+        assert r > 200 and g < 60  # the red side is still there
+    else:
+        assert g > 200 and r < 60  # only the green middle
+
+    on_background = tmp_path / "on-background.mp4"
+    render.render_short(source, clip, words, on_background, settings, crop=False)
+    r, g, b = first_pixel(on_background, 20, 20)
+    assert not (g > 200 and r < 60)  # the dimmed blur behind the whole picture
 
 
 @needs_ffmpeg

@@ -1,10 +1,11 @@
 import { useEffect, useState, type ComponentType } from "react";
 import { api } from "./api";
-import { ChartIcon, FilmIcon, InboxIcon, TvIcon, UploadIcon } from "./icons";
+import { ChartIcon, FilmIcon, InboxIcon, LibraryIcon, TvIcon, UploadIcon } from "./icons";
 import { cn, useDesktop, usePoll, useRoute } from "./lib";
 import { Approved } from "./screens/Approved";
 import { ClipEditor, NewClip } from "./screens/ClipEditor";
 import { Inbox } from "./screens/Inbox";
+import { AddToLibrary, BacklogPage, Library } from "./screens/Library";
 import { Login } from "./screens/Login";
 import { Overview } from "./screens/Overview";
 import { ShowEditor, Shows, UploadChannels } from "./screens/Shows";
@@ -65,6 +66,8 @@ function Shell() {
 
   let page;
   if (screen === "videos") page = param ? <VideoDetail key={param} id={Number(param)} /> : <Videos />;
+  else if (screen === "library")
+    page = param === "new" ? <AddToLibrary /> : param ? <BacklogPage key={param} id={Number(param)} /> : <Library />;
   else if (screen === "approved") page = <Approved />;
   else if (screen === "stats") page = <Stats />;
   else if (screen === "overview") page = <Overview summary={summary} />;
@@ -79,9 +82,10 @@ function Shell() {
       {desktop && <Sidebar screen={screen} summary={summary} />}
       <main className="lg:pl-60">{page}</main>
       <nav className="fixed inset-x-0 bottom-0 z-30 border-t border-white/5 bg-zinc-950/90 pb-[env(safe-area-inset-bottom)] backdrop-blur lg:hidden">
-        <div className="mx-auto grid max-w-2xl grid-cols-5">
+        <div className="mx-auto grid max-w-2xl grid-cols-6">
           <Tab to="inbox" label="Inbox" icon={InboxIcon} active={screen === "inbox"} badge={toReview} />
           <Tab to="videos" label="Videos" icon={FilmIcon} active={screen === "videos"} />
+          <Tab to="library" label="Library" icon={LibraryIcon} active={screen === "library"} />
           <Tab to="approved" label="Upload" icon={UploadIcon} active={screen === "approved" || screen === "upload"} badge={toUpload} />
           <Tab to="stats" label="Stats" icon={ChartIcon} active={screen === "stats"} />
           <Tab to="shows" label="Shows" icon={TvIcon} active={screen === "shows"} />

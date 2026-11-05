@@ -345,6 +345,7 @@ def breakdown(
     vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: every stream of the shows with breakdown categories that has none yet.")] = None,
     again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories or to redo them with another model. With --imported, ones this run's AI and model already made are skipped, so a stopped run carries on.")] = False,
     imported: Annotated[bool, typer.Option("--imported", help="Instead, the transcripts added to the shows' folders from elsewhere, e.g. an archive of past streams.")] = False,
+    clear: Annotated[bool, typer.Option("--clear", help="Instead of asking the AI, delete the breakdowns --again would redo, so that runs without --again do them all from scratch, carrying on where they stopped. The transcripts stay.")] = False,
     model: Annotated[Optional[str], typer.Option(help="Another of the AI's models for this run, e.g. sonnet, instead of the one chosen in the app, which new streams keep using.")] = None,
     effort: Annotated[Optional[str], typer.Option(help="How hard the AI thinks for this run (low, medium, high, xhigh, max), instead of CLIPPER_LLM_EFFORT.")] = None,
     limit: Annotated[int, typer.Option(help="Do at most this many, newest first. Default: all.")] = 0,
@@ -369,6 +370,9 @@ def breakdown(
         query = select(Vod).where(col(Vod.workspace).is_not(None), col(Vod.show_id).is_not(None)).order_by(col(Vod.id).desc())
         vods = s.exec(query.where(col(Vod.id).in_(vod_ids)) if vod_ids and not imported else query).all()
     run = _Run(settings, model, effort, limit, wait, reserve)
+    if imported and clear:
+        _clear_imported(settings, list(shows.values()), {vod.workspace for vod in vods})
+        return
     if imported:
         _break_down_imported(run, list(shows.values()), {vod.workspace for vod in vods}, again)
         return
@@ -380,7 +384,7 @@ def breakdown(
             why_not = "Its show has no breakdown categories, or doesn't save transcripts."
         elif not ws.transcript_json.exists():
             why_not = "No transcript: it was posted whole, or isn't transcribed yet."
-        elif vod_ids or again or not transcripts.parts(ws):
+        elif vod_ids or again or clear or not transcripts.parts(ws):
             todo.append((vod, show, ws))
             continue
         else:
@@ -388,11 +392,23 @@ def breakdown(
         if vod_ids:  # asked for by its id, so say why not
             typer.echo(f"{vod.id}  {vod.title[:80]}\n    {why_not}")
 
+    if clear:
+        cleared = 0
+        for vod, show, ws in todo:
+            if transcripts.parts(ws):
+                transcripts.clear(ws)
+                transcripts.save(settings, show, vod, ws,
+                                 Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")))
+                cleared += 1
+        typer.echo(f"Cleared {cleared} breakdown{'' if cleared == 1 else 's'}. "
+                   "`clipper breakdown` does those streams again from scratch.")
+        return
+
     def job(vod, show, ws):
         def do() -> int:
             transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
             parts = segment.break_down(ws, settings, transcript, show.breakdown_categories(), context=show.notes,
-                                       model=run.model, effort=run.effort)
+                                       model=run.model, effort=run.effort, video_type=show.video_type)
             transcripts.save(settings, show, vod, ws, transcript)
             return len(parts)
         return f"{vod.id}  {vod.title[:80]}", do
@@ -401,6 +417,23 @@ def breakdown(
     run.go(jobs, lambda left: "Carry on after that with: clipper breakdown " + " ".join(str(todo[i][0].id) for i in left))
     if not todo:
         typer.echo("Nothing to break down." + ("" if vod_ids or again else " To do ones that have a breakdown again, add --again."))
+
+
+def _clear_imported(settings, shows, made_here: set[str]) -> None:
+    """`breakdown --imported --clear`: the breakdowns taken out of the transcripts in the shows' folders that came from
+    elsewhere, for the shows `breakdown --imported` does."""
+    from . import transcripts
+
+    cleared = 0
+    for show in shows:
+        if show.breakdown_categories():
+            for path in transcripts.from_elsewhere(settings, show, made_here):
+                data, _ = transcripts.read(path)
+                if data.get("breakdown"):
+                    transcripts.clear_imported(path, data)
+                    cleared += 1
+    typer.echo(f"Cleared {cleared} breakdown{'' if cleared == 1 else 's'}. "
+               "`clipper breakdown --imported` does those streams again from scratch.")
 
 
 def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -> None:
@@ -428,7 +461,8 @@ def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -
         def do() -> int:
             data, transcript = transcripts.read(path)
             answer = segment.ask_breakdown(run.settings, transcripts.meta(data), transcript, show.breakdown_categories(),
-                                           context=show.notes, model=run.model, effort=run.effort)
+                                           context=show.notes, model=run.model, effort=run.effort,
+                                           video_type=show.video_type)
             transcripts.add_breakdown(path, data, show, answer, transcript.duration, made_by)
             return len(answer.breakdown)
         return path.stem.replace("_", "  ", 1), do

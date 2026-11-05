@@ -17,6 +17,9 @@ from ..workspace import Workspace, write_text
 log = logging.getLogger(__name__)
 
 PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
+# The instructions for each kind of video (db.VIDEO_TYPES), and what they call one.
+PROMPTS = {"streams": "segment.md", "episodes": "segment_episode.md", "other": "segment_other.md"}
+NOUNS = {"streams": "stream", "episodes": "episode", "other": "video"}
 
 
 def run(
@@ -31,6 +34,8 @@ def run(
     episode_room: int | None = None,
     track_record: str = "",
     breakdown: dict[str, str] | None = None,
+    video_type: str = "streams",
+    offered_shorts: int = 5,
 ) -> Segmentation:
     """Ask the AI for chapters, highlights and an episode title.
 
@@ -38,20 +43,25 @@ def run(
     `title_room` and `episode_room` are how long clip and episode titles may be; `title_prefixed`
     means the show name and date get added to them. `track_record` is what the show's past clips teach it
     (learning.py). `breakdown` is the categories, by name with what each covers, that it also sorts the stream's
-    time into; the answer is then a SegmentationWithBreakdown.
+    time into; the answer is then a SegmentationWithBreakdown. `video_type` is the show's (Show.video_type): each kind
+    has its own instructions, and a TV episode or other video gets enough highlights asked for to fill the
+    `offered_shorts` with some to spare.
     """
     if ws.segmentation_json.exists():
         return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
 
     max_highlights = max(3, round(transcript.duration / 3600 * settings.highlights_per_hour))
+    if video_type != "streams":  # a 22-minute episode would only get the 3
+        max_highlights = max(max_highlights, offered_shorts + 3)
     title_rule = (
         f"Keep chapter and highlight titles within {title_room} characters and the episode title within "
         f"{episode_room or title_room}"
     )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    system_prompt = (PROMPTS_DIR / "segment.md").read_text(encoding="utf-8")
-    task = f"Split this {to_timecode(transcript.duration)} stream into chapters and pick up to {max_highlights} highlights"
+    system_prompt = (PROMPTS_DIR / PROMPTS[video_type]).read_text(encoding="utf-8")
+    noun = NOUNS[video_type]
+    task = f"Split this {to_timecode(transcript.duration)} {noun} into chapters and pick up to {max_highlights} highlights"
     schema = Segmentation
     if breakdown:
         system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
@@ -60,8 +70,8 @@ def run(
     llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s, task="clips")
     result = llm.structured(
         system_prompt=system_prompt,
-        task=f"{task}. {title_rule}. The stream details, hints and transcript follow.",
-        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown),
+        task=f"{task}. {title_rule}. The {noun} details, hints and transcript follow.",
+        stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown, noun),
         schema=schema,
         raw_log=ws.llm_dir / "segmentation.response.json",
     )
@@ -71,39 +81,44 @@ def run(
 
 
 def break_down(ws: Workspace, settings: Settings, transcript: Transcript, breakdown: dict[str, str],
-               context: str = "", model: str | None = None, effort: str | None = None) -> list[LLMBreakdownPart]:
+               context: str = "", model: str | None = None, effort: str | None = None,
+               video_type: str = "streams") -> list[LLMBreakdownPart]:
     """Ask the AI for the breakdown alone, for a stream whose clips were picked already: one picked before its show
     had categories, or after they changed. Nothing about its clips changes. `context` is about the show."""
     result = ask_breakdown(settings, ws.meta(), transcript, breakdown, context,
-                           raw_log=ws.llm_dir / "breakdown.response.json", model=model, effort=effort)
+                           raw_log=ws.llm_dir / "breakdown.response.json", model=model, effort=effort,
+                           video_type=video_type)
     write_text(ws.breakdown_json, result.model_dump_json(indent=2))
     return result.breakdown
 
 
 def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakdown: dict[str, str], context: str = "",
-                  raw_log: Path | None = None, model: str | None = None, effort: str | None = None) -> Breakdown:
+                  raw_log: Path | None = None, model: str | None = None, effort: str | None = None,
+                  video_type: str = "streams") -> Breakdown:
     """The AI's breakdown of any transcript, also one from elsewhere (transcripts.read). `meta` is the stream's details
-    as yt-dlp gives them. `model` and `effort` replace the AI's own for this request (ai.model)."""
+    as yt-dlp gives them. `model` and `effort` replace the AI's own for this request (ai.model). `video_type` is the
+    show's (Show.video_type), for what the request calls the video."""
     system_prompt = "\n".join((PROMPTS_DIR / name).read_text(encoding="utf-8") for name in ("breakdown_alone.md", "breakdown.md"))
+    noun = NOUNS[video_type]
     llm = ai.model(settings, effort=effort or settings.llm_effort, timeout_s=settings.llm_timeout_s, model_name=model,
                    task="breakdown")
     result = llm.structured(
         system_prompt=system_prompt,
-        task=(f"Break down what this {to_timecode(transcript.duration)} stream's time goes on. The stream details, notes "
+        task=(f"Break down what this {to_timecode(transcript.duration)} {noun}'s time goes on. The {noun} details, notes "
               "and transcript follow."),
-        stdin_text=build_input(meta, transcript, Signals(), context, breakdown=breakdown),
+        stdin_text=build_input(meta, transcript, Signals(), context, breakdown=breakdown, noun=noun),
         schema=Breakdown,
         raw_log=raw_log,
     )
-    log.info("%s broke the stream down into %d parts", llm.name, len(result.breakdown))
+    log.info("%s broke the %s down into %d parts", llm.name, noun, len(result.breakdown))
     return result
 
 
 def build_input(meta: dict, transcript: Transcript, signals: Signals, context: str = "", guidance: str = "",
-                track_record: str = "", breakdown: dict[str, str] | None = None) -> str:
+                track_record: str = "", breakdown: dict[str, str] | None = None, noun: str = "stream") -> str:
     tc = to_timecode
     lines = [
-        "# Stream",
+        f"# {noun.capitalize()}",
         f"Title: {meta.get('title') or 'unknown'}",
         f"Channel: {meta.get('channel') or meta.get('uploader') or 'unknown'}",
         f"Platform: {meta.get('extractor_key') or 'unknown'}",
@@ -112,7 +127,7 @@ def build_input(meta: dict, transcript: Transcript, signals: Signals, context: s
         lines.append(f"Date: {date[:4]}-{date[4:6]}-{date[6:]}")
     lines.append(f"Length: {tc(transcript.duration)}")
     if description := (meta.get("description") or "").strip():
-        lines += ["", "# Stream description", description[:1000]]
+        lines += ["", f"# {noun.capitalize()} description", description[:1000]]
     if context.strip():
         lines += ["", "# About the show", context.strip()]
     if guidance.strip():

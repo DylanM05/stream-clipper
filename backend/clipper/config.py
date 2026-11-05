@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="CLIPPER_", env_file=".env", extra="ignore")
 
     data_dir: Path = Path("data")
+    # Folders of TV episodes a show watches must be inside this one (monitor.py); Docker mounts the server's
+    # CLIPPER_HOST_MEDIA_DIR there, read-only. None: no folders can be watched.
+    media_dir: Path | None = None
 
     # Download
     max_height: int = 1080

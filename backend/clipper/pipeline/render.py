@@ -89,11 +89,16 @@ def render_short(
     background: Path | None = None,
     video_top: float | None = None,
     video_width: float = 1.0,
+    crop: bool | None = None,
 ) -> None:
     """The whole frame over a blurred copy of itself, or over the show's `background` image. `video_top` and
     `video_width` place the video on it as fractions of the Short (None centres it); the captions go just
-    under it. CLIPPER_SHORT_LAYOUT=crop instead fills the Short with the middle of the frame."""
-    crop = settings.short_layout == "crop" and not background
+    under it. `crop` instead fills the Short with the middle of the frame, with the captions in its lower third;
+    without it, CLIPPER_SHORT_LAYOUT=crop does, for a Short without a background image."""
+    if crop is None:
+        crop = settings.short_layout == "crop" and not background
+    if crop:
+        background = None
     width = max(2, round(SHORT_W * video_width / 2) * 2)
     height = round(width * 9 / 16)  # streams are 16:9
     top = round((SHORT_H - height) / 2 if video_top is None else video_top * SHORT_H)
@@ -106,9 +111,10 @@ def render_short(
     write_text(captions, ass)
     audio = ffmpeg.has_audio(source) if clip.cuts else False
     joined = _cut_graph(clip, audio) + ";" if clip.cuts else ""
-    picture = "[vc]" if clip.cuts else "[0:v]"
-    if crop:
-        video = f"{picture}crop=ih*9/16:ih,scale=1080:1920"
+    # Square pixels first: a DVD's widescreen picture is stored squeezed (720x480) and would come out squashed.
+    picture = f"{'[vc]' if clip.cuts else '[0:v]'}scale='trunc(iw*sar/2)*2':ih,setsar=1"
+    if crop:  # the middle 9:16 of it, or of a picture that's narrower than that already, the middle of its height
+        video = f"{picture},crop='min(iw,trunc(ih*9/16/2)*2)':'min(ih,trunc(iw*16/9/2)*2)',scale=1080:1920"
     else:
         blurred = (
             "[bg]scale=270:480:force_original_aspect_ratio=increase,crop=270:480,"
@@ -118,7 +124,7 @@ def render_short(
         # The image goes over the blur (which shows through any transparent parts) and stays for every frame.
         back = f"{blurred}[blur];[1:v]scale=1080:1920,setsar=1[image];[blur][image]overlay=0:0[back]" if background else f"{blurred}[back]"
         y = "(H-h)/2" if video_top is None else str(top)
-        video = f"{picture}split=2[bg][fg];{back};[fg]scale={width}:-2[front];[back][front]overlay=(W-w)/2:{y}"
+        video = f"{picture},split=2[bg][fg];{back};[fg]scale={width}:-2[front];[back][front]overlay=(W-w)/2:{y}"
     graph = f"{joined}{video},subtitles=filename={captions.name},setsar=1[v]"
     if clip.cuts:
         sound_map, sound = (["-map", "[a]"], _audio_codec()) if audio else ([], [])

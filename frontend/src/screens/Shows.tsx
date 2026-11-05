@@ -10,22 +10,31 @@ import {
   type Mode,
   type Show,
   type ShowFields,
+  type VideoType,
   type Visibility,
 } from "../api";
 import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, sitesOf, titleDate, usePoll, type Sites } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
-import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, useToast } from "../ui";
+import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, Segmented, useToast, VIDEO_TYPE_LABEL } from "../ui";
 import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
 const SAMPLE_TITLE = "Short title written by the AI";
-const PLATFORM_NAME: Record<Channel["platform"], string> = {
+export const PLATFORM_NAME: Record<Channel["platform"], string> = {
   kick: "Kick",
   twitch: "Twitch",
   youtube: "YouTube",
   rumble: "Rumble",
   x: "X",
+  folder: "Folder",
+};
+
+const VIDEO_NOUN: Record<VideoType, string> = { streams: "stream", episodes: "episode", other: "video" };
+const VIDEO_TYPE_HINT: Record<VideoType, string> = {
+  streams: "Livestreams: the AI looks for segments, topics and the best moments.",
+  episodes: "The AI looks for scenes and jokes that work without the rest of the episode, mostly as Shorts. For Shorts only, set the clips offered per episode to 0.",
+  other: "Podcasts, interviews, vlogs, talks and anything else: the AI looks for parts that stand on their own and the best moments for Shorts.",
 };
 
 const hasClips = (mode: Mode) => mode !== "whole";
@@ -113,7 +122,7 @@ function ChannelBadge({ channel }: { channel: Channel }) {
   );
 }
 
-const channelName = (c: Channel) => c.url.replace(/^https?:\/\/(www\.)?[^/]+\//, "");
+export const channelName = (c: Channel) => c.url.replace(/^https?:\/\/(www\.)?[^/]+\//, "");
 
 // --- YouTube channels to upload to ---
 
@@ -429,10 +438,11 @@ export function ShowEditor({ id }: { id: number | null }) {
   );
 }
 
-const BLANK: ShowFields = {
+export const BLANK_SHOW: ShowFields = {
   name: "",
   match: "",
   mode: "segment",
+  video_type: "streams",
   title_template: "",
   episode_template: "",
   notes: "",
@@ -459,6 +469,7 @@ const BLANK: ShowFields = {
   breakdown: "",
   short_video_top: null,
   short_video_width: 1,
+  short_layout: "",
   overlay_episodes: false,
   overlay_x: null,
   overlay_y: null,
@@ -469,7 +480,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const { show, destinations } = props;
   const toast = useToast();
   const [fields, setFields] = useState<ShowFields>(() => {
-    if (!show) return BLANK;
+    if (!show) return BLANK_SHOW;
     // The images are saved on their own, straight away, so they aren't part of the form.
     const { id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s, ...rest } =
       show;
@@ -545,6 +556,15 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         </p>
       </Field>
 
+      {hasClips(fields.mode) && (
+        <Field label="Its videos are">
+          <div className="flex">
+            <Segmented options={VIDEO_TYPE_LABEL} value={fields.video_type} onChange={(video_type) => set({ video_type })} />
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">{VIDEO_TYPE_HINT[fields.video_type]}</p>
+        </Field>
+      )}
+
       {hasEpisode(fields.mode) && (
         <PatternField
           label="Full episode title"
@@ -612,7 +632,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       </button>
 
       {hasClips(fields.mode) && (
-        <Group label="Offered per stream" hint="best first, by the AI's score">
+        <Group label={`Offered per ${VIDEO_NOUN[fields.video_type]}`} hint="best first, by the AI's score">
           <div className="grid grid-cols-2 gap-2">
             <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
             <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
@@ -733,6 +753,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
       {hasClips(fields.mode) && (
         <ShortsLayout
           show={show}
+          layout={fields.short_layout || "blur"}
           top={fields.short_video_top}
           width={fields.short_video_width}
           onChange={set}
@@ -916,43 +937,50 @@ function Tick(props: { label: string; checked: boolean; onChange: (checked: bool
   );
 }
 
-function Segmented<T extends string>(props: { options: Record<T, string>; value: T; onChange: (v: T) => void }) {
-  const keys = Object.keys(props.options) as T[];
-  return (
-    <div className="grid flex-1 gap-1 rounded-xl bg-zinc-800 p-1" style={{ gridTemplateColumns: `repeat(${keys.length}, 1fr)` }}>
-      {keys.map((key) => (
-        <button
-          key={key}
-          type="button"
-          onClick={() => props.onChange(key)}
-          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
-        >
-          {props.options[key]}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 /**
  * Where a show's Shorts put the video: over the show's background image, or over a blurred copy of the stream.
  * The preview shows the Short at a small size, with the captions where they'll go, under the video.
  */
 function ShortsLayout(props: {
   show: Show | null;
+  layout: "crop" | "blur";
   top: number | null;
   width: number;
   onChange: (fields: Partial<ShowFields>) => void;
   onChanged: () => void;
 }) {
   const { show, top, width } = props;
+  const crop = props.layout === "crop";
   const height = (width * 1080 * 9) / 16 / 1920; // a 16:9 video, as a fraction of the Short's height
   const videoTop = top ?? (1 - height) / 2;
   const background = show?.short_background;
 
+  if (crop) {
+    return (
+      <Group label="Shorts" hint="the vertical videos made from highlights">
+        <ShortsChoice layout={props.layout} onChange={props.onChange} />
+        <div className="mt-3 flex gap-4">
+          <div className="relative grid aspect-[9/16] w-36 shrink-0 place-items-center overflow-hidden rounded-xl bg-violet-500/60 text-[10px] font-semibold ring-1 ring-white/10">
+            Middle of the video
+            {/* in the lower third, as render.render_short puts them over a cropped Short */}
+            <p className="absolute inset-x-0 top-[70%] text-center text-[9px] font-extrabold text-white [text-shadow:0_0_2px_black,0_0_2px_black]">
+              <span className="text-yellow-300">YOUR</span> CAPTIONS
+            </p>
+          </div>
+          <p className="min-w-0 flex-1 text-xs text-zinc-500">
+            The video fills the Short: the middle of the picture, cut down to 9:16, so whatever's at the sides is left out.
+            Best when what matters is in the middle, such as one person talking or a cartoon's characters. The captions go
+            in the lower third.
+          </p>
+        </div>
+      </Group>
+    );
+  }
+
   return (
     <Group label="Shorts" hint="the vertical videos made from highlights">
-      <div className="flex gap-4">
+      <ShortsChoice layout={props.layout} onChange={props.onChange} />
+      <div className="mt-3 flex gap-4">
         <div
           className="relative aspect-[9/16] w-36 shrink-0 overflow-hidden rounded-xl bg-gradient-to-b from-zinc-600 to-zinc-800 bg-cover bg-center ring-1 ring-white/10"
           style={background ? { backgroundImage: `url(${background})` } : undefined}
@@ -1028,6 +1056,18 @@ function ShortsLayout(props: {
         show.
       </p>
     </Group>
+  );
+}
+
+function ShortsChoice({ layout, onChange }: { layout: "crop" | "blur"; onChange: (fields: Partial<ShowFields>) => void }) {
+  return (
+    <div className="flex">
+      <Segmented
+        options={{ crop: "Cropped to fill", blur: "On a background" }}
+        value={layout}
+        onChange={(short_layout) => onChange({ short_layout })}
+      />
+    </div>
   );
 }
 
@@ -1314,7 +1354,9 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
       <h2 className="text-lg font-bold tracking-tight">Channels to watch</h2>
       <p className="mt-1 text-sm text-zinc-400">
         Checked every 10 minutes. A new stream's VOD is picked up once the stream has ended, and a video posted on X as
-        soon as it's seen. Videos already there are listed but not processed; tap one to process it.
+        soon as it's seen. Videos already there are listed but not processed; tap one to process it, or add the channel
+        to the <a href="#/library" className="font-medium text-violet-300">Library</a> to work through them a few a day.
+        Folders of videos on the server are added there too.
       </p>
 
       <div className="mt-3 space-y-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
@@ -1401,6 +1443,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     : channel.last_checked_at
       ? `Checked ${ago(channel.last_checked_at)}`
       : "Checking soon…";
+  const folder = channel.platform === "folder";
   const rules = [
     channel.keywords && `only “${channel.keywords}”`,
     channel.exclude && `not “${channel.exclude}”`,
@@ -1411,14 +1454,23 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     <div className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
       <div className="flex items-start gap-3 p-4">
         <div className="min-w-0 flex-1">
-          <a href={channel.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold">
-            {PLATFORM_NAME[channel.platform]} · {channelName(channel)}
-            <LinkIcon className="size-3.5 text-zinc-500" />
-          </a>
+          {folder ? (
+            <p className="break-words font-semibold">{PLATFORM_NAME[channel.platform]} · {channelName(channel)}</p>
+          ) : (
+            <a href={channel.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold">
+              {PLATFORM_NAME[channel.platform]} · {channelName(channel)}
+              <LinkIcon className="size-3.5 text-zinc-500" />
+            </a>
+          )}
           <p className="mt-0.5 text-xs text-zinc-500">
             {status}
-            {channel.waiting > 0 && ` · ${channel.waiting} waiting for a stream to end`}
+            {channel.waiting > 0 && ` · ${channel.waiting} waiting for ${folder ? "copying to finish" : "a stream to end"}`}
           </p>
+          {channel.backlog && (
+            <a href={`#/library/${channel.id}`} className="mt-0.5 block text-xs font-medium text-violet-300">
+              In the Library: {channel.backlog_paused ? "paused" : `${channel.backlog_per_day} older ${folder ? "episodes" : "videos"} a day`}
+            </a>
+          )}
           {rules.length > 0 && <p className="mt-0.5 text-xs text-zinc-500">Filters: {rules.join(", ")}</p>}
           {channel.last_error && <p className="mt-1 line-clamp-3 break-words text-xs text-red-300">{channel.last_error}</p>}
         </div>
@@ -1445,14 +1497,18 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
 
       {editing && (
         <div className="space-y-3 border-t border-white/5 p-4">
-          <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
-          <Button
-            tone="primary"
-            className="w-full"
-            onClick={() => act(() => api.updateChannel(channel.id, filters), "Filters saved").then(() => setEditing(false))}
-          >
-            Save filters
-          </Button>
+          {!folder && (
+            <>
+              <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
+              <Button
+                tone="primary"
+                className="w-full"
+                onClick={() => act(() => api.updateChannel(channel.id, filters), "Filters saved").then(() => setEditing(false))}
+              >
+                Save filters
+              </Button>
+            </>
+          )}
           {otherShows.length > 0 && (
             <Field label="Belongs to another show?">
               <select
@@ -1488,7 +1544,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
         </CardAction>
       </div>
 
-      {open && <ChannelVideos channelId={channel.id} roughDates={channel.platform === "youtube"} />}
+      {open && <ChannelVideos channelId={channel.id} roughDates={channel.platform === "youtube"} files={folder} />}
     </div>
   );
 }
@@ -1514,8 +1570,9 @@ const ITEM_STATUS: Record<ChannelVideo["status"], [string, string]> = {
   older: ["Older", "text-zinc-500"],
 };
 
-/** What the watcher found on a channel, newest first, each with when it was posted where the platform says. */
-function ChannelVideos({ channelId, roughDates }: { channelId: number; roughDates: boolean }) {
+/** What the watcher found on a channel, newest first, each with when it was posted where the platform says.
+ * `files`: a folder's, which have no page to link to. */
+function ChannelVideos({ channelId, roughDates, files }: { channelId: number; roughDates: boolean; files: boolean }) {
   const toast = useToast();
   const { data: videos, refresh } = usePoll(() => api.channelVideos(channelId), 10000, channelId);
 
@@ -1540,9 +1597,13 @@ function ChannelVideos({ channelId, roughDates }: { channelId: number; roughDate
         return (
           <li key={v.id} className="flex items-start gap-3 px-4 py-3">
             <div className="min-w-0 flex-1">
-              <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm leading-snug">
-                {v.title || v.url}
-              </a>
+              {files ? (
+                <p className="line-clamp-2 break-words text-sm leading-snug">{v.title || v.url}</p>
+              ) : (
+                <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-sm leading-snug">
+                  {v.title || v.url}
+                </a>
+              )}
               <p className="mt-0.5 text-xs text-zinc-500">
                 <span className={cn("font-semibold", tone)}>{label}</span>
                 {/* YouTube only says "3 days ago", so its dates are rough */}

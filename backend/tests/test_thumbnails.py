@@ -132,7 +132,7 @@ def test_long_clips_are_thinned_out_evenly(settings, clip_id, monkeypatch):
 def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, clip_id, monkeypatch):
     given = []
 
-    def make(settings_, clip, ws, notes="", channel_picture=None, idea=None, rules=""):
+    def make(settings_, clip, ws, notes="", channel_picture=None, idea=None, rules="", on_idea=None):
         assert notes == "Don wears a red cap." and clip.thumbnail_hint == "Don as a judge"
         assert rules == "Must have the words DON'S DEN"  # the show's
         assert channel_picture("Anyone") is None  # no API key or connected channel to search YouTube with
@@ -141,6 +141,8 @@ def test_the_worker_makes_queued_thumbnails_and_keeps_claudes_idea(settings, cli
         out.parent.mkdir(exist_ok=True)
         out.write_bytes(b"jpeg")
         idea = idea or Idea(people=[don()], concept="Don as a judge, gavel raised.", text="GUILTY", prompt="Don bangs a gavel.")
+        if on_idea:
+            on_idea(idea)
         return out, idea, "Don (from the video)"
 
     monkeypatch.setattr(worker_module.thumbnails, "make", make)
@@ -255,13 +257,18 @@ def test_people_the_video_talks_about_are_looked_up_and_pointed_out_to_the_image
 
 
 def test_a_failed_thumbnail_says_why(settings, clip_id, monkeypatch):
-    def refuse(*args, **kwargs):
+    idea = Idea(people=[don()], concept="Don with a gavel.", text="", prompt="Draw Don holding a gavel.")
+
+    def refuse(*args, on_idea=None, **kwargs):
+        if on_idea:
+            on_idea(idea)
         raise ThumbnailError("The image model sent no picture back")
 
     monkeypatch.setattr(worker_module.thumbnails, "make", refuse)
     worker_module.Worker(settings).make_thumbnail(clip_id)
     clip = get_clip(settings, clip_id)
     assert (clip.thumbnail_status, clip.thumbnail_error) == ("failed", "The image model sent no picture back")
+    assert Idea.model_validate_json(clip.thumbnail_plan).prompt == idea.prompt
 
     # One that has a thumbnail keeps it when another try doesn't work out.
     image = settings.data_dir / "thumb.jpg"

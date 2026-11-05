@@ -16,7 +16,7 @@ from ..workspace import Workspace, write_text
 log = logging.getLogger(__name__)
 
 
-def run(ws: Workspace, settings: Settings) -> Signals:
+def run(ws: Workspace, settings: Settings, *, detect_scenes: bool = True) -> Signals:
     if ws.signals_json.exists():
         return Signals.model_validate_json(ws.signals_json.read_text(encoding="utf-8"))
 
@@ -29,7 +29,7 @@ def run(ws: Workspace, settings: Settings) -> Signals:
         ],
         long_silences=find_silences(levels),
         loud_moments=find_loud_moments(levels),
-        scene_cuts=detect_scene_cuts(ws.source),
+        scene_cuts=detect_scene_cuts(ws.source) if detect_scenes else [],
     )
     write_text(ws.signals_json, signals.model_dump_json(indent=2))
     log.info(

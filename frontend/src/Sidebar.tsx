@@ -1,6 +1,6 @@
 import type { ComponentType } from "react";
 import { api, type Summary } from "./api";
-import { ChartIcon, FilmIcon, GridIcon, InboxIcon, TvIcon, UploadIcon } from "./icons";
+import { ChartIcon, FilmIcon, GridIcon, InboxIcon, LibraryIcon, TvIcon, UploadIcon } from "./icons";
 import { cn, usePoll } from "./lib";
 import { PauseBar, usePauses } from "./PauseBar";
 import { DiskMeter } from "./ui";
@@ -32,6 +32,7 @@ export function Sidebar({ screen, summary }: { screen: string; summary?: Summary
           quiet
           hint={`${working} video${working === 1 ? "" : "s"} being worked on`}
         />
+        <SideLink to="library" label="Library" icon={LibraryIcon} active={screen === "library"} />
         <SideLink
           to="approved"
           label="Upload"

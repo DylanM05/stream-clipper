@@ -103,6 +103,19 @@ def add_breakdown(path: Path, data: dict, show: Show, answer: Breakdown, duratio
     write_text(path, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
+def clear(ws: Workspace) -> None:
+    """Set aside one of the app's own streams' breakdown, so `clipper breakdown` does it again from scratch: an empty one
+    asked for on its own stands in for it. The one that came with its clips stays in its segmentation.json."""
+    write_text(ws.breakdown_json, Breakdown(breakdown=[]).model_dump_json(indent=2))
+
+
+def clear_imported(path: Path, data: dict) -> None:
+    """Take the AI's breakdown out of a saved transcript from elsewhere, so it's broken down again from scratch."""
+    for key in ("categories", "breakdown", "other_summary", "breakdown_by"):
+        data.pop(key, None)
+    write_text(path, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
+
+
 def in_seconds(found: list[LLMBreakdownPart], categories: dict[str, str], duration: float) -> list[dict]:
     """The AI's parts in seconds, each under one of `categories` or Other."""
     names = {_key(name): name for name in categories}

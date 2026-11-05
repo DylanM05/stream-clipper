@@ -450,7 +450,9 @@ function ThumbnailMaker({ clip, destination, onChange }: { clip: Clip; destinati
       )}
       {clip.thumbnail_prompt && (
         <details className="rounded-xl bg-zinc-900 ring-1 ring-white/5">
-          <summary className="cursor-pointer px-3.5 py-3 text-sm font-semibold text-zinc-300">The prompt it was drawn from</summary>
+          <summary className="cursor-pointer px-3.5 py-3 text-sm font-semibold text-zinc-300">
+            {clip.thumbnail_error && !busy ? "Prompt from the failed attempt" : "The prompt it was drawn from"}
+          </summary>
           <div className="space-y-2 px-3.5 pb-3.5">
             <textarea
               value={prompt}

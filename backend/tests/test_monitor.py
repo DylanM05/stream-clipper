@@ -1,6 +1,8 @@
 ﻿import io
 import json
+import os
 import re
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 
@@ -386,3 +388,222 @@ def test_errors_are_shown_on_the_channel_and_checks_wait_for_the_interval(setup)
     assert mon.check_next() is True
     with Session(get_engine(settings)) as s:
         assert s.get(Channel, channel_id).last_error == ""
+
+
+def episode(folder, name, minutes_ago=60):
+    """A video file in a watched folder, last changed `minutes_ago`."""
+    path = folder / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"video")
+    when = utcnow().timestamp() - minutes_ago * 60
+    os.utime(path, (when, when))
+    return path
+
+
+def test_a_folder_lists_its_video_files_in_season_and_episode_order(tmp_path):
+    media = tmp_path / "media"
+    show = media / "TV" / "Show"
+    for name in ("Season 10/S10E01.mkv", "Season 2/S02E10.mkv", "Season 2/S02E09.MP4", "Season 1/S01E01.mkv"):
+        episode(show, name)
+    episode(show, "Season 2/S02E11.mkv", minutes_ago=1)  # still being copied in
+    episode(show, "Season 1/S01E02.mkv.part")  # a partial download
+    episode(show, "Season 1/S01E01.srt")
+    episode(show, "Season 1/._S01E01.mkv")  # a Mac's copy of its details
+    episode(show, ".Trash/Old.mkv")
+    (show / "Season 1" / "Elsewhere.mkv").symlink_to(episode(tmp_path, "outside.mkv"))
+
+    listed = monitor.list_folder(str(show), media)
+    assert [(item.id, item.live) for item in listed] == [
+        ("Season 1/S01E01.mkv", False), ("Season 2/S02E09.MP4", False), ("Season 2/S02E10.mkv", False),
+        ("Season 2/S02E11.mkv", True), ("Season 10/S10E01.mkv", False),
+    ]
+    first = listed[0]
+    assert (first.url, first.title, first.duration, first.final) == (str(show / "Season 1/S01E01.mkv"), "S01E01", None, True)
+
+
+def test_a_watched_folder_must_be_inside_the_media_folder(tmp_path):
+    media = tmp_path / "media"
+    (media / "TV").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (media / "TV" / "Link").symlink_to(tmp_path / "elsewhere")
+    assert monitor.parse_folder(f" {media}/TV/../TV ", media) == str((media / "TV").resolve())
+    for outside in (str(tmp_path / "elsewhere"), str(media / "TV" / "Link"), str(media / "Missing"), f"{media}/../elsewhere"):
+        with pytest.raises(ChannelUrlError, match="Use a folder inside"):
+            monitor.parse_folder(outside, media)
+    with pytest.raises(ChannelUrlError, match="CLIPPER_HOST_MEDIA_DIR"):
+        monitor.parse_folder(str(media / "TV"), None)
+
+
+@pytest.fixture
+def folder(tmp_path):
+    media = tmp_path / "media"
+    path = media / "TV" / "Show"
+    path.mkdir(parents=True)
+    settings = Settings(data_dir=tmp_path / "data", media_dir=media)
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Cartoon Shorts", video_type="episodes")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url=str(path.resolve()), platform="folder", backlog=True, backlog_per_day=2)
+        s.add(channel)
+        s.commit()
+        channel_id = channel.id
+    return settings, Monitor(settings), path, channel_id
+
+
+def a_day_later(settings):
+    """As if what was queued was queued a day ago."""
+    with Session(get_engine(settings)) as s:
+        for row in s.exec(select(ChannelVideo).where(ChannelVideo.status == "queued")):
+            row.updated_at -= timedelta(days=1)
+            row.backlog_at = row.backlog_at and row.backlog_at - timedelta(days=1)
+            s.add(row)
+        s.commit()
+
+
+def statuses(settings) -> dict[str, str]:
+    return {key.rsplit("/", 1)[-1]: row.status for key, row in items(settings).items()}
+
+
+def change(settings, channel_id, **fields):
+    with Session(get_engine(settings)) as s:
+        channel = s.get(Channel, channel_id)
+        for k, v in fields.items():
+            setattr(channel, k, v)
+        s.add(channel)
+        s.commit()
+
+
+def test_a_folders_older_episodes_go_a_few_a_day_in_order_and_new_ones_never_wait(folder):
+    settings, mon, path, channel_id = folder
+    for n in (3, 1, 2, 4, 5, 6):
+        episode(path, f"Season 1/S01E0{n}.mkv")
+    episode(path, "Season 2/S02E01.mkv", minutes_ago=1)  # being copied in when the folder is added: new
+
+    mon.check(channel_id)  # the first two older episodes start right away
+    assert statuses(settings) == {"S01E01.mkv": "queued", "S01E02.mkv": "queued", "S01E03.mkv": "older",
+                                  "S01E04.mkv": "older", "S01E05.mkv": "older", "S01E06.mkv": "older",
+                                  "S02E01.mkv": "waiting"}
+    found = items(settings)
+    assert found["Season 1/S01E03.mkv"].reason == "Already in the folder when you added it"
+    assert found["Season 2/S02E01.mkv"].reason == "Still being copied in"
+    with Session(get_engine(settings)) as s:
+        vods = s.exec(select(Vod).order_by(Vod.id)).all()
+        assert [v.url for v in vods] == [str(path / "Season 1/S01E01.mkv"), str(path / "Season 1/S01E02.mkv")]
+        assert {v.show_id for v in vods} == {s.get(Channel, channel_id).show_id}
+
+    mon.check(channel_id)  # nothing more today
+    assert statuses(settings)["S01E03.mkv"] == "older"
+
+    episode(path, "Season 2/S02E01.mkv")  # finished copying
+    mon.check(channel_id)
+    assert statuses(settings)["S02E01.mkv"] == "queued"  # new ones don't wait for the backlog, nor count towards it
+
+    a_day_later(settings)
+    mon.check(channel_id)
+    assert (statuses(settings)["S01E03.mkv"], statuses(settings)["S01E04.mkv"]) == ("queued", "queued")
+
+    a_day_later(settings)
+    (path / "Season 1/S01E05.mkv").unlink()  # gone: left for later
+    episode(path, "Season 1/S01E06.mkv", minutes_ago=1)  # being copied in again: left for later
+    mon.check(channel_id)
+    assert (statuses(settings)["S01E05.mkv"], statuses(settings)["S01E06.mkv"]) == ("older", "older")
+
+    change(settings, channel_id, backlog_paused=True)
+    episode(path, "Season 1/S01E05.mkv")
+    episode(path, "Season 1/S01E06.mkv")
+    mon.check(channel_id)
+    assert (statuses(settings)["S01E05.mkv"], statuses(settings)["S01E06.mkv"]) == ("older", "older")
+
+    change(settings, channel_id, backlog_paused=False, backlog_order="latest", backlog_per_day=1)
+    mon.check(channel_id)  # from the last episode
+    assert (statuses(settings)["S01E05.mkv"], statuses(settings)["S01E06.mkv"]) == ("older", "queued")
+
+
+def test_a_backlog_can_go_at_random_the_same_way_on_every_check(folder):
+    settings, mon, path, channel_id = folder
+    names = [f"Season {s}/S0{s}E0{e}.mkv" for s in (1, 2, 3) for e in range(1, 6)]
+    for name in names:
+        episode(path, name)
+    change(settings, channel_id, backlog_order="random", backlog_per_day=3)
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        channel = s.get(Channel, channel_id)
+        rows = s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == channel_id)).all()
+        shuffled = [row.video_id for row in monitor.backlog_order(channel, rows)]
+    assert sorted(shuffled) == sorted(names) and shuffled != names  # all of them, not in order
+    taken = sorted(key for key, row in items(settings).items() if row.status == "queued")
+    assert taken == sorted(shuffled[:3])
+
+    a_day_later(settings)
+    mon.check(channel_id)  # the next three in the same shuffle
+    assert sorted(key for key, row in items(settings).items() if row.status == "queued") == sorted(shuffled[:6])
+
+
+def test_a_channels_whole_history_is_listed_once_for_its_backlog_and_worked_through_oldest_first(setup):
+    settings, _, fake, (show_id, channel_id) = setup
+    listings = []
+
+    def history(platform, url):
+        listings.append(url)
+        return [replace(video(f"v{n}"), published=1787000000.0 + n * 86400) for n in (5, 4, 3, 2, 1)]
+
+    mon = Monitor(settings, lister=fake, history=history)
+    fake.videos = [replace(video("v5"), published=1787000000.0 + 5 * 86400)]
+    mon.check(channel_id)  # watched as before: only its newest are seen, and none are processed
+    assert statuses(settings) == {"v5": "older"} and listings == []
+
+    change(settings, channel_id, backlog=True, backlog_per_day=1)
+    fake.videos = [video("v6", duration=None, live=True), *fake.videos]  # a stream going on meanwhile
+    mon.check(channel_id)  # the rest are older, not new, and the oldest goes first
+    assert statuses(settings) == {"v5": "older", "v6": "waiting", "v4": "older", "v3": "older", "v2": "older", "v1": "queued"}
+    assert items(settings)["v1"].published_at == datetime.fromtimestamp(1787086400, timezone.utc)
+
+    fake.videos = [video("v6", duration=7200), *fake.videos[1:]]
+    mon.check(channel_id)
+    mon.check(channel_id)  # the stream has ended: new, so it doesn't wait for the backlog
+    assert (statuses(settings)["v6"], statuses(settings)["v2"]) == ("queued", "older")
+    assert listings == ["https://kick.com/kino"]  # only once
+
+    a_day_later(settings)
+    mon.check(channel_id)
+    assert statuses(settings)["v2"] == "queued"
+
+
+def test_channels_that_cant_list_their_history_work_through_what_they_list(setup):
+    settings, _, fake, (show_id, channel_id) = setup
+    mon = Monitor(settings, lister=fake, history=lambda platform, url: pytest.fail("Rumble can't list its history"))
+    change(settings, channel_id, platform="rumble", backlog=True, backlog_per_day=5)
+    fake.videos = [video("v2"), video("v1")]
+    mon.check(channel_id)
+    assert statuses(settings) == {"v2": "queued", "v1": "queued"}
+
+
+def test_folders_watched_before_the_library_are_in_it_and_channels_arent(tmp_path):
+    with sqlite3.connect(tmp_path / "clipper.db") as conn:  # as the version before the Library left it
+        conn.execute("CREATE TABLE show (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL)")
+        conn.execute("CREATE TABLE channel (id INTEGER PRIMARY KEY, show_id INTEGER NOT NULL, url VARCHAR NOT NULL, "
+                     "platform VARCHAR NOT NULL, older_per_day INTEGER NOT NULL DEFAULT 2)")
+        conn.execute("INSERT INTO show (id, name) VALUES (1, 'Kino')")
+        conn.execute("INSERT INTO channel VALUES (1, 1, 'https://kick.com/kino', 'kick', 2), (2, 1, '/media/TV', 'folder', 3)")
+    with Session(get_engine(Settings(data_dir=tmp_path))) as s:
+        assert [(c.platform, c.backlog, c.backlog_per_day, c.backlog_order) for c in s.exec(select(Channel).order_by(Channel.id))] == [
+            ("kick", False, 2, "first"), ("folder", True, 3, "first"),
+        ]
+
+
+def test_a_backlog_that_went_newest_first_still_does(tmp_path):
+    with sqlite3.connect(tmp_path / "clipper.db") as conn:  # as the first version of the Library left it
+        conn.execute("CREATE TABLE channel (id INTEGER PRIMARY KEY, show_id INTEGER NOT NULL, url VARCHAR NOT NULL, "
+                     "platform VARCHAR NOT NULL, backlog BOOLEAN, backlog_newest_first BOOLEAN)")
+        conn.execute("INSERT INTO channel VALUES (1, 1, '/media/A', 'folder', 1, 1), (2, 1, '/media/B', 'folder', 1, 0)")
+    with Session(get_engine(Settings(data_dir=tmp_path))) as s:
+        assert [c.backlog_order for c in s.exec(select(Channel).order_by(Channel.id))] == ["latest", "first"]
+
+
+def test_a_watched_folder_that_goes_missing_is_reported(folder):
+    settings, mon, path, channel_id = folder
+    path.rmdir()
+    mon.check(channel_id)
+    with Session(get_engine(settings)) as s:
+        assert "Use a folder inside" in s.get(Channel, channel_id).last_error

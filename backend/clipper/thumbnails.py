@@ -79,7 +79,8 @@ class Photo:
 
 
 def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", http: httpx.Client | None = None,
-         channel_picture: ChannelPicture | None = None, idea: Idea | None = None, rules: str = "") -> tuple[Path, Idea, str]:
+         channel_picture: ChannelPicture | None = None, idea: Idea | None = None, rules: str = "",
+         on_idea: Callable[[Idea], None] | None = None) -> tuple[Path, Idea, str]:
     """Make the clip's thumbnail: a JPEG next to its renders, the AI's idea for it, and who's in it and where
     their likeness came from. `rules` are what the show wants on every thumbnail. Given an `idea` (a saved one,
     perhaps with its prompt changed), the AI isn't asked for a new one: it's drawn again, with fresh frames and
@@ -89,6 +90,8 @@ def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", h
     if not ws.meta_json.exists() or not ws.source.exists():
         raise ThumbnailError("The stream's video files were deleted, so there are no frames to draw the people from.")
     idea = idea or write_idea(settings, clip, excerpt(ws, clip), notes, rules)
+    if on_idea:
+        on_idea(idea)
     http = http or httpx.Client(timeout=TIMEOUT_S, follow_redirects=True)
     with tempfile.TemporaryDirectory(prefix="clipper-thumb-") as tmp:
         outside = [p for p in idea.people if not p.in_video][:MAX_LOOKUPS]

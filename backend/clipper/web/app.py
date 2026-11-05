@@ -7,12 +7,14 @@ import ipaddress
 import json
 import logging
 import mimetypes
+import os
 import re
 import shutil
 import threading
 import time
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path
 from typing import Literal
@@ -32,7 +34,9 @@ from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
     get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, sites_name, upload_sites, utcnow,
 )
-from ..monitor import ChannelUrlError, parse_channel
+from ..monitor import (
+    VIDEO_SUFFIXES, ChannelUrlError, backlog_order, episode_order, list_folder, older_reason, parse_channel, parse_folder,
+)
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
@@ -54,6 +58,8 @@ REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 PUBLIC_PATHS = {"/api/session", "/api/login", CALLBACK_PATH}
 SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
+VideoType = Literal["streams", "episodes", "other"]  # db.VIDEO_TYPES
+BacklogOrder = Literal["first", "latest", "random"]  # db.BACKLOG_ORDERS
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
 Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
@@ -123,7 +129,7 @@ class ClipOut(BaseModel):
     thumbnail_hint: str
     thumbnail_idea: str
     thumbnail_error: str
-    thumbnail_prompt: str  # the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+    thumbnail_prompt: str  # the image prompt from the latest thumbnail attempt, if one was made
     thumbnail_redrawing: bool  # it's queued or being drawn again from a prompt, rather than a new idea from Claude
     # Where its uploads stand (upload_states): "", uploading, queued, scheduled, retrying or failed; and when
     # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself.
@@ -180,6 +186,7 @@ class ShowIn(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     match: str = Field(default="", max_length=2000)
     mode: Mode = "segment"
+    video_type: VideoType = "streams"
     title_template: str = Field(default="{title}", max_length=200)
     episode_template: str = Field(default="", max_length=200)
     notes: str = Field(default="", max_length=10000)
@@ -206,6 +213,7 @@ class ShowIn(BaseModel):
     breakdown: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
+    short_layout: Literal["", "crop", "blur"] = ""  # "" goes by CLIPPER_SHORT_LAYOUT
     overlay_episodes: bool = False
     overlay_x: float | None = Field(default=None, ge=0, le=1)
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -216,6 +224,7 @@ class ShowPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=100)
     match: str | None = Field(default=None, max_length=2000)
     mode: Mode | None = None
+    video_type: VideoType | None = None
     title_template: str | None = Field(default=None, max_length=200)
     episode_template: str | None = Field(default=None, max_length=200)
     notes: str | None = Field(default=None, max_length=10000)
@@ -242,6 +251,7 @@ class ShowPatch(BaseModel):
     breakdown: str | None = Field(default=None, max_length=4000)  # categories the AI sorts streams' time into
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
+    short_layout: Literal["crop", "blur"] | None = None
     overlay_episodes: bool | None = None
     overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -432,6 +442,10 @@ class ChannelIn(BaseModel):
     keywords: str = Field(default="", max_length=1000)
     exclude: str = Field(default="", max_length=1000)
     min_minutes: float = Field(default=0, ge=0, le=1440)
+    # In the Library (Channel.backlog). For a channel the show already watches, this puts it in.
+    backlog: bool = False
+    backlog_per_day: int = Field(default=2, ge=1, le=100)
+    backlog_order: BacklogOrder = "first"
 
 
 class ChannelPatch(BaseModel):
@@ -440,6 +454,10 @@ class ChannelPatch(BaseModel):
     min_minutes: float | None = Field(default=None, ge=0, le=1440)
     enabled: bool | None = None
     show_id: int | None = None  # move it to another show; what it has already seen stays seen
+    backlog: bool | None = None
+    backlog_per_day: int | None = Field(default=None, ge=1, le=100)
+    backlog_paused: bool | None = None
+    backlog_order: BacklogOrder | None = None
 
 
 class ChannelOut(BaseModel):
@@ -454,6 +472,11 @@ class ChannelOut(BaseModel):
     last_checked_at: str | None
     last_error: str
     waiting: int  # new videos seen that aren't finished yet
+    backlog: bool
+    backlog_per_day: int
+    backlog_paused: bool
+    backlog_order: str
+    history_listed: bool
 
 
 class ShowOut(BaseModel):
@@ -461,6 +484,7 @@ class ShowOut(BaseModel):
     name: str
     match: str
     mode: str
+    video_type: str
     title_template: str
     episode_template: str
     notes: str
@@ -487,6 +511,7 @@ class ShowOut(BaseModel):
     breakdown: str
     short_video_top: float | None
     short_video_width: float
+    short_layout: str  # "crop" or "blur", as its Shorts are made
     short_background: str  # the image's address in the app, or "" for none
     overlay: str  # the overlay image's address in the app, or "" for none
     overlay_box: list[int] | None  # x, y, w, h of its visible part, as drawn (in its 1920x1080)
@@ -510,6 +535,66 @@ class ChannelVideoOut(BaseModel):
     vod_id: int | None
     published_at: str | None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
     first_seen_at: str
+
+
+class FolderOut(BaseModel):
+    """A folder in the media folder, for choosing one to watch."""
+
+    path: str
+    parent: str | None  # None in the media folder itself
+    folders: list[str]  # the folders in it, by name
+    videos: int  # video files in it, not counting its folders'
+
+
+class FolderVideosOut(BaseModel):
+    """What watching a folder would find: its video files and its folders', in the order a backlog takes them."""
+
+    videos: int
+    first: list[str]  # the first few, by their path in the folder
+
+
+class BacklogOut(BaseModel):
+    """A channel or folder in the Library, and how far through its videos it is."""
+
+    channel: ChannelOut
+    show_name: str
+    video_type: str
+    name: str  # the folder's or channel's name
+    total: int  # its videos, not counting skipped ones
+    done: int  # processed: their clips are in the inbox, or past it
+    working: int  # queued or being processed
+    failed: int
+    left: int  # older ones still to go
+    skipped: int
+    copying: int  # waiting: files being copied in, or streams not finished
+    next: str  # the next one it takes, by title; "" when none are left
+    today: int  # how many it took in the last 24 hours, of its backlog_per_day
+
+
+class BacklogItemOut(BaseModel):
+    id: int  # the ChannelVideo's
+    title: str
+    url: str
+    group: str  # a folder's subfolder ("Season 1"), or the month a channel's video was posted
+    state: Literal["done", "working", "failed", "left", "skipped", "copying"]
+    reason: str
+    published_at: str | None
+    vod_id: int | None
+    vod_status: str  # "" when it hasn't been queued
+    vod_progress: float
+    counts: dict[str, int]  # its clips by status
+    place: int | None  # one still to go: its place in the line, 1 being next
+
+
+class BacklogDetailOut(BacklogOut):
+    # Every video, in the order it works through them; when that's at random, in season and episode order (or oldest
+    # first), with each one's place in the line.
+    items: list[BacklogItemOut]
+
+
+class BacklogSkip(BaseModel):
+    ids: list[int] = Field(max_length=5000)
+    skip: bool  # false puts them back
 
 
 class ClipPatch(BaseModel):
@@ -684,8 +769,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         channels = s.exec(select(Channel).where(Channel.show_id == show.id).order_by(col(Channel.id)))
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
         overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen)
-        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen"}),
-                       short_background=image_url(settings.short_background(show.id), f"/media/shows/{show.id}/short-background.png"),
+        background = settings.short_background(show.id)
+        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout"}),
+                       short_layout="crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
+                       short_background=image_url(background, f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
                        overlay_box=list(overlay.box) if overlay else None,
                        overlay_screen=list(overlay.screen) if overlay and overlay.screen else None,
@@ -1413,13 +1500,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def add_channel(show_id: int, body: ChannelIn, s: Session = Depends(db)) -> ChannelOut:
         found(s, Show, show_id, "show")
         try:
-            platform, url = parse_channel(body.url)
+            if body.url.strip().startswith("/"):  # a folder on the server
+                platform, url = "folder", parse_folder(body.url, settings.media_dir)
+            else:
+                platform, url = parse_channel(body.url)
         except ChannelUrlError as e:
             raise HTTPException(422, str(e)) from None
-        if s.exec(select(Channel).where(Channel.show_id == show_id, Channel.url == url)).first():
-            raise HTTPException(409, "This show already watches that channel")
+        backlog = dict(backlog=True, backlog_per_day=body.backlog_per_day, backlog_order=body.backlog_order) if body.backlog else {}
+        if ch := s.exec(select(Channel).where(Channel.show_id == show_id, Channel.url == url)).first():
+            if not backlog:
+                raise HTTPException(409, "This show already watches that channel")
+            for k, v in backlog.items():  # working through the past videos of a channel it already watches
+                setattr(ch, k, v)
+            ch.last_checked_at = None  # checked now, which lists its history
+            s.add(ch)
+            s.commit()
+            s.refresh(ch)
+            return channel_out(s, ch)
         ch = Channel(show_id=show_id, url=url, platform=platform, keywords=body.keywords.strip(),
-                     exclude=body.exclude.strip(), min_minutes=body.min_minutes)
+                     exclude=body.exclude.strip(), min_minutes=body.min_minutes, **backlog)
         s.add(ch)
         add_term(s, s.get(Show, show_id), url)
         s.commit()
@@ -1427,7 +1526,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return channel_out(s, ch)
 
     def channel_term(url: str) -> str:
-        return url.split("://", 1)[1].removeprefix("www.")
+        """A channel's link without https://www., or a folder's path, which a file from it is added by."""
+        return url.split("://", 1)[-1].removeprefix("www.")
 
     def add_term(s: Session, show: Show, url: str) -> None:
         """Links pasted from a watched channel belong to its show too."""
@@ -1454,6 +1554,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ch.show_id = show_id
         for k, v in changes.items():
             setattr(ch, k, v.strip() if isinstance(v, str) else v)
+        if changes.keys() & {"backlog", "backlog_per_day", "backlog_paused", "backlog_order"}:
+            ch.last_checked_at = None  # so it takes effect on a check within seconds
         s.add(ch)
         s.commit()
         s.refresh(ch)
@@ -1495,6 +1597,121 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         s.refresh(item)
         return channel_video_out(item)
+
+    # --- The Library: channels and folders whose older videos are worked through ---
+
+    def media_folder(path: str | None) -> Path:
+        """A folder in the media folder, by default the media folder itself."""
+        try:
+            return Path(parse_folder(path or str(settings.media_dir or ""), settings.media_dir))
+        except ChannelUrlError as e:
+            raise HTTPException(422, str(e)) from None
+
+    @app.get("/api/folders")
+    def list_folders(path: str | None = None) -> FolderOut:
+        folder = media_folder(path)
+        folders, videos = [], 0
+        try:
+            for entry in os.scandir(folder):  # like a watched folder, without hidden files and links
+                if entry.name.startswith(".") or entry.is_symlink():
+                    continue
+                if entry.is_dir():
+                    folders.append(entry.name)
+                elif Path(entry.name).suffix.lower() in VIDEO_SUFFIXES:
+                    videos += 1
+        except OSError as e:
+            raise HTTPException(422, f"Can't read {folder}: {e.strerror}") from None
+        top = folder == settings.media_dir.resolve()
+        return FolderOut(path=str(folder), parent=None if top else str(folder.parent),
+                         folders=sorted(folders, key=episode_order), videos=videos)
+
+    @app.get("/api/folders/videos")
+    def folder_videos(path: str) -> FolderVideosOut:
+        """What watching the folder would find, in the order its backlog would take them."""
+        try:
+            listed = list_folder(str(media_folder(path)), settings.media_dir)
+        except OSError as e:
+            raise HTTPException(422, f"Can't read {e.filename}: {e.strerror}") from None
+        return FolderVideosOut(videos=len(listed), first=[item.id for item in listed[:5]])
+
+    def backlog_items(s: Session, ch: Channel) -> list[tuple[ChannelVideo, Vod | None]]:
+        """The channel's videos, with what became of each, in the order its backlog works through them, or for one
+        that goes at random, in season and episode order (or oldest first)."""
+        pairs = s.exec(
+            select(ChannelVideo, Vod).outerjoin(Vod, ChannelVideo.vod_id == Vod.id).where(ChannelVideo.channel_id == ch.id)
+        ).all()
+        shown = "first" if ch.backlog_order == "random" else ch.backlog_order
+        place = {item.id: i for i, item in enumerate(backlog_order(ch, [item for item, _ in pairs], shown))}
+        return sorted(pairs, key=lambda pair: place[pair[0].id])
+
+    def backlog_line(ch: Channel, pairs: list[tuple[ChannelVideo, Vod | None]]) -> list[ChannelVideo]:
+        """The ones still to go, in the order the backlog takes them."""
+        return backlog_order(ch, [item for item, _ in pairs if item.status == "older"])
+
+    def item_state(item: ChannelVideo, vod: Vod | None) -> str:
+        if item.status == "queued":
+            return "done" if vod and vod.status == "ready" else "failed" if vod and vod.status == "failed" else "working"
+        return {"older": "left", "waiting": "copying"}.get(item.status, "skipped")
+
+    def backlog_summary(s: Session, ch: Channel, pairs: list[tuple[ChannelVideo, Vod | None]]) -> dict:
+        show = s.get(Show, ch.show_id)
+        states = Counter(item_state(item, vod) for item, vod in pairs)
+        up_next = next(iter(backlog_line(ch, pairs)), None)
+        day_ago = utcnow() - timedelta(days=1)
+        return dict(
+            channel=channel_out(s, ch), show_name=show.name, video_type=show.video_type,
+            name=Path(ch.url).name if ch.platform == "folder" else ch.url.rstrip("/").rsplit("/", 1)[-1],
+            total=len(pairs) - states["skipped"], done=states["done"], working=states["working"], failed=states["failed"],
+            left=states["left"], skipped=states["skipped"], copying=states["copying"],
+            next=(up_next.title or up_next.video_id) if up_next else "",
+            today=sum(1 for item, _ in pairs if item.backlog_at and item.backlog_at >= day_ago),
+        )
+
+    @app.get("/api/library")
+    def library(s: Session = Depends(db)) -> list[BacklogOut]:
+        channels = s.exec(select(Channel).where(col(Channel.backlog)).order_by(col(Channel.id)))
+        return [BacklogOut(**backlog_summary(s, ch, backlog_items(s, ch))) for ch in channels]
+
+    @app.get("/api/channels/{channel_id}/backlog")
+    def channel_backlog(channel_id: int, s: Session = Depends(db)) -> BacklogDetailOut:
+        ch = found(s, Channel, channel_id, "channel")
+        pairs = backlog_items(s, ch)
+        counts: dict[int, dict[str, int]] = defaultdict(dict)
+        for vod_id, status, n in s.exec(
+            select(ClipRecord.vod_id, ClipRecord.status, func.count())
+            .join(ChannelVideo, col(ChannelVideo.vod_id) == ClipRecord.vod_id).where(ChannelVideo.channel_id == ch.id)
+            .group_by(ClipRecord.vod_id, ClipRecord.status)
+        ):
+            counts[vod_id][status] = n
+
+        def group(item: ChannelVideo) -> str:
+            if ch.platform == "folder":
+                return item.video_id.rpartition("/")[0]
+            return item.published_at.strftime("%B %Y") if item.published_at else ""
+
+        line = {item.id: i for i, item in enumerate(backlog_line(ch, pairs), 1)}
+        items = [BacklogItemOut(
+            id=item.id, title=item.title or item.video_id, url=item.url, group=group(item), state=item_state(item, vod),
+            reason=item.reason, published_at=iso(item.published_at), vod_id=vod.id if vod else None,
+            vod_status=vod.status if vod else "", vod_progress=vod.progress if vod else 0,
+            counts=counts.get(vod.id, {}) if vod else {}, place=line.get(item.id),
+        ) for item, vod in pairs]
+        return BacklogDetailOut(**backlog_summary(s, ch, pairs), items=items)
+
+    @app.post("/api/channels/{channel_id}/backlog/skip", status_code=204)
+    def skip_in_backlog(channel_id: int, body: BacklogSkip, s: Session = Depends(db)) -> None:
+        """Skip older videos, so the backlog passes over them, or put skipped ones back in it."""
+        ch = found(s, Channel, channel_id, "channel")
+        for item in s.exec(select(ChannelVideo).where(ChannelVideo.channel_id == ch.id, col(ChannelVideo.id).in_(body.ids))):
+            if body.skip and item.status == "older":
+                item.status, item.reason = "skipped", "Skipped in the Library"
+            elif not body.skip and item.status == "skipped":
+                item.status, item.reason = "older", older_reason(ch)
+            else:
+                continue
+            item.updated_at = utcnow()
+            s.add(item)
+        s.commit()
 
     # --- Clips ---
 

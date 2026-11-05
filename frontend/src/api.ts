@@ -84,7 +84,7 @@ export interface Clip {
   thumbnail_url: string; // "" until there's one
   thumbnail_hint: string; // your idea for it
   thumbnail_idea: string; // what the AI came up with
-  thumbnail_prompt: string; // the image prompt the thumbnail it has was drawn from, "" if that wasn't kept
+  thumbnail_prompt: string; // the image prompt from the latest thumbnail attempt, if one was made
   thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from the AI
   thumbnail_error: string;
   upload_state: UploadState;
@@ -220,7 +220,7 @@ export interface Channel {
   id: number;
   show_id: number;
   url: string;
-  platform: "kick" | "twitch" | "youtube" | "rumble" | "x";
+  platform: "kick" | "twitch" | "youtube" | "rumble" | "x" | "folder";
   keywords: string;
   exclude: string;
   min_minutes: number;
@@ -228,13 +228,26 @@ export interface Channel {
   last_checked_at: string | null;
   last_error: string;
   waiting: number;
+  // In the Library: its older videos are worked through, backlog_per_day a day, in order.
+  backlog: boolean;
+  backlog_per_day: number;
+  backlog_paused: boolean;
+  backlog_order: BacklogOrder;
+  history_listed: boolean; // a channel's whole history has been listed for it
 }
+
+/** The order a backlog takes its videos in: from the first episode (or oldest video), from the latest, or at random. */
+export type BacklogOrder = "first" | "latest" | "random";
+
+/** What a show's videos are, for the AI: livestreams, TV episodes, or anything else (podcasts, vlogs, talks). */
+export type VideoType = "streams" | "episodes" | "other";
 
 export interface Show {
   id: number;
   name: string;
   match: string;
   mode: Mode;
+  video_type: VideoType;
   title_template: string;
   episode_template: string;
   notes: string;
@@ -262,6 +275,9 @@ export interface Show {
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
+  // Its Shorts: "crop" fills them with the middle of the picture, "blur" puts the whole picture on the background.
+  // A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
+  short_layout: "" | "crop" | "blur";
   overlay: string; // the overlay image's address, or "" for none
   overlay_box: [number, number, number, number] | null; // x, y, w, h of its visible part, as drawn, in its 1920×1080
   overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen
@@ -278,6 +294,7 @@ export type ShowFields = Omit<
   "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen"
 >;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
+export type BacklogFields = Pick<Channel, "backlog_per_day" | "backlog_paused" | "backlog_order">;
 
 export interface ChannelVideo {
   id: number;
@@ -290,6 +307,50 @@ export interface ChannelVideo {
   vod_id: number | null;
   published_at: string | null; // when it was posted or streamed, if the platform says (roughly, on YouTube)
   first_seen_at: string;
+}
+
+/** A folder in the server's media folder, for choosing one to watch. */
+export interface Folder {
+  path: string;
+  parent: string | null; // null in the media folder itself
+  folders: string[];
+  videos: number; // video files in it, not counting its folders'
+}
+
+/** A channel or folder in the Library, and how far through its videos it is. */
+export interface Backlog {
+  channel: Channel;
+  show_name: string;
+  video_type: VideoType;
+  name: string;
+  total: number; // not counting skipped ones
+  done: number;
+  working: number;
+  failed: number;
+  left: number;
+  skipped: number;
+  copying: number; // files being copied in, or streams not finished
+  next: string; // the next one it takes; "" when none are left
+  today: number; // how many it took in the last 24 hours, of its backlog_per_day
+}
+
+export interface BacklogItem {
+  id: number; // the ChannelVideo's
+  title: string;
+  url: string;
+  group: string; // a folder's subfolder ("Season 1"), or the month a channel's video was posted
+  state: "done" | "working" | "failed" | "left" | "skipped" | "copying";
+  reason: string;
+  published_at: string | null;
+  vod_id: number | null;
+  vod_status: VodStatus | "";
+  vod_progress: number;
+  counts: Partial<Record<ClipStatus, number>>;
+  place: number | null; // one still to go: its place in the line, 1 being next
+}
+
+export interface BacklogDetail extends Backlog {
+  items: BacklogItem[]; // in the order it works through them; at random, in season and episode order (or oldest first)
 }
 
 /** Counts for the tab badges. */
@@ -488,14 +549,24 @@ export const api = {
     }),
   deleteOverlay: (id: number) => request<Show>(`/api/shows/${id}/overlay`, { method: "DELETE" }),
 
-  addChannel: (showId: number, body: { url: string } & ChannelFields) =>
+  addChannel: (showId: number, body: { url: string } & Partial<ChannelFields & BacklogFields & { backlog: boolean }>) =>
     post<Channel>(`/api/shows/${showId}/channels`, body),
-  updateChannel: (id: number, fields: Partial<ChannelFields & { enabled: boolean; show_id: number }>) =>
+  updateChannel: (id: number, fields: Partial<ChannelFields & BacklogFields & { enabled: boolean; show_id: number; backlog: boolean }>) =>
     patch<Channel>(`/api/channels/${id}`, fields),
   deleteChannel: (id: number) => remove(`/api/channels/${id}`),
   checkChannel: (id: number) => post<Channel>(`/api/channels/${id}/check`),
   channelVideos: (id: number) => request<ChannelVideo[]>(`/api/channels/${id}/videos`),
   processChannelVideo: (id: number) => post<ChannelVideo>(`/api/channel-videos/${id}/process`),
+
+  folders: (path?: string) => request<Folder>(`/api/folders${path ? `?path=${encodeURIComponent(path)}` : ""}`),
+  /** What watching the folder would find: how many videos, and the first few in the order they'd go. */
+  folderVideos: (path: string) =>
+    request<{ videos: number; first: string[] }>(`/api/folders/videos?path=${encodeURIComponent(path)}`),
+  library: () => request<Backlog[]>("/api/library"),
+  backlog: (channelId: number) => request<BacklogDetail>(`/api/channels/${channelId}/backlog`),
+  /** Skip older videos so the backlog passes over them, or put skipped ones back. */
+  skipInBacklog: (channelId: number, ids: number[], skip: boolean) =>
+    post<void>(`/api/channels/${channelId}/backlog/skip`, { ids, skip }),
 };
 
 export const media = {

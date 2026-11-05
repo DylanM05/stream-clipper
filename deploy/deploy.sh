@@ -12,17 +12,25 @@ cd "$dir"
 exec 9>"$dir/.deploy.lock"
 flock 9  # one deploy at a time
 
-if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
+if [ -n "$(git status --porcelain)" ]; then
   echo "The checkout in $dir has changes of its own; not deploying over them. Commit or undo them first." >&2
   exit 1
 fi
 previous=$(git rev-parse HEAD)
 git fetch -q origin
-git merge -q --ff-only "$target"
+if git merge-base --is-ancestor "$previous" "$target"; then
+  git merge -q --ff-only "$target"
+else
+  echo "The checkout history diverged from $target; realigning the clean checkout."
+  git reset -q --hard "$target"
+fi
 echo "Deploying $(git log -1 --format='%h %s') (was $(git rev-parse --short "$previous"))"
 
+# The images, with the upload browser's packages installed fresh on the first build each day (browser/Dockerfile).
+build() { docker compose build --build-arg "PACKAGES_DATE=$(date -u +%F)" "$@"; }
+
 old_images=$(docker compose images -q 2>/dev/null | sort -u || true)
-docker compose build
+build
 
 hold_released=0
 release() { [ "$hold_released" = 1 ] || docker compose run --rm --no-deps -T web deploy-done >/dev/null 2>&1 || true; hold_released=1; }
@@ -32,7 +40,7 @@ trap release EXIT
 if ! docker compose run --rm --no-deps -T web deploy-wait --max-hours "$wait_hours"; then
   echo "Not restarting under an upload that's still going. Run the deploy again once it's done." >&2
   git reset -q --hard "$previous"
-  docker compose build -q  # so the images match what's running again
+  build -q  # so the images match what's running again
   exit 1
 fi
 
@@ -56,7 +64,7 @@ if ! healthy; then
   docker compose logs --tail 60 web worker >&2 || true
   echo "Going back to $(git rev-parse --short "$previous")" >&2
   git reset -q --hard "$previous"
-  docker compose build -q
+  build -q
   docker compose up -d --remove-orphans
   exit 1
 fi

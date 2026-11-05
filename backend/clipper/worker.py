@@ -245,7 +245,10 @@ class Worker:
                 transcript = transcribe.run(ws, settings, on_progress=self._progress(vod_id, "processing"))
                 preview = preview or self._preview(vod_id, ws)
                 self._start(vod_id, "analysing", "processing")
-                hints = signals.run(ws, settings)
+                video_type = show.video_type if show else "streams"
+                # A TV episode or an edited video changes shot every few seconds, so its scene cuts would only be noise
+                # to the AI. A stream's mark its BRB screens and game changes.
+                hints = signals.run(ws, settings, detect_scenes=video_type == "streams")
                 self._start(vod_id, "segmenting", "processing")
                 segmentation = segment.run(
                     ws, settings, transcript, hints,
@@ -256,6 +259,8 @@ class Worker:
                     episode_room=titles.room_for_title(episode_template, day),
                     track_record=self._track_record(show),
                     breakdown=show.breakdown_categories() if show else None,
+                    video_type=video_type,
+                    offered_shorts=show.max_shorts if show else 5,
                 )
                 if show and show.save_transcripts:
                     self._save_transcript(show, vod, ws, transcript)
@@ -515,9 +520,11 @@ class Worker:
                     words = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")).words()
                     short = ws.clips_dir / f"{stem}-short.mp4"
                     background = settings.short_background(show.id) if show else None
+                    background = background if background and background.exists() else None
+                    crop = show.short_crop(settings.short_layout, bool(background)) if show else settings.short_layout == "crop"
                     render.render_short(
-                        source, pipeline_clip, words, short, settings, on_progress=check,
-                        background=background if background and background.exists() else None,
+                        source, pipeline_clip, words, short, settings, on_progress=check, crop=crop,
+                        background=None if crop else background,
                         video_top=show.short_video_top if show else None,
                         video_width=show.short_video_width if show else 1.0,
                     )
@@ -874,7 +881,9 @@ class Worker:
                 plan.prompt = redraw
             path, idea, cast = thumbnails.make(self.settings, clip, Workspace(self.settings.vods_dir / vod.workspace), notes,
                                                channel_picture=self._channel_picture, idea=plan,
-                                               rules=show.thumbnail_guidance if show else "")
+                                               rules=show.thumbnail_guidance if show else "",
+                                               on_idea=lambda idea: self._update_clip(
+                                                   clip_id, thumbnail_plan=idea.model_dump_json()))
         except Exception as e:
             log.warning("No thumbnail for clip %d: %s", clip_id, e)
             error = str(e) if isinstance(e, (ThumbnailError, LLMError)) else f"{type(e).__name__}: {e}"

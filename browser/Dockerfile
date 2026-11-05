@@ -6,6 +6,9 @@
 # it through Chromium's remote debugging port, which only it can reach: it shares this container's network.
 FROM debian:bookworm-slim
 
+# The day's date (deploy.sh and scan.sh pass it), so the first build each day installs the latest Chromium and its
+# security fixes. Without it, Docker keeps reusing the packages it installed the first time.
+ARG PACKAGES_DATE
 RUN apt-get update \
  && apt-get install -y --no-install-recommends chromium xvfb x11vnc novnc websockify fluxbox \
       fonts-dejavu-core fonts-noto-color-emoji ca-certificates \

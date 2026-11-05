@@ -13,6 +13,8 @@ node_modules/
 
 # Runtime data: media never goes in git (or Nextcloud)
 data/
+# Mounted at /media when CLIPPER_HOST_MEDIA_DIR isn't set
+media/
 *.mp4
 *.mkv
 *.wav
