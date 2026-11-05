@@ -224,6 +224,28 @@ class TestBreakdownCommand:
         self.run(cli, "--imported")
         assert len(got) == 1  # it has one now
 
+    def test_clear_deletes_the_breakdowns_so_a_plain_run_does_them_all_again(self, setup, settings):
+        cli, asked, _ = setup
+        self.run(cli)  # kick-1 gets one; kick-2 has had one since its clips were picked
+        output = self.run(cli, "--clear")
+        assert asked == ["kick-1"] and "Cleared 2 breakdowns." in output  # without asking the AI
+        assert read_json(settings.transcripts_dir / "night-owls" / "2026-10-30_kick-2.json")["breakdown"] == []
+        self.run(cli)
+        assert asked == ["kick-1", "kick-2", "kick-1"]  # both again, newest first
+        assert "Cleared 0 breakdowns." in self.run(cli, "--imported", "--clear")  # the app's own aren't imported
+
+    def test_clear_with_imported_takes_the_breakdowns_out_of_transcripts_from_elsewhere(self, setup, settings):
+        cli, asked, _ = setup
+        folder = settings.transcripts_dir / "night-owls"
+        old = {"id": "archive-9", "duration": 600, "segments": [{"start": 5, "end": 9, "text": "Hello chat."}]}
+        write_text(folder / "2025-01-02_archive-9.json", json.dumps({
+            **old, "categories": {"News": "going through headlines"}, "other_summary": "Nothing else.",
+            "breakdown": [{"start": 0, "end": 600, "category": "News", "note": ""}],
+        }))
+        output = self.run(cli, "--imported", "--clear")
+        assert read_json(folder / "2025-01-02_archive-9.json") == old and "Cleared 1 breakdown." in output
+        assert asked == [] and transcripts.parts(Workspace(settings.vods_dir / "kick-2"))  # the app's own stay
+
     def test_limit_does_the_newest_few_with_the_model_and_effort_asked_for(self, setup):
         cli, asked, _ = setup
         self.run(cli, "--again", "--limit", "1", "--model", "sonnet", "--effort", "low")
