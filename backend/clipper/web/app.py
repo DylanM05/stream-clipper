@@ -312,6 +312,7 @@ class UploadJobOut(BaseModel):
     status: str
     method: str  # "api", "studio" or (Rumble) "browser"; empty until it starts
     progress: float
+    cancel_requested: bool  # cancelled while going up: the worker is stopping it
     youtube_url: str  # the link once it's up, on whichever site
     error: str
     has_screenshot: bool
@@ -1896,10 +1897,14 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.delete("/api/upload-jobs/{job_id}", status_code=204)
     def cancel_upload(job_id: int, s: Session = Depends(db)) -> None:
+        """Take an upload out of the queue. One that's going up is stopped by the worker at its next progress check,
+        within seconds, and then taken out; a browser upload's form is never sent, so nothing is posted."""
         job = found(s, UploadJob, job_id, "upload")
         if job.status == "uploading":
-            raise HTTPException(409, "It's uploading right now and can't be cancelled from here")
-        s.delete(job)
+            job.cancel_requested, job.updated_at = True, utcnow()
+            s.add(job)
+        else:
+            s.delete(job)
         s.commit()
 
     @app.get("/media/upload-jobs/{job_id}/screenshot.png")

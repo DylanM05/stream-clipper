@@ -74,3 +74,15 @@ def test_a_hold_lapses_by_itself(settings):
         until = get_app_setting(s, DEPLOY_HOLD)
         assert deploy_held(s) and not deploy_held(s, now=utcnow() + timedelta(minutes=16))
     assert until
+
+
+def test_a_deploy_doesnt_wait_for_an_upload_that_stopped_moving_or_was_cancelled(settings):
+    add_job(settings, status="uploading", method="browser", site="rumble", progress=0.01,
+            started_at=utcnow() - timedelta(hours=3), progress_at=utcnow() - timedelta(hours=2, minutes=50))
+    add_job(settings, status="uploading", method="browser", site="rumble", progress=0.5, cancel_requested=True,
+            started_at=utcnow(), progress_at=utcnow())
+    out = CliRunner().invoke(cli.app, ["deploy-wait", "--every", "0.01"])
+    assert out.exit_code == 0, out.output
+    assert "Not waiting for rumble upload 1: it hasn't moved from 1% since" in out.output
+    assert "Not waiting for rumble upload 2: it was cancelled." in out.output
+    assert "the worker can restart" in out.output

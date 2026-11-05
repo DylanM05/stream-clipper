@@ -39,6 +39,7 @@ CATEGORIES = ("Automotive", "Cooking", "Entertainment", "Finance & Crypto", "Gam
 # "Personal Use" isn't monetized or searchable.
 LICENCE = "Rumble Only"
 UPLOAD_TIMEOUT_S = 12 * 3600  # full episodes can be tens of gigabytes
+STALL_S = 20 * 60  # an upload whose percentage doesn't move for this long is stuck
 SETTLE_S = 15  # for the page's scripts to finish loading
 START_WAIT_S = 30  # for the upload to start once the file is chosen
 STEP_WAIT_S = 30
@@ -226,13 +227,19 @@ def _wait_for_upload(page: Page, on_progress: Callable[[float], None]) -> None:
     bar = page.locator("#form2 .progress-wrap")
     seen = False
     deadline = time.monotonic() + UPLOAD_TIMEOUT_S
+    last, moved_at = -1, time.monotonic()
     while time.monotonic() < deadline:
         percents = [int(m[1]) for text in shown.all_inner_texts() if (m := re.search(r"(\d+)\s*%", text))]
         if percents:
             seen = True
-            on_progress(min(max(percents), 100) / 100)
-            if max(percents) >= 100:
+            percent = min(max(percents), 100)
+            on_progress(percent / 100)
+            if percent >= 100:
                 return
+            if percent != last:
+                last, moved_at = percent, time.monotonic()
+            elif time.monotonic() - moved_at > STALL_S:
+                raise RumbleUploadError(f"The upload stopped at {percent}% and didn't move for {STALL_S // 60} minutes")
         elif seen and not bar.is_visible():  # the progress went away: it's done
             on_progress(1.0)
             return

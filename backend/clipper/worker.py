@@ -61,6 +61,10 @@ class Paused(Exception):
     """Raised from a progress report to stop work that was paused, or taken back, in the app."""
 
 
+class UploadCancelled(Exception):
+    """Raised from an upload's progress report once it's been cancelled in the app (UploadJob.cancel_requested)."""
+
+
 class LimitChanged(Exception):
     """Raised from a download's progress report when the speed limit was changed in the app."""
 
@@ -655,7 +659,7 @@ class Worker:
                 job_id = next((jid for jid, turn in upload_turns(s, now).items() if turn.at <= now), None)
                 job = s.get(UploadJob, job_id) if job_id else None
             if job:
-                job.status, job.started_at, job.updated_at = "uploading", now, now
+                job.status, job.started_at, job.updated_at, job.progress_at, job.cancel_requested = "uploading", now, now, now, False
                 s.add(job)
                 s.commit()
         if not job:
@@ -706,16 +710,26 @@ class Worker:
                 elif missing:
                     note = ("The playlist and thumbnail only go on by themselves for channels connected to the YouTube "
                             "API, so add them in YouTube Studio.")
+        except UploadCancelled:
+            self._was_cancelled(job_id)
+            return
+        # The browser uploads turn whatever stopped them into their own error, a cancel included.
         except StudioError as e:
+            if self._was_cancelled(job_id):
+                return
             log.warning("Upload %d failed: %s", job_id, e)
             self._upload_failed(job, clip, str(e), retry="tomorrow" if e.retry else "", screenshot=e.screenshot,
                                 youtube_url=e.link)
             return
         except RumbleUploadError as e:
+            if self._was_cancelled(job_id):
+                return
             log.warning("Upload %d failed: %s", job_id, e)
             self._upload_failed(job, clip, str(e), retry="tomorrow" if e.retry else "", screenshot=e.screenshot)
             return
         except YouTubeError as e:
+            if self._was_cancelled(job_id):
+                return
             log.warning("Upload %d failed: %s", job_id, e)
             if e.signed_out:
                 self._update_destination(dest.id, youtube_error=str(e))
@@ -830,14 +844,35 @@ class Worker:
             s.commit()
 
     def _upload_progress(self, job_id: int) -> Callable[[float], None]:
+        """Records an upload's progress every few seconds, and when it last moved; stops it (UploadCancelled) once
+        it's been cancelled in the app."""
         last = [0.0]
 
         def report(fraction: float) -> None:
             if time.monotonic() - last[0] >= 5 or fraction >= 1:
                 last[0] = time.monotonic()
-                self._update_job(job_id, progress=round(fraction, 3))
+                with Session(self.engine) as s:
+                    job = s.get(UploadJob, job_id)
+                    if job.cancel_requested:
+                        raise UploadCancelled(job_id)
+                    if round(fraction, 3) != job.progress:
+                        job.progress, job.progress_at = round(fraction, 3), utcnow()
+                    job.updated_at = utcnow()
+                    s.add(job)
+                    s.commit()
 
         return report
+
+    def _was_cancelled(self, job_id: int) -> bool:
+        """Whether the upload was cancelled in the app while it was going up; if so, it's taken out of the queue."""
+        with Session(self.engine) as s:
+            job = s.get(UploadJob, job_id)
+            if not (job and job.cancel_requested):
+                return False
+            s.delete(job)
+            s.commit()
+        log.info("Upload %d cancelled from the app", job_id)
+        return True
 
     def _update_job(self, job_id: int, **fields) -> None:
         with Session(self.engine) as s:

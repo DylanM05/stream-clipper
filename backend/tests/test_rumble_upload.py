@@ -332,3 +332,49 @@ def test_a_shows_choice_of_sites_is_saved_and_checked(settings):
     assert client.patch(f"/api/shows/{show['id']}", json={"episode_sites": "rumble"}).json()["episode_sites"] == "rumble"
     assert client.patch(f"/api/shows/{show['id']}", json={"clip_sites": ""}).json()["clip_sites"] == ""  # the channel's again
     assert client.patch(f"/api/shows/{show['id']}", json={"clip_sites": "vimeo"}).status_code == 422
+
+
+def test_an_upload_stuck_at_one_percentage_gives_up_after_a_while(monkeypatch):
+    clock = [0.0]
+
+    class Shown:
+        def all_inner_texts(self):
+            return ["1%"]
+
+    class Page:
+        def locator(self, selector):
+            return Shown()
+
+        def wait_for_timeout(self, ms):
+            clock[0] += ms / 1000
+
+    monkeypatch.setattr(rumble_upload.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(rumble_upload, "_errors", lambda page: "")
+    seen = []
+    with pytest.raises(RumbleUploadError, match="stopped at 1% and didn't move for 20 minutes"):
+        rumble_upload._wait_for_upload(Page(), seen.append)
+    assert 20 * 60 < clock[0] < 21 * 60 and seen[0] == 0.01
+
+
+def test_an_upload_cancelled_in_the_app_while_going_up_is_stopped_and_taken_out(settings, clip_id, monkeypatch):
+    client = TestClient(web_app.create_app(settings))
+
+    def fake_upload(cdp_url, job, screenshots_dir, on_progress=lambda _: None):
+        on_progress(0.01)
+        assert client.delete("/api/upload-jobs/1").status_code == 204  # cancelled meanwhile
+        assert get(settings, UploadJob, 1).cancel_requested
+        try:
+            on_progress(1.0)  # its next progress check stops it...
+        except Exception as e:
+            raise RumbleUploadError(str(e), retry=True) from e  # ...which the page's upload turns into its own error
+        raise AssertionError("it should have stopped")
+
+    monkeypatch.setattr(worker_module.rumble_upload, "upload", fake_upload)
+    monkeypatch.setattr(worker_module, "probe_duration", lambda path: 39.0)
+    monkeypatch.setattr(worker_module.ffmpeg, "run", lambda args: Path(args[-1]).write_bytes(b"jpeg"))
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=clip_id, site="rumble"))
+        s.commit()
+    assert worker_module.Worker(settings).upload_next() is True
+    assert get(settings, UploadJob, 1) is None  # out of the queue, not failed
+    assert get(settings, ClipRecord, clip_id).status == "rendered"

@@ -334,6 +334,21 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
                 </span>
               </div>
               {job.status === "uploading" && <ProgressBar value={job.progress || null} />}
+              {job.status === "uploading" &&
+                (job.cancel_requested ? (
+                  <p className="text-xs text-zinc-400">Stopping it… it's taken out of the queue within a few seconds.</p>
+                ) : (
+                  <button
+                    onClick={() => {
+                      if (confirm("Stop this upload and take it out of the queue? Nothing is posted.")) {
+                        run(() => api.cancelUpload(job.id), "Stopping it");
+                      }
+                    }}
+                    className="text-xs font-semibold text-zinc-400"
+                  >
+                    Cancel
+                  </button>
+                ))}
               {job.status === "done" && job.youtube_url && (
                 <a href={job.youtube_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-violet-300">
                   <LinkIcon className="size-4" /> {job.youtube_url}

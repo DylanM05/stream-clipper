@@ -616,6 +616,7 @@ def usage() -> None:
 
 
 HOLD_FOR = timedelta(minutes=15)  # how long a deploy's hold on new uploads lasts unless it's renewed or ended
+STUCK_AFTER = timedelta(minutes=20)  # an upload whose progress hasn't moved for this long isn't waited for
 
 
 @app.command("deploy-wait")
@@ -626,14 +627,16 @@ def deploy_wait(
     """Before a deploy restarts the worker: hold new uploads, and wait for one going up through the upload browser
     (YouTube Studio or Rumble) to finish, since those can't carry on after a restart and would need checking by hand.
     Everything else picks up by itself: videos and renders start their step again, and uploads through the YouTube
-    API carry on where they were. The hold lapses by itself 15 minutes after the last check, so a deploy that stops
-    partway can't leave uploads held; deploy-done ends it."""
+    API carry on where they were. An upload cancelled in the app, or whose progress hasn't moved for 20 minutes, isn't
+    waited for. The hold lapses by itself 15 minutes after the last check, so a deploy that stops partway can't leave
+    uploads held; deploy-done ends it."""
     from sqlmodel import Session, col, select
 
     from .db import DEPLOY_HOLD, UploadJob, get_engine, set_app_setting, utcnow
 
     engine = get_engine(get_settings())
     deadline = time.monotonic() + max_hours * 3600
+    skipped: set[int] = set()
     while True:
         with Session(engine) as s:
             set_app_setting(s, DEPLOY_HOLD, (utcnow() + HOLD_FOR).isoformat())
@@ -641,6 +644,17 @@ def deploy_wait(
             going = s.exec(select(UploadJob).where(
                 UploadJob.status == "uploading", col(UploadJob.method).not_in(("api",)),
             )).all()
+        # Not worth waiting for: one cancelled in the app, or stuck (its progress hasn't moved for a while). The restart
+        # marks them failed, to retry or dismiss.
+        for j in going:
+            moved = j.progress_at or j.started_at
+            stuck = moved is not None and utcnow() - _aware(moved) > STUCK_AFTER
+            if (j.cancel_requested or stuck) and j.id not in skipped:
+                why = "it was cancelled" if j.cancel_requested else (
+                    f"it hasn't moved from {round(j.progress * 100)}% since {_aware(moved).astimezone():%H:%M %Z}")
+                typer.echo(f"Not waiting for {j.site} upload {j.id}: {why}.")
+                skipped.add(j.id)
+        going = [j for j in going if j.id not in skipped]
         if not going:
             typer.echo("No upload is going through the upload browser: the worker can restart. New uploads are held.")
             return

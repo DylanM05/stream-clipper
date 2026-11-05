@@ -163,6 +163,7 @@ export interface UploadJob {
   status: "queued" | "uploading" | "done" | "failed";
   method: "api" | "studio" | "browser" | "";
   progress: number;
+  cancel_requested: boolean; // cancelled while going up: the worker is stopping it
   youtube_url: string; // its link once it's up, on whichever site
   error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;

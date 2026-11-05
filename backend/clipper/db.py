@@ -91,6 +91,8 @@ class UploadJob(SQLModel, table=True):
     status: str = Field(default="queued", index=True)  # queued, uploading, done, failed
     method: str = ""  # "api", "studio" or (on Rumble) "browser", set when it starts
     progress: float = 0
+    progress_at: datetime | None = None  # when progress last moved, so a stuck upload can be told apart (cli deploy-wait)
+    cancel_requested: bool = False  # cancelled in the app while uploading: the worker stops it at its next progress check
     youtube_url: str = ""  # the video's link once it's up, on whichever site it went to
     error: str = ""  # why it failed; on a finished upload, a note (e.g. YouTube changed the visibility)
     screenshot: str = ""  # of Studio when it failed
