@@ -237,3 +237,32 @@ def test_a_cli_that_isnt_signed_in_is_a_problem_to_fix_on_the_server(settings, m
     assert "--entrypoint codex worker login --device-auth" in client.patch("/api/ai", json={"provider": "codex"}).json()["problem"]
     monkeypatch.setattr(Codex, "signed_in", lambda self: True)
     assert client.get("/api/ai").json()["problem"] == ""
+
+
+def test_a_task_uses_the_main_ai_until_it_gets_one_of_its_own(settings):
+    client = TestClient(web_app.create_app(settings))
+    tasks = {t["id"]: t for t in client.get("/api/ai").json()["tasks"]}
+    assert set(tasks) == {"clips", "breakdown", "titles", "thumbnails"}
+    assert tasks["breakdown"]["provider"] == "" and tasks["breakdown"]["uses"] == "Claude Code (opus)"
+
+    # Breakdowns on Codex with a model of their own; everything else stays on the main AI.
+    setup = client.patch("/api/ai", json={"task": "breakdown", "provider": "codex", "model": "gpt-6-luna"}).json()
+    tasks = {t["id"]: t for t in setup["tasks"]}
+    assert (tasks["breakdown"]["provider"], tasks["breakdown"]["model"]) == ("codex", "gpt-6-luna")
+    assert tasks["breakdown"]["uses"] == "Codex (gpt-6-luna)" and tasks["clips"]["uses"] == "Claude Code (opus)"
+    breakdowns, clips = ai.model(settings, "low", 60, task="breakdown"), ai.model(settings, "low", 60, task="clips")
+    assert isinstance(breakdowns, Codex) and breakdowns.model == "gpt-6-luna"
+    assert isinstance(clips, ClaudeCode) and clips.model == "opus"
+
+    # A task on another AI with no model of its own uses that AI's model; the main AI changing doesn't move it.
+    client.patch("/api/ai", json={"task": "titles", "provider": "codex"})
+    client.patch("/api/ai", json={"provider": "codex", "model": "gpt-6-astra"})
+    client.patch("/api/ai", json={"provider": "claude"})
+    assert ai.model(settings, "low", 60, task="titles").model == "gpt-6-astra"
+
+    # Back on the main AI, its own model goes too.
+    tasks = {t["id"]: t for t in client.patch("/api/ai", json={"task": "breakdown", "provider": ""}).json()["tasks"]}
+    assert (tasks["breakdown"]["provider"], tasks["breakdown"]["model"]) == ("", "")
+    assert isinstance(ai.model(settings, "low", 60, task="breakdown"), ClaudeCode)
+    assert client.patch("/api/ai", json={"task": "dancing", "provider": "codex"}).status_code == 422
+    assert client.patch("/api/ai", json={"provider": ""}).status_code == 422

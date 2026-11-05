@@ -196,7 +196,7 @@ def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str
         lines += ["", "# The channel owner's idea for this thumbnail (build on it)", clip.thumbnail_hint.strip()]
     if transcript:
         lines += ["", "# What's said in it", transcript]
-    llm = ai.model(settings, effort="medium", timeout_s=600)
+    llm = ai.model(settings, effort="medium", timeout_s=600, task="thumbnails")
     return llm.structured(
         system_prompt=(PROMPTS_DIR / "thumbnail.md").read_text(encoding="utf-8"),
         task=f"Come up with this video's thumbnail and write the image prompt. {FRAMES} frames of the video go to "

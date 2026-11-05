@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useState, type FormEvent, type ReactNode } from "react";
 import { api, errorText, type AiProviderId, type AiSetup, type AppSettings, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
@@ -312,88 +312,162 @@ const AI_HINT: Record<AiProviderId, string> = {
     "structured outputs works; anthropic/claude-opus-5.5 costs about $0.75 for an 8-hour stream.",
 };
 
-function aiText(setup: AiSetup): string {
-  const { id, model } = setup.providers.find((p) => p.id === setup.provider)!;
-  const who = {
-    claude: `Claude (${model}) on your Claude plan`,
-    codex: `Codex (${model || "its default model"}) on your ChatGPT plan`,
-    openrouter: `${model} on OpenRouter`,
-  }[id];
-  return `${who} picks the clips and writes their titles and thumbnail ideas.`;
-}
-
-/** Which AI picks the clips and writes the titles and thumbnail ideas, and its model. */
+/** The AI: the main one, and each task (picking clips, breakdowns, titles, thumbnails), which can have its own. */
 function AiChoice() {
   const toast = useToast();
   const { data: setup, setData } = usePoll(api.ai, 0);
-  const [editing, setEditing] = useState(false);
-  const [provider, setProvider] = useState<AiProviderId>("claude");
-  const [model, setModel] = useState("");
+  const [editing, setEditing] = useState<string | null>(null); // "main" or a task's id
   if (!setup) return null;
 
-  const modelOf = (id: AiProviderId) => setup.providers.find((p) => p.id === id)!;
-  const choose = (id: AiProviderId) => {
-    setProvider(id);
-    setModel(modelOf(id).model);
-  };
-  const save = async () => {
+  const main = setup.providers.find((p) => p.id === setup.provider)!;
+  const save = async (body: Parameters<typeof api.setAi>[0]) => {
     try {
-      // The default stays the default, rather than being kept as this model's name.
-      const name = model.trim() === modelOf(provider).default_model ? "" : model.trim();
-      setData(await api.setAi({ provider, model: name }));
-      setEditing(false);
-      toast({ text: "Saved. It takes over from the next video." });
+      setData(await api.setAi(body));
+      setEditing(null);
+      toast({ text: "Saved. It takes over from the next piece of work." });
     } catch (e) {
       toast({ text: errorText(e) });
     }
   };
 
-  if (editing) {
-    const problem = provider === setup.provider ? setup.problem : "";
-    return (
-      <div className="space-y-2 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-        <label className="block text-xs font-semibold uppercase tracking-wide text-zinc-500">The AI</label>
-        <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
-          {setup.providers.map((p) => (
-            <button
-              key={p.id}
-              type="button"
-              onClick={() => choose(p.id)}
-              className={cn("rounded-lg py-2 text-xs font-semibold", provider === p.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
-            >
-              {p.name}
-            </button>
-          ))}
-        </div>
-        <div className="flex gap-2">
+  return (
+    <div className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
+      <p className="text-xs font-semibold uppercase tracking-wide text-zinc-500">The AI</p>
+      <div className="mt-2 divide-y divide-white/5">
+        <AiRow
+          name="Main AI"
+          hint="Every task below uses it, unless the task has an AI of its own."
+          uses={`${main.name} (${main.model || "its default model"})`}
+          problem={setup.problem}
+          editing={editing === "main"}
+          onEdit={() => setEditing("main")}
+        >
+          <AiEditor
+            setup={setup}
+            provider={setup.provider}
+            model={main.model}
+            onCancel={() => setEditing(null)}
+            onSave={(provider, model) => {
+              const ofIt = setup.providers.find((p) => p.id === provider)!;
+              // The default stays the default, rather than being kept as this model's name.
+              save({ provider: provider as AiProviderId, model: model === ofIt.default_model ? "" : model });
+            }}
+          />
+        </AiRow>
+        {setup.tasks.map((task) => (
+          <AiRow
+            key={task.id}
+            name={task.name}
+            hint={task.hint}
+            uses={task.provider ? task.uses : `Main AI: ${task.uses}`}
+            problem={task.provider ? task.problem : ""}
+            editing={editing === task.id}
+            onEdit={() => setEditing(task.id)}
+          >
+            <AiEditor
+              setup={setup}
+              provider={task.provider}
+              model={task.model}
+              withMain
+              onCancel={() => setEditing(null)}
+              onSave={(provider, model) => save({ task: task.id, provider, model: provider ? model : "" })}
+            />
+          </AiRow>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** One line of the AI card: what it's for, which AI does it, and its editor while it's being changed. */
+function AiRow(props: {
+  name: string;
+  hint: string;
+  uses: string;
+  problem: string;
+  editing: boolean;
+  onEdit: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="py-3">
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-sm font-semibold text-zinc-200">{props.name}</span>
+        {!props.editing && (
+          <button type="button" onClick={props.onEdit} className="shrink-0 text-xs font-semibold text-violet-300">
+            Change
+          </button>
+        )}
+      </div>
+      {!props.editing && <p className="text-sm text-zinc-300">{props.uses}</p>}
+      <p className="text-xs text-zinc-500">{props.hint}</p>
+      {props.problem && !props.editing && <p className="mt-1 text-xs text-amber-300">{props.problem}</p>}
+      {props.editing && <div className="mt-2">{props.children}</div>}
+    </div>
+  );
+}
+
+/** Pick an AI ("" for the main one, when `withMain`) and its model. */
+function AiEditor(props: {
+  setup: AiSetup;
+  provider: AiProviderId | "";
+  model: string;
+  withMain?: boolean;
+  onSave: (provider: AiProviderId | "", model: string) => void;
+  onCancel: () => void;
+}) {
+  const [provider, setProvider] = useState<AiProviderId | "">(props.provider);
+  const [model, setModel] = useState(props.model);
+  const ofIt = provider ? props.setup.providers.find((p) => p.id === provider)! : null;
+  const options: { id: AiProviderId | ""; name: string }[] = [
+    ...(props.withMain ? [{ id: "" as const, name: "Main AI" }] : []),
+    ...props.setup.providers.map((p) => ({ id: p.id, name: p.name })),
+  ];
+  const choose = (id: AiProviderId | "") => {
+    setProvider(id);
+    // A task's own model starts empty: that AI's model, as set for it. The main AI shows the model it has.
+    setModel(props.withMain ? "" : (props.setup.providers.find((p) => p.id === id)?.model ?? ""));
+  };
+  return (
+    <div className="space-y-2">
+      <div className={cn("grid gap-1 rounded-xl bg-zinc-800 p-1", options.length === 4 ? "grid-cols-4" : "grid-cols-3")}>
+        {options.map((o) => (
+          <button
+            key={o.id || "main"}
+            type="button"
+            onClick={() => choose(o.id)}
+            className={cn("rounded-lg px-1 py-2 text-xs font-semibold", provider === o.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
+          >
+            {o.name}
+          </button>
+        ))}
+      </div>
+      <div className="flex gap-2">
+        {ofIt && (
           <input
             value={model}
             onChange={(e) => setModel(e.target.value)}
-            placeholder={modelOf(provider).default_model || "Codex's default"}
+            placeholder={(props.withMain ? ofIt.model : ofIt.default_model) || "Its default"}
             aria-label="Model"
             className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
           />
-          <Button onClick={() => setEditing(false)}>Cancel</Button>
-          <Button tone="primary" onClick={save}>
-            Save
-          </Button>
-        </div>
-        <p className="text-xs text-zinc-500">{AI_HINT[provider]}</p>
-        {problem && <p className="text-xs text-amber-300">{problem}</p>}
+        )}
+        <Button onClick={props.onCancel} className={ofIt ? "" : "flex-1"}>
+          Cancel
+        </Button>
+        <Button tone="primary" onClick={() => props.onSave(provider, model.trim())} className={ofIt ? "" : "flex-1"}>
+          Save
+        </Button>
       </div>
-    );
-  }
-  return (
-    <button
-      onClick={() => {
-        choose(setup.provider);
-        setEditing(true);
-      }}
-      className="block w-full text-left text-xs text-zinc-500"
-    >
-      {aiText(setup)} {setup.problem && <span className="text-amber-300">{setup.problem} </span>}
-      <span className="font-semibold text-violet-300">Change</span>
-    </button>
+      {ofIt ? (
+        <p className="text-xs text-zinc-500">
+          {props.withMain ? `Leave the model empty for the one ${ofIt.name} uses (${ofIt.model || "its default"}). ` : ""}
+          {AI_HINT[ofIt.id]}
+        </p>
+      ) : (
+        <p className="text-xs text-zinc-500">The task follows the main AI, whatever it's set to.</p>
+      )}
+    </div>
   );
 }
 

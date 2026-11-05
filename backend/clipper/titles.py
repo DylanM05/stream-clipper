@@ -108,7 +108,7 @@ class _Preview(BaseModel):
 
 def preview_title(post_text: str, room: int, settings: Settings, notes: str = "") -> str:
     """A short title previewing what a posted video is about, written by the AI from the post's text."""
-    llm = ai.model(settings, effort="low", timeout_s=300)
+    llm = ai.model(settings, effort="low", timeout_s=300, task="titles")
     stdin = f"# Post text\n{post_text.strip()}\n"
     if notes.strip():
         stdin += f"\n# Notes about the show\n{notes.strip()}\n"

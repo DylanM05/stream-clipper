@@ -149,7 +149,7 @@ class _Check(BaseModel):
 
 @app.command("llm-check")
 def llm_check() -> None:
-    """Check that the AI chosen in the app (Claude Code, Codex or OpenRouter) answers with structured output."""
+    """Check that each AI chosen in the app (Claude Code, Codex or OpenRouter) answers with structured output."""
     from sqlmodel import Session
 
     from . import ai
@@ -157,22 +157,29 @@ def llm_check() -> None:
 
     settings = get_settings()
     with Session(get_engine(settings)) as s:
-        choice = ai.chosen(s, settings)
-    typer.echo(f"{ai.PROVIDERS[choice.provider]}, model {choice.model or 'its default'}")
-    try:
-        llm = ai.backend(settings, choice, effort="low", timeout_s=300)
-        if hasattr(llm, "auth_status"):
-            typer.echo(llm.auth_status())
-        result = llm.structured(
-            system_prompt="You answer briefly.",
-            task="What is 17 + 25? Also invent a short, funny clip title about a streamer losing to a chicken.",
-            stdin_text="",
-            schema=_Check,
-        )
-    except LLMError as e:
-        typer.secho(f"Failed: {e}", fg="red", err=True)
+        choices = ai.in_use(s, settings)
+        tasks = {c: [name for task, name in ai.TASKS.items() if ai.chosen(s, settings, task) == c] for c in choices}
+    failed = False
+    for choice in choices:
+        typer.echo(f"{ai.PROVIDERS[choice.provider]}, model {choice.model or 'its default'}: "
+                   f"{', '.join(tasks[choice]) or 'the main AI'}")
+        try:
+            llm = ai.backend(settings, choice, effort="low", timeout_s=300)
+            if hasattr(llm, "auth_status"):
+                typer.echo(llm.auth_status())
+            result = llm.structured(
+                system_prompt="You answer briefly.",
+                task="What is 17 + 25? Also invent a short, funny clip title about a streamer losing to a chicken.",
+                stdin_text="",
+                schema=_Check,
+            )
+        except LLMError as e:
+            typer.secho(f"Failed: {e}", fg="red", err=True)
+            failed = True
+            continue
+        typer.secho(f"OK: answer={result.answer}, title={result.title!r}", fg="green")
+    if failed:
         raise typer.Exit(1)
-    typer.secho(f"OK: answer={result.answer}, title={result.title!r}", fg="green")
 
 
 @app.command("channel-check")
@@ -336,7 +343,7 @@ def save_transcripts() -> None:
 @app.command()
 def breakdown(
     vod_ids: Annotated[Optional[list[int]], typer.Argument(help="Video ids, as this prints them. Default: every stream of the shows with breakdown categories that has none yet.")] = None,
-    again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories.")] = False,
+    again: Annotated[bool, typer.Option("--again", help="Also do the streams that have one already, e.g. after changing the categories or to redo them with another model. With --imported, ones this run's AI and model already made are skipped, so a stopped run carries on.")] = False,
     imported: Annotated[bool, typer.Option("--imported", help="Instead, the transcripts added to the shows' folders from elsewhere, e.g. an archive of past streams.")] = False,
     model: Annotated[Optional[str], typer.Option(help="Another of the AI's models for this run, e.g. sonnet, instead of the one chosen in the app, which new streams keep using.")] = None,
     effort: Annotated[Optional[str], typer.Option(help="How hard the AI thinks for this run (low, medium, high, xhigh, max), instead of CLIPPER_LLM_EFFORT.")] = None,
@@ -400,29 +407,36 @@ def _break_down_imported(run: "_Run", shows, made_here: set[str], again: bool) -
     """`breakdown --imported`: the transcripts in the shows' folders that came from elsewhere, newest first."""
     from . import transcripts
 
-    todo = []
+    made_by = run.made_by()
+    typer.echo(f"Breaking down with {made_by}")
+    todo, done_already = [], 0
     for show in shows:
         if show.breakdown_categories():
             for path in transcripts.from_elsewhere(run.settings, show, made_here):
-                if again or not transcripts.read(path)[0].get("breakdown"):
+                data = transcripts.read(path)[0]
+                if not data.get("breakdown"):
                     todo.append((show, path))
+                elif again and data.get("breakdown_by") != made_by:  # again, unless this AI and model made it
+                    todo.append((show, path))
+                elif again:
+                    done_already += 1
     todo.sort(key=lambda t: t[1].name, reverse=True)  # named <date>_<id>.json
+    if done_already:
+        typer.echo(f"{done_already} already broken down with {made_by}: left as they are")
 
     def job(show, path):
         def do() -> int:
             data, transcript = transcripts.read(path)
             answer = segment.ask_breakdown(run.settings, transcripts.meta(data), transcript, show.breakdown_categories(),
                                            context=show.notes, model=run.model, effort=run.effort)
-            transcripts.add_breakdown(path, data, show, answer, transcript.duration)
+            transcripts.add_breakdown(path, data, show, answer, transcript.duration, made_by)
             return len(answer.breakdown)
         return path.stem.replace("_", "  ", 1), do
 
-    run.go([job(*t) for t in todo], lambda left: (
-        f"Run the same command again after that to carry on with the {len(left)} left"
-        + (" (with --again, it starts over; --wait carries on by itself instead)." if again else ".")))
+    run.go([job(*t) for t in todo], lambda left: f"Run the same command again after that to carry on with the {len(left)} left.")
     if not todo:
         typer.echo("Nothing to break down: no transcripts from elsewhere without a breakdown, in the folders of the shows "
-                   "with breakdown categories." + ("" if again else " To do them all again, add --again."))
+                   "with breakdown categories." + ("" if again else " To do them again with another AI or model, add --again."))
 
 
 class _Run:
@@ -435,6 +449,17 @@ class _Run:
     def __init__(self, settings, model: str | None, effort: str | None, limit: int, wait: bool, reserve: float = 0):
         self.settings, self.model, self.effort, self.limit, self.wait = settings, model, effort, limit, wait
         self.reserve = reserve
+
+    def made_by(self) -> str:
+        """The AI and model this run breaks down with, e.g. "codex:gpt-6-astra"."""
+        from sqlmodel import Session
+
+        from . import ai
+        from .db import get_engine
+
+        with Session(get_engine(self.settings)) as s:
+            choice = ai.chosen(s, self.settings, "breakdown")
+        return f"{choice.provider}:{self.model or choice.model or 'default'}"
 
     def go(self, jobs: list, carry_on) -> None:
         """Run each job (what it's called, and what asks the AI and saves the answer, returning how many parts) in
@@ -489,7 +514,7 @@ class _Run:
         from . import ai
         from .db import utcnow
 
-        llm = ai.model(self.settings, effort=None, timeout_s=120, model_name=self.model)
+        llm = ai.model(self.settings, effort=None, timeout_s=120, model_name=self.model, task="breakdown")
         said = ""
         while True:
             meters = llm.plan_usage()
@@ -540,13 +565,13 @@ def _meter(meter: dict) -> str:
 
 @app.command()
 def usage() -> None:
-    """Show how much of the AI plan's usage limits is used, as `breakdown --reserve` reads it (Claude Code's /usage)."""
-    from . import ai
+    """Show how much of your Claude plan's usage limits is used, as `breakdown --reserve` reads it (Claude Code's /usage)."""
+    from .llm import ClaudeCode
 
-    meters = ai.model(get_settings(), effort=None, timeout_s=120).plan_usage()
+    meters = ClaudeCode(bin=get_settings().claude_bin).plan_usage()
     if meters is None:
-        typer.echo("The AI chosen in the app doesn't report its plan's usage as data: that needs Claude Code, recent, "
-                   "signed in with a claude.ai account (with `claude` itself, not a `claude setup-token` token).")
+        typer.echo("Claude Code doesn't report the plan's usage as data here: that needs it recent, and signed in with a "
+                   "claude.ai account (with `claude` itself, not a `claude setup-token` token).")
         raise typer.Exit(1)
     if not meters:
         typer.echo("The plan reports no usage limits.")
@@ -649,9 +674,10 @@ def doctor() -> None:
     from .db import get_engine
 
     with Session(get_engine(settings)) as s:
-        choice = ai.chosen(s, settings)
-    problem = ai.problem(settings, choice)
-    report(f"the AI ({ai.PROVIDERS[choice.provider]}, {choice.model or 'its default model'}) set up", not problem, problem or "ready")
+        choices = ai.in_use(s, settings)
+    for choice in choices:
+        problem = ai.problem(settings, choice)
+        report(f"the AI ({ai.PROVIDERS[choice.provider]}, {choice.model or 'its default model'}) set up", not problem, problem or "ready")
 
     try:
         settings.data_dir.mkdir(parents=True, exist_ok=True)

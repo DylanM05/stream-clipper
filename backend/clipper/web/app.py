@@ -382,17 +382,33 @@ class AiProvider(BaseModel):
     default_model: str  # what it uses until another is set in the app (CLIPPER_LLM_MODEL and the like)
 
 
+class AiTask(BaseModel):
+    """One task the AI does (ai.TASKS), and which AI does it."""
+
+    id: str
+    name: str
+    hint: str
+    provider: str  # its own AI, or "" for the main one
+    model: str  # its own model, or "" for that AI's
+    uses: str  # the AI and model it uses, e.g. "Codex (gpt-6-luna)"
+    problem: str  # what stops that AI from working; "" if nothing does
+
+
 class AiSetup(BaseModel):
-    """The AI that picks the clips and writes preview titles and thumbnail ideas (ai.py)."""
+    """The main AI (ai.py), which every task uses unless it has one of its own."""
 
     provider: str
     providers: list[AiProvider]
     problem: str  # what stops the chosen one from working, such as a missing sign-in; "" if nothing does
+    tasks: list[AiTask]
 
 
 class AiPatch(BaseModel):
-    provider: Literal["claude", "codex", "openrouter"] | None = None
-    model: str | None = Field(default=None, max_length=200)  # for the provider given, or else the chosen one; "" for its default
+    # With a task: that task's own AI ("" for the main one) and model ("" for that AI's). Without: the main AI, and
+    # the model of the provider given, or else of the main one ("" for its default).
+    task: str | None = None
+    provider: Literal["claude", "codex", "openrouter", ""] | None = None
+    model: str | None = Field(default=None, max_length=200)
 
 
 class Pauses(BaseModel):
@@ -912,7 +928,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        default_model=ai.default_model(settings, p))
             for p, name in ai.PROVIDERS.items()
         ]
-        return AiSetup(provider=choice.provider, providers=providers, problem=ai.problem(settings, choice))
+        problems: dict[ai.Choice, str] = {}
+
+        def problem(c: ai.Choice) -> str:  # each AI checked once
+            if c not in problems:
+                problems[c] = ai.problem(settings, c)
+            return problems[c]
+
+        tasks = []
+        for task, name in ai.TASKS.items():
+            used = ai.chosen(s, settings, task)
+            label = f"{ai.PROVIDERS[used.provider]} ({used.model or 'its default model'})"
+            tasks.append(AiTask(id=task, name=name, hint=ai.TASK_HINTS[task], uses=label, problem=problem(used),
+                                provider=get_app_setting(s, f"ai_task_{task}") or "",
+                                model=get_app_setting(s, f"ai_task_{task}_model") or ""))
+        return AiSetup(provider=choice.provider, providers=providers, problem=problem(choice), tasks=tasks)
 
     @app.get("/api/ai")
     def get_ai(s: Session = Depends(db)) -> AiSetup:
@@ -921,13 +951,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.patch("/api/ai")
     def set_ai(body: AiPatch, s: Session = Depends(db)) -> AiSetup:
         """From the next piece of work on: what the AI is already working on finishes with the one it started with."""
-        if body.provider:
-            set_app_setting(s, ai.PROVIDER_KEY, body.provider)
-        if body.model is not None:
-            model = body.model.strip()
-            if any(c.isspace() for c in model):
-                raise HTTPException(422, "A model's name has no spaces in it")
-            set_app_setting(s, f"{body.provider or ai.chosen(s, settings).provider}_model", model)
+        model = body.model.strip() if body.model is not None else None
+        if model and any(c.isspace() for c in model):
+            raise HTTPException(422, "A model's name has no spaces in it")
+        if body.task:
+            if body.task not in ai.TASKS:
+                raise HTTPException(422, f"No task {body.task!r}")
+            if body.provider is not None:
+                set_app_setting(s, f"ai_task_{body.task}", body.provider)
+                if not body.provider:  # back on the main AI, with its model
+                    set_app_setting(s, f"ai_task_{body.task}_model", "")
+            if model is not None:
+                set_app_setting(s, f"ai_task_{body.task}_model", model)
+        else:
+            if body.provider == "":
+                raise HTTPException(422, "The main AI has to be one of them")
+            if body.provider:
+                set_app_setting(s, ai.PROVIDER_KEY, body.provider)
+            if model is not None:
+                set_app_setting(s, f"{body.provider or ai.chosen(s, settings).provider}_model", model)
         s.commit()
         return ai_setup(s)
 

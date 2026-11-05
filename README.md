@@ -323,7 +323,7 @@ The database of videos, clips and review decisions is `<data>/clipper.db`.
 
 ### The AI
 
-The AI picks each stream's clips and highlights, and writes their titles, a whole video's short title, and thumbnail ideas. Choose which one under **Videos**: **Change**, next to the line saying which it is. A video it's already working on finishes with the one it started with.
+The AI picks each stream's clips and highlights, and writes their titles, a whole video's short title, and thumbnail ideas. Choose which one under **Videos**, in **The AI**: the **Main AI** does every task, and each task (picking clips, breakdowns on their own, preview titles, thumbnail ideas) can have an AI of its own instead, with its own model or that AI's. For example, Claude Code picks the clips while Codex does the breakdowns of past streams. A video it's already working on finishes with the one it started with. `clipper doctor` and `clipper llm-check` check every AI in use.
 
 | | Paid with | Sign in, once, on the server |
 |---|---|---|

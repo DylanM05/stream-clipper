@@ -307,13 +307,24 @@ export interface Storage {
   min_free_gb: number; // below this, new downloads wait for space
 }
 
-/** The AI that picks the clips and writes preview titles and thumbnail ideas. */
+/** The main AI, which picks the clips and writes preview titles and thumbnail ideas unless a task has its own. */
 export type AiProviderId = "claude" | "codex" | "openrouter";
+
+export interface AiTask {
+  id: string; // "clips", "breakdown", "titles", "thumbnails"
+  name: string;
+  hint: string;
+  provider: AiProviderId | ""; // its own AI, or "" for the main one
+  model: string; // its own model, or "" for that AI's
+  uses: string; // the AI and model it uses, e.g. "Codex (gpt-6-luna)"
+  problem: string; // what stops that AI from working; "" if nothing does
+}
 
 export interface AiSetup {
   provider: AiProviderId;
   providers: { id: AiProviderId; name: string; model: string; default_model: string }[]; // Codex's "" is its default
   problem: string; // what stops the chosen one from working, e.g. no sign-in; "" if nothing does
+  tasks: AiTask[];
 }
 
 /** Settings changed from the app. */
@@ -380,7 +391,7 @@ export const api = {
   setPauses: (body: Partial<Pauses>) => patch<Pauses>("/api/pauses", body),
   notifications: () => request<{ ntfy: boolean; discord: boolean; links: boolean }>("/api/notifications"),
   ai: () => request<AiSetup>("/api/ai"),
-  setAi: (body: { provider?: AiProviderId; model?: string }) => patch<AiSetup>("/api/ai", body),
+  setAi: (body: { task?: string; provider?: AiProviderId | ""; model?: string }) => patch<AiSetup>("/api/ai", body),
   testNotification: () => post<{ sent: boolean }>("/api/notifications/test"),
 
   vods: () => request<Vod[]>("/api/vods"),

@@ -57,7 +57,7 @@ def run(
         system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
         task += ", and break down what its time goes on"
         schema = SegmentationWithBreakdown
-    llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s)
+    llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s, task="clips")
     result = llm.structured(
         system_prompt=system_prompt,
         task=f"{task}. {title_rule}. The stream details, hints and transcript follow.",
@@ -85,7 +85,8 @@ def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakd
     """The AI's breakdown of any transcript, also one from elsewhere (transcripts.read). `meta` is the stream's details
     as yt-dlp gives them. `model` and `effort` replace the AI's own for this request (ai.model)."""
     system_prompt = "\n".join((PROMPTS_DIR / name).read_text(encoding="utf-8") for name in ("breakdown_alone.md", "breakdown.md"))
-    llm = ai.model(settings, effort=effort or settings.llm_effort, timeout_s=settings.llm_timeout_s, model_name=model)
+    llm = ai.model(settings, effort=effort or settings.llm_effort, timeout_s=settings.llm_timeout_s, model_name=model,
+                   task="breakdown")
     result = llm.structured(
         system_prompt=system_prompt,
         task=(f"Break down what this {to_timecode(transcript.duration)} stream's time goes on. The stream details, notes "

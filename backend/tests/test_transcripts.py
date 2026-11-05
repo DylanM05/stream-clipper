@@ -218,6 +218,11 @@ class TestBreakdownCommand:
         assert "breakdown" not in read_json(folder / "2026-10-30_kick-1.json")  # the app's own: done the usual way
         self.run(cli, "--imported")
         assert len(got) == 1  # it has one now
+        assert read_json(folder / "2025-01-02_archive-9.json")["breakdown_by"] == "claude:opus"
+        output = self.run(cli, "--imported", "--again")  # the same AI and model made it: nothing to redo
+        assert len(got) == 1 and "1 already broken down with claude:opus" in output
+        self.run(cli, "--imported", "--again", "--model", "sonnet")  # another model: redone
+        assert len(got) == 2 and read_json(folder / "2025-01-02_archive-9.json")["breakdown_by"] == "claude:sonnet"
 
     def test_limit_does_the_newest_few_with_the_model_and_effort_asked_for(self, setup):
         cli, asked, _ = setup

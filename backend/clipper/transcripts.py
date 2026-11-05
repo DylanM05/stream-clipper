@@ -94,11 +94,12 @@ def meta(data: dict) -> dict:
             "upload_date": (data.get("date") or "").replace("-", "")}
 
 
-def add_breakdown(path: Path, data: dict, show: Show, answer: Breakdown, duration: float) -> None:
-    """Put the AI's breakdown into a saved transcript from elsewhere, under the show's categories."""
+def add_breakdown(path: Path, data: dict, show: Show, answer: Breakdown, duration: float, made_by: str = "") -> None:
+    """Put the AI's breakdown into a saved transcript from elsewhere, under the show's categories. `made_by` says which
+    AI and model made it ("codex:gpt-6-astra"), so a redo with another can tell which are done."""
     categories = show.breakdown_categories()
     data.update(categories=categories, breakdown=in_seconds(answer.breakdown, categories, duration),
-                other_summary=answer.other_summary)
+                other_summary=answer.other_summary, breakdown_by=made_by)
     write_text(path, json.dumps(data, ensure_ascii=False, separators=(",", ":")))
 
 
