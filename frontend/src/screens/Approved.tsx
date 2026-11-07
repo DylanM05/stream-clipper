@@ -4,7 +4,7 @@ import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
 import { cn, firstSentence, go, upcoming, usePoll } from "../lib";
 import { PauseBar, usePauses } from "../PauseBar";
-import { ErrorNote, Screen, useToast } from "../ui";
+import { ErrorNote, Fold, Screen, ShowMore, useToast } from "../ui";
 
 // Rendered clips whose upload has been started, in the order they go up; a failed one is back to ready.
 export const GOING_UP: UploadState[] = ["uploading", "queued", "scheduled", "retrying"];
@@ -21,9 +21,11 @@ export function Approved() {
   );
   const { pauses, setPauses } = usePauses();
   const rendered = clips?.filter((c) => c.status === "rendered") ?? [];
-  const ready = rendered.filter((c) => !GOING_UP.includes(c.upload_state));
+  // Failed uploads and renders first, so they don't get lost among the rest.
+  const attention = clips?.filter((c) => c.status === "failed" || (c.status === "rendered" && c.upload_state === "failed")) ?? [];
+  const ready = rendered.filter((c) => !GOING_UP.includes(c.upload_state) && c.upload_state !== "failed");
   const scheduled = rendered.filter((c) => GOING_UP.includes(c.upload_state)).sort(inUploadOrder);
-  const working = clips?.filter((c) => ["approved", "rendering", "failed"].includes(c.status)) ?? [];
+  const working = clips?.filter((c) => ["approved", "rendering"].includes(c.status)) ?? [];
   const uploaded = clips?.filter((c) => c.status === "uploaded") ?? [];
 
   return (
@@ -33,27 +35,38 @@ export function Approved() {
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && <p className="mt-10 text-center text-sm text-zinc-500">Nothing approved yet.</p>}
-      <Section title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
-      <Section title="Scheduled" clips={scheduled} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
-      <Section title="Rendering" clips={working} footer={(c) => <RenderFooter clip={c} onChanged={refresh} />} />
-      <Section title="Uploaded" clips={uploaded} footer={(c) => <UploadedFooter clip={c} />} />
+      <Section id="upload:attention" title="Needs attention" tone="bg-red-500/15 text-red-300" clips={attention}
+        footer={(c) => (c.status === "failed" ? <RenderFooter clip={c} onChanged={refresh} /> : <UploadFooter clip={c} onChanged={refresh} />)} />
+      <Section id="upload:ready" title="Ready to upload" clips={ready} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
+      <Section id="upload:scheduled" title="Scheduled" clips={scheduled} footer={(c) => <UploadFooter clip={c} onChanged={refresh} />} />
+      <Section id="upload:rendering" title="Rendering" clips={working} footer={(c) => <RenderFooter clip={c} onChanged={refresh} />} />
+      {/* Grows with every upload, so it starts folded and shows a dozen at a time. */}
+      <Section id="upload:uploaded" title="Uploaded" clips={uploaded} defaultOpen={false} footer={(c) => <UploadedFooter clip={c} />} />
     </Screen>
   );
 }
 
-function Section(props: { title: string; clips: Clip[]; footer: (c: Clip) => ReactNode }) {
+function Section(props: {
+  id: string;
+  title: string;
+  clips: Clip[];
+  tone?: string;
+  defaultOpen?: boolean;
+  footer: (c: Clip) => ReactNode;
+}) {
   if (props.clips.length === 0) return null;
   return (
-    <section>
-      <h2 className="px-1 pb-2 pt-4 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-        {props.title} · {props.clips.length}
-      </h2>
-      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
-        {props.clips.map((c) => (
-          <ClipCard key={c.id} clip={c} showStatus footer={props.footer(c)} />
-        ))}
-      </div>
-    </section>
+    <Fold id={props.id} title={props.title} count={props.clips.length} tone={props.tone} defaultOpen={props.defaultOpen}>
+      <ShowMore items={props.clips}>
+        {(shown) => (
+          <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
+            {shown.map((c) => (
+              <ClipCard key={c.id} clip={c} showStatus footer={props.footer(c)} />
+            ))}
+          </div>
+        )}
+      </ShowMore>
+    </Fold>
   );
 }
 

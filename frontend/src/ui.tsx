@@ -2,8 +2,8 @@
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VideoType, VodStatus } from "./api";
-import { BackIcon } from "./icons";
-import { cn } from "./lib";
+import { BackIcon, ChevronIcon } from "./icons";
+import { cn, loadSetting, saveSetting } from "./lib";
 
 /**
  * A page: its title, then its content. On a phone it's one column above the tab bar; on a desktop, wide pages
@@ -233,6 +233,76 @@ export function Panel(props: { title: string; link?: { href: string; label: stri
       </header>
       {props.children}
     </section>
+  );
+}
+
+/**
+ * A section of a list page that folds away: a header with its title and count, its content below while it's open.
+ * It remembers on this device whether it's open, by `id`, unless the page controls that (`open` and `onToggle`).
+ */
+export function Fold(props: {
+  id?: string;
+  title: ReactNode;
+  count?: number;
+  tone?: string; // the count's colours, e.g. for a section that needs attention
+  aside?: ReactNode; // after the title, such as a link or a short note
+  defaultOpen?: boolean;
+  open?: boolean;
+  onToggle?: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const key = props.id ? `fold:${props.id}` : "";
+  const [own, setOwn] = useState(() => (key ? loadSetting(key, props.defaultOpen ?? true) : (props.defaultOpen ?? true)));
+  const open = props.open ?? own;
+  const toggle = () => {
+    if (props.onToggle) props.onToggle(!open);
+    else {
+      setOwn(!open);
+      if (key) saveSetting(key, !open);
+    }
+  };
+  return (
+    <section className="pt-3">
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          onClick={toggle}
+          aria-expanded={open}
+          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-white/[0.03]"
+        >
+          <ChevronIcon className={cn("size-4 shrink-0 text-zinc-500 transition-transform", !open && "-rotate-90")} />
+          <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-zinc-400">{props.title}</span>
+          {props.count !== undefined && (
+            <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums", props.tone ?? "bg-zinc-800 text-zinc-300")}>
+              {props.count}
+            </span>
+          )}
+        </button>
+        {props.aside}
+      </div>
+      {open && <div className="pt-2">{props.children}</div>}
+    </section>
+  );
+}
+
+/** A long list a few at a time: the first `step`, then more each time the button under them is tapped. */
+export function ShowMore<T>(props: { items: T[]; step?: number; children: (shown: T[]) => ReactNode }) {
+  const step = props.step ?? 12;
+  const [count, setCount] = useState(step);
+  const left = props.items.length - count;
+  return (
+    <>
+      {props.children(props.items.slice(0, count))}
+      {left > 0 && (
+        <button
+          type="button"
+          onClick={() => setCount(count + step)}
+          className="mt-3 w-full rounded-xl bg-zinc-900 py-2.5 text-sm font-semibold text-zinc-300 ring-1 ring-white/5 hover:bg-zinc-800"
+        >
+          Show {Math.min(step, left)} more <span className="font-normal text-zinc-500">of {left}</span>
+        </button>
+      )}
+    </>
   );
 }
 
