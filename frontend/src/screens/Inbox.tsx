@@ -1,12 +1,25 @@
+import { useState } from "react";
 import { api, errorText, type Clip } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon } from "../icons";
-import { go, usePoll } from "../lib";
-import { Button, ErrorNote, Screen, useToast } from "../ui";
+import { go, loadSetting, saveSetting, usePoll } from "../lib";
+import { Button, ErrorNote, Fold, Screen, ShowMore, useToast } from "../ui";
+
+const OPEN_KEY = "inbox:open"; // which videos' groups were opened or folded, by video id
+const OPEN_AT_FIRST = 3; // the newest few videos start open; the rest start folded
 
 export function Inbox() {
   const toast = useToast();
   const { data: clips, error, refresh, setData } = usePoll(() => api.clips(["proposed"]), 10000);
+  const [opened, setOpened] = useState<Record<number, boolean>>(() => loadSetting(OPEN_KEY, {}));
+  const setOpen = (changes: Record<number, boolean>) => {
+    // Only the videos still in the inbox are kept, so it doesn't grow forever.
+    const next = Object.fromEntries(
+      Object.entries({ ...opened, ...changes }).filter(([id]) => groups.some((g) => String(g.vodId) === id)),
+    );
+    setOpened(next);
+    saveSetting(OPEN_KEY, next);
+  };
 
   const decide = async (clip: Clip, approve: boolean) => {
     setData((list) => list?.filter((c) => c.id !== clip.id));
@@ -54,23 +67,42 @@ export function Inbox() {
         </div>
       )}
       {groups.length > 0 && (
-        <p className="mb-1 text-xs text-zinc-500">
-          {/* A mouse can't swipe a card, so a computer is pointed to the buttons instead. */}
-          <span className="pointer-fine:hidden">Swipe right to approve, left to reject, or tap to trim and edit.</span>
-          <span className="hidden pointer-fine:inline">Approve or reject with the buttons under each clip, or click one to trim and edit it.</span>
-        </p>
+        <div className="mb-1 flex items-baseline gap-4">
+          <p className="min-w-0 flex-1 text-xs text-zinc-500">
+            {/* A mouse can't swipe a card, so a computer is pointed to the buttons instead. */}
+            <span className="pointer-fine:hidden">Swipe right to approve, left to reject, or tap to trim and edit.</span>
+            <span className="hidden pointer-fine:inline">Approve or reject with the buttons under each clip, or click one to trim and edit it.</span>
+          </p>
+          {groups.length > 1 && (
+            <span className="flex shrink-0 gap-4 text-xs font-semibold text-violet-300">
+              <button type="button" onClick={() => setOpen(Object.fromEntries(groups.map((g) => [g.vodId, true])))}>
+                Expand all
+              </button>
+              <button type="button" onClick={() => setOpen(Object.fromEntries(groups.map((g) => [g.vodId, false])))}>
+                Fold all
+              </button>
+            </span>
+          )}
+        </div>
       )}
-      {groups.map((g) => (
-        <section key={g.vodId}>
-          <h2 className="truncate px-1 pb-2 pt-4 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-            {g.title}
-          </h2>
-          <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
-            {g.clips.map((c) => (
-              <ClipCard key={c.id} clip={c} onApprove={() => decide(c, true)} onReject={() => decide(c, false)} />
-            ))}
-          </div>
-        </section>
+      {groups.map((g, i) => (
+        <Fold
+          key={g.vodId}
+          title={g.title}
+          count={g.clips.length}
+          open={opened[g.vodId] ?? i < OPEN_AT_FIRST}
+          onToggle={(open) => setOpen({ [g.vodId]: open })}
+        >
+          <ShowMore items={g.clips}>
+            {(shown) => (
+              <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
+                {shown.map((c) => (
+                  <ClipCard key={c.id} clip={c} onApprove={() => decide(c, true)} onReject={() => decide(c, false)} />
+                ))}
+              </div>
+            )}
+          </ShowMore>
+        </Fold>
       ))}
     </Screen>
   );
