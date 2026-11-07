@@ -114,6 +114,12 @@ export function timeOfDay(iso: string): string {
 }
 
 /** A time coming up: "3:40 PM", "tomorrow 9:00 AM" or "Tue 3:40 PM". */
+/** The first sentence of a message, such as why an upload failed, for a short line. */
+export function firstSentence(text: string): string {
+  const m = /^.*?[.!?](?=\s|$)/s.exec(text.trim());
+  return (m ? m[0] : text).trim();
+}
+
 export function upcoming(iso: string): string {
   const day = new Date(iso);
   const today = new Date();

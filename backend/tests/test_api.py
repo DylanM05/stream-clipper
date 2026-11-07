@@ -248,8 +248,11 @@ def test_clips_say_where_their_upload_stands(client, settings):
 
     set_job(status="uploading")
     assert state() == ("uploading", None)
-    set_job(status="failed", retry_at=utcnow() + timedelta(hours=3))
-    assert state()[0] == "retrying" and state()[1]
+    set_job(status="failed", retry_at=utcnow() - timedelta(minutes=1), error="YouTube says this channel is at its limit. More.")
+    # Its retry time has come, but the show's 2-hour spacing from the upload an hour ago puts it an hour on.
+    upload, at = state()
+    assert upload == "retrying" and abs(datetime.fromisoformat(at) - (utcnow() + timedelta(hours=1))) < timedelta(minutes=1)
+    assert client.get(f"/api/clips/{clip_id}").json()["upload_error"] == "YouTube says this channel is at its limit. More."
     set_job(retry_at=None)
     assert state() == ("failed", None)
     add_job(settings, clip_id)  # started again as a new upload: the latest counts, and it waits its turn

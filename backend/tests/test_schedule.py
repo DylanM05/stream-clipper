@@ -103,3 +103,37 @@ def test_the_worker_starts_only_uploads_whose_turn_has_come(settings, show, monk
         assert s.get(UploadJob, first).started_at is not None
     assert w.upload_next() is False  # the second waits 3 hours
     assert started == [first]
+
+
+def test_failed_uploads_that_retry_keep_their_place_in_line_and_the_shows_spacing(settings, show):
+    # Two clips failed on the channel's daily limit; both retry at midnight, which has come. A newer clip queued since.
+    midnight = NOW - timedelta(minutes=1)
+    first = add_job(settings, status="failed", retry_at=midnight, minutes_ago=300, error="Daily limit.")
+    second = add_job(settings, status="failed", retry_at=midnight, minutes_ago=290, error="Daily limit.")
+    newer = add_job(settings, minutes_ago=10)
+    got = turns(settings)
+    assert got[first].at == NOW
+    assert (got[second].at, got[second].reason) == (NOW + timedelta(hours=3), "gap")  # spaced like any other clips
+    assert got[newer].at == NOW + timedelta(hours=6)  # behind them
+
+
+def test_a_retry_waits_for_its_retry_time(settings, show):
+    later = NOW + timedelta(hours=5)
+    job = add_job(settings, status="failed", retry_at=later, minutes_ago=30)
+    gone = add_job(settings, status="failed", minutes_ago=20)  # not retried by itself: not in the line
+    got = turns(settings)
+    assert (got[job].at, got[job].reason) == (later, "retry") and gone not in got
+
+
+def test_the_worker_retries_only_the_failed_uploads_whose_turn_has_come(settings, show, monkeypatch):
+    started = []
+    monkeypatch.setattr(worker_module.Worker, "run_upload", lambda self, job_id: started.append(job_id))
+    midnight = utcnow() - timedelta(minutes=1)
+    first = add_job(settings, status="failed", retry_at=midnight, minutes_ago=300)
+    second = add_job(settings, status="failed", retry_at=midnight, minutes_ago=290)
+    w = worker_module.Worker(settings)
+    assert w.upload_next() is True and started == [first]
+    with Session(get_engine(settings)) as s:
+        job = s.get(UploadJob, second)
+        assert (job.status, job.auto_retries) == ("failed", 0) and job.retry_at is not None  # waits its turn, 3 hours on
+    assert w.upload_next() is False

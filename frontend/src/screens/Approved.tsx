@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { api, errorText, type Clip, type UploadState } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
-import { cn, go, upcoming, usePoll } from "../lib";
+import { cn, firstSentence, go, upcoming, usePoll } from "../lib";
 import { PauseBar, usePauses } from "../PauseBar";
 import { ErrorNote, Screen, useToast } from "../ui";
 
@@ -88,13 +88,14 @@ function FooterButton(props: { onClick: () => void; tone?: "danger" | "accent"; 
 /** What's happening with a clip's upload, after the channel it goes to. */
 function uploadLine(clip: Clip): string {
   const at = clip.next_upload ? upcoming(clip.next_upload) : "";
+  const why = clip.upload_error ? ` (${firstSentence(clip.upload_error)})` : "";
   return {
     "": "",
     uploading: "uploading now",
     queued: "goes up as soon as the upload running is done",
     scheduled: `goes up ${at}`,
-    retrying: `upload failed; tries again ${at}`,
-    failed: "upload failed: open it to try again",
+    retrying: `upload failed${why}; tries again by itself ${at}, in its turn`,
+    failed: `upload failed${why}: open it to try again`,
   }[clip.upload_state];
 }
 

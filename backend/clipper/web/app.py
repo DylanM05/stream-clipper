@@ -132,9 +132,11 @@ class ClipOut(BaseModel):
     thumbnail_prompt: str  # the image prompt from the latest thumbnail attempt, if one was made
     thumbnail_redrawing: bool  # it's queued or being drawn again from a prompt, rather than a new idea from Claude
     # Where its uploads stand (upload_states): "", uploading, queued, scheduled, retrying or failed; and when
-    # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself.
+    # a scheduled one goes (it waits for its turn, schedule.py) or a failed one tries again by itself (its retry
+    # time, or later when the show's spacing puts it later), and why a failed or retrying one failed.
     upload_state: str
     next_upload: str | None
+    upload_error: str
     updated_at: str
 
 
@@ -806,8 +808,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.flush()
         s.delete(ch)
 
-    def clip_out(clip: ClipRecord, vod: Vod, upload: tuple[str, datetime | None] | None = None) -> ClipOut:
-        upload_state, next_upload = upload or ("", None)
+    def clip_out(clip: ClipRecord, vod: Vod, upload: tuple[str, datetime | None, str] | None = None) -> ClipOut:
+        upload_state, next_upload, upload_error = upload or ("", None, "")
         video_size, short_size = _size(clip.video_path), _size(clip.short_path)
         with Session(engine) as s:
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
@@ -832,25 +834,30 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
             upload_state=upload_state,
             next_upload=iso(next_upload),
+            upload_error=upload_error,
             updated_at=iso(clip.updated_at),
         )
 
-    def upload_states(s: Session) -> dict[int, tuple[str, datetime | None]]:
-        """Where each clip's uploads stand, by the latest of each of its files, with a time for some: "uploading",
-        "queued" (goes once the upload running is done), "scheduled" (waits for its turn until then), "retrying"
-        (failed, and tries again by itself then) or "failed". Clips with none of those aren't listed."""
+    def upload_states(s: Session) -> dict[int, tuple[str, datetime | None, str]]:
+        """Where each clip's uploads stand, by the latest of each of its files, with a time for some and why a failed
+        one failed: "uploading", "queued" (goes once the upload running is done), "scheduled" (waits for its turn
+        until then), "retrying" (failed, and tries again by itself then, in its turn) or "failed". Clips with none of
+        those aren't listed."""
         latest: dict[tuple[int, str, str], UploadJob] = {}
         for job in s.exec(select(UploadJob).order_by(col(UploadJob.id))):
             latest[job.clip_id, job.which, job.site] = job
-        turns = upload_turns(s) if any(j.status == "queued" for j in latest.values()) else {}
+        turns = upload_turns(s) if any(j.status == "queued" or j.retry_at for j in latest.values()) else {}
         rank = ["uploading", "queued", "scheduled", "retrying", "failed"]  # what a clip with two files shows
-        found: dict[int, tuple[str, datetime | None]] = {}
+        found: dict[int, tuple[str, datetime | None, str]] = {}
         for job in latest.values():
-            if job.status in ("uploading", "failed"):
-                state = (job.status, None) if job.status == "uploading" or not job.retry_at else ("retrying", job.retry_at)
+            if job.status == "uploading":
+                state = ("uploading", None, "")
+            elif job.status == "failed":
+                turn = turns.get(job.id)
+                state = ("retrying", turn.at if turn else job.retry_at, job.error) if job.retry_at else ("failed", None, job.error)
             elif job.status == "queued":
                 turn = turns.get(job.id)
-                state = ("scheduled", turn.at) if turn and turn.reason else ("queued", None)
+                state = ("scheduled", turn.at, "") if turn and turn.reason else ("queued", None, "")
             else:
                 continue
             have = found.get(job.clip_id)
@@ -882,7 +889,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return UploadJobOut(**job.model_dump(exclude={"screenshot", "session_url", "session_key", "created_at", "updated_at",
                                                       "started_at", "finished_at", "stats_at", "retry_at"}),
                             has_screenshot=bool(job.screenshot) and Path(job.screenshot).exists(),
-                            retry_at=iso(job.retry_at),
+                            # A failed one tries again by itself at its turn: its retry time, or later for the show's spacing.
+                            retry_at=iso(turn.at if job.status == "failed" and job.retry_at and turn else job.retry_at),
                             starts_at=iso(turn.at) if waits else None, wait_reason=turn.reason if waits else "",
                             created_at=iso(job.created_at), finished_at=iso(job.finished_at))
 
@@ -1845,7 +1853,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def clip_uploads(clip_id: int, s: Session = Depends(db)) -> list[UploadJobOut]:
         get_clip(s, clip_id)
         jobs = s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id).order_by(col(UploadJob.created_at).desc())).all()
-        turns = upload_turns(s) if any(j.status == "queued" for j in jobs) else {}
+        turns = upload_turns(s) if any(j.status == "queued" or j.retry_at for j in jobs) else {}
         return [job_out(j, turns.get(j.id)) for j in jobs]
 
     @app.post("/api/clips/{clip_id}/uploads", status_code=201)

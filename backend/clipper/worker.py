@@ -636,9 +636,12 @@ class Worker:
 
     def upload_next(self) -> bool:
         """Start the first queued upload whose turn has come (schedule.py), after queueing failed uploads whose
-        automatic retry is due."""
+        automatic retry is due: their retry time has come, and their turn in the queue has too."""
         with Session(self.engine) as s:
-            for failed in s.exec(select(UploadJob).where(UploadJob.status == "failed", col(UploadJob.retry_at) <= utcnow())):
+            turns = upload_turns(s)
+            due = [j for j in s.exec(select(UploadJob).where(UploadJob.status == "failed", col(UploadJob.retry_at).is_not(None)))
+                   if (turn := turns.get(j.id)) and turn.at <= utcnow()]
+            for failed in due:
                 failed.retry_at, failed.updated_at = None, utcnow()
                 clip = s.get(ClipRecord, failed.clip_id)
                 # Not if that file went up (or is going up) another way since, or the clip was taken back.

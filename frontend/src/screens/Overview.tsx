@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
 import { api, media, type Clip, type Destination, type Pauses, type Stats, type StatsUpload, type Summary, type Vod } from "../api";
 import { AlertIcon, LinkIcon } from "../icons";
-import { ago, cn, compact, length, platformName, timeOfDay, total, upcoming, usePoll } from "../lib";
+import { ago, cn, compact, firstSentence, length, platformName, timeOfDay, total, upcoming, usePoll } from "../lib";
 import { usePauses } from "../PauseBar";
 import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, StatTile, VodStatusChip } from "../ui";
 import { GOING_UP, inUploadOrder } from "./Approved";
@@ -218,6 +218,9 @@ function UploadQueue({ queue, ready, loaded }: { queue: Clip[]; ready: number; l
                       {KIND_LABEL[c.kind]}
                       {c.has_short && " + Short"} · {c.destination_name || "No channel chosen"}
                     </span>
+                    {c.upload_state === "retrying" && c.upload_error && (
+                      <span className="block truncate text-xs text-amber-300/80">{firstSentence(c.upload_error)}</span>
+                    )}
                   </span>
                   <span className={cn("shrink-0 text-right text-xs font-semibold", tone)}>{when}</span>
                 </a>

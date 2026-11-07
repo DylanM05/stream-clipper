@@ -88,7 +88,8 @@ export interface Clip {
   thumbnail_redrawing: boolean; // being drawn again from a prompt, rather than a new idea from the AI
   thumbnail_error: string;
   upload_state: UploadState;
-  next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself
+  next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself (in its turn)
+  upload_error: string; // why a failed or retrying upload failed
   updated_at: string;
 }
 
@@ -168,9 +169,9 @@ export interface UploadJob {
   error: string; // why it failed; on a finished upload, a note
   has_screenshot: boolean;
   rush: boolean; // sent with "Upload now"
-  retry_at: string | null; // a failed upload that's tried again by itself then
+  retry_at: string | null; // a failed upload that's tried again by itself then: its retry time, or its turn after that
   starts_at: string | null; // when it goes, if it's waiting for its turn
-  wait_reason: "" | "gap" | "thumbnail";
+  wait_reason: "" | "gap" | "thumbnail" | "retry"; // "gap": the show's spacing puts it later
   views: number | null;
   likes: number | null;
   comments: number | null;
