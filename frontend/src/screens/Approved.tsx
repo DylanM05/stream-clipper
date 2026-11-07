@@ -9,9 +9,12 @@ import { ErrorNote, Fold, Screen, ShowMore, useToast } from "../ui";
 // Rendered clips whose upload has been started, in the order they go up; a failed one is back to ready.
 export const GOING_UP: UploadState[] = ["uploading", "queued", "scheduled", "retrying"];
 
-/** Clips whose upload has started, in the order they go up. */
+/** Clips whose upload has started, in the order they go up: the one uploading, the one next, then the scheduled ones and
+ * the retries together by when they go (a retry keeps its place in the queue, so newer clips can come after it). */
+const STARTED_RANK: Partial<Record<UploadState, number>> = { uploading: 0, queued: 1 };
 export const inUploadOrder = (a: Clip, b: Clip) =>
-  GOING_UP.indexOf(a.upload_state) - GOING_UP.indexOf(b.upload_state) || (a.next_upload ?? "").localeCompare(b.next_upload ?? "");
+  (STARTED_RANK[a.upload_state] ?? 2) - (STARTED_RANK[b.upload_state] ?? 2) ||
+  (a.next_upload ?? "").localeCompare(b.next_upload ?? "");
 
 /** Approved clips: being rendered, ready to upload, scheduled, and uploaded. */
 export function Approved() {
@@ -107,7 +110,7 @@ function uploadLine(clip: Clip): string {
     uploading: "uploading now",
     queued: "goes up as soon as the upload running is done",
     scheduled: `goes up ${at}`,
-    retrying: `upload failed${why}; tries again by itself ${at}, in its turn`,
+    retrying: `retries ${at}, in its turn${clip.upload_error ? ` · failed: ${firstSentence(clip.upload_error)}` : ""}`,
     failed: `upload failed${why}: open it to try again`,
   }[clip.upload_state];
 }
