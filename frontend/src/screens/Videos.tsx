@@ -4,7 +4,7 @@ import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, timeOfDay, titleDate, useDesktop, usePoll } from "../lib";
 import { PauseBar, usePauses } from "../PauseBar";
-import { Button, ErrorNote, MODE_LABEL, ProgressBar, Screen, VodStatusChip, useToast } from "../ui";
+import { Button, ErrorNote, Fold, MODE_LABEL, ProgressBar, Screen, ShowMore, VodStatusChip, useToast } from "../ui";
 
 export const WITH_PROGRESS = ["downloading", "preparing", "transcribing"];
 const RUNNING = [...WITH_PROGRESS, "analysing", "segmenting"]; // being worked on right now
@@ -32,6 +32,20 @@ function useDeleteVod() {
   };
 }
 
+/** The Videos list in groups, in the server's order (newest first) within each. */
+function groupVods(vods: Vod[]) {
+  const attention = vods.filter((v) => v.status === "failed");
+  const working = vods.filter((v) => PAUSABLE.includes(v.status));
+  const review = vods.filter((v) => v.status === "ready" && (v.counts.proposed ?? 0) > 0);
+  const done = vods.filter((v) => !attention.includes(v) && !working.includes(v) && !review.includes(v));
+  return [
+    { id: "videos:attention", title: "Needs attention", vods: attention, tone: "bg-red-500/15 text-red-300" },
+    { id: "videos:working", title: "In progress", vods: working, tone: "bg-sky-500/15 text-sky-300" },
+    { id: "videos:review", title: "Clips to review", vods: review, tone: "bg-violet-500/15 text-violet-300" },
+    { id: "videos:done", title: "Done", vods: done, tone: undefined },
+  ].filter((g) => g.vods.length > 0);
+}
+
 export function Videos() {
   const { data: vods, error, refresh } = usePoll(api.vods, 4000);
   const { pauses, setPauses } = usePauses();
@@ -44,13 +58,25 @@ export function Videos() {
           <div className="mt-3">
             <PauseBar parts={["downloads", "processing", "renders", "uploads"]} pauses={pauses} onChange={setPauses} />
           </div>
-          <DownloadAndDisk />
+          <Fold id="videos:settings" title="Settings">
+            <DownloadAndDisk />
+          </Fold>
         </div>
         <div>
           {error && <ErrorNote>{error}</ErrorNote>}
-          <div className={cn("mt-6 space-y-3", !error && "xl:mt-0")}>
+          <div className={cn("mt-3", !error && "xl:-mt-3")}>
             {vods?.length === 0 && <p className="hidden pt-10 text-center text-sm text-zinc-500 xl:block">No videos yet. Paste a link to add one.</p>}
-            {vods?.map((v) => <VodRow key={v.id} vod={v} pauses={pauses} onChanged={refresh} />)}
+            {groupVods(vods ?? []).map((g) => (
+              <Fold key={g.id} id={g.id} title={g.title} count={g.vods.length} tone={g.tone}>
+                <ShowMore items={g.vods}>
+                  {(shown) => (
+                    <div className="space-y-3">
+                      {shown.map((v) => <VodRow key={v.id} vod={v} pauses={pauses} onChanged={refresh} />)}
+                    </div>
+                  )}
+                </ShowMore>
+              </Fold>
+            ))}
           </div>
         </div>
       </div>
@@ -184,7 +210,7 @@ function DownloadAndDisk() {
   const lowSpace = storage?.free_gb != null && storage.free_gb < storage.min_free_gb;
 
   return (
-    <div className="mt-3 space-y-1.5 px-1">
+    <div className="space-y-1.5 px-1">
       <SettingLine
         text={
           limit > 0
