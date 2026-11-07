@@ -13,10 +13,6 @@ Since Nov 1, 2026, the Library works through folders of videos on the server (`C
 
 Redesign the clip editor (trimming, the preview, title and description, the Short) so it looks and feels polished, not just functional.
 
-## Back button after approving clips
-
-Make Back behave as expected while approving clips. After approving (or rejecting) a clip in the editor, the app moves on to the next clip, or back to Videos when there's none, so Back can land somewhere unexpected.
-
 ## Description footer for each show
 
 A show setting with text added to the end of every upload's description, such as the creators' channel links (Oct 30, 2026). Asking the AI for it in the show's notes doesn't work reliably, and a video posted whole (a pre-show from X) gets the post's own text as its description, which the AI never writes, so the link never gets in.
@@ -75,10 +71,3 @@ Watch subreddits for their top videos (livestream fails, mostly) and queue them 
 
 
 think of rebrand name
-make prompts for text spaces more generic.
-
-Get claude to explain and tell me exactly what prompts are being sent through this program to claude
-
-anything thats not generic in the prompts, assist in moving those details over to the specific show prompt, i will give you the current show prompt for that show and we can work on it together.
-
-the aim is to make it generic so when i release it, it works for everyone, but is still very customizable.
