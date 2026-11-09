@@ -1,8 +1,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { api, errorText, media, type Clip, type Destination, type Site, type UploadJob, type Visibility } from "../api";
-import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
+import { CopyIcon, DownloadIcon, LinkIcon, PhoneIcon, ScissorsIcon, ShareIcon, SparkIcon, UploadIcon } from "../icons";
 import {
-  ago, cn, compact, copyText, fileName, formatBytes, goBack, loadSetting, saveSetting, sitesOf, upcoming, usePoll, type Sites,
+  ago, cn, compact, copyText, fileName, formatBytes, go, goBack, loadSetting, saveSetting, sitesOf, upcoming, usePoll, type Sites,
 } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, ProgressBar, Screen, useToast } from "../ui";
@@ -40,7 +40,20 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
   const copy = async (text: string, what: string) => toast({ text: (await copyText(text)) ? `${what} copied` : "Couldn't copy" });
 
   return (
-    <Screen title="Upload" subtitle={clip.title} onBack={() => goBack("approved")} wide>
+    <Screen
+      title="Upload"
+      subtitle={clip.title}
+      onBack={() => goBack("approved")}
+      actions={
+        <button
+          onClick={() => go(`clip/${clip.id}`)}
+          className="flex shrink-0 items-center gap-1.5 rounded-xl bg-zinc-800 px-3.5 py-2 text-sm font-semibold hover:bg-zinc-700 active:bg-zinc-700"
+        >
+          <ScissorsIcon className="size-4" /> Edit
+        </button>
+      }
+      wide
+    >
       {clip.reuploading && (
         <p className="mb-4 rounded-xl bg-sky-500/10 p-3 text-sm text-sky-200 ring-1 ring-sky-500/20">
           Rendering again, to be uploaded again: it goes up by itself, where it went before, once it's rendered.

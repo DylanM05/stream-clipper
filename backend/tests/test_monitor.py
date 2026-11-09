@@ -119,6 +119,19 @@ def test_new_videos_are_queued_once_finished_and_filters_apply(setup):
         assert len(s.exec(select(Vod)).all()) == 1
 
 
+def test_members_only_videos_are_skipped_without_being_queued(setup):
+    settings, mon, fake, (show_id, channel_id) = setup
+    fake.videos = [replace(video("old-members"), members_only=True), video("old")]
+    mon.check(channel_id)  # already on the channel: not even kept for the backlog
+    assert (items(settings)["old-members"].status, items(settings)["old-members"].reason) == ("skipped", "Members only")
+
+    fake.videos = [replace(video("new-members"), members_only=True), video("old-members"), video("old")]
+    mon.check(channel_id)
+    mon.check(channel_id)  # same length twice: finished, and would be queued
+    found = items(settings)["new-members"]
+    assert (found.status, found.reason, found.vod_id) == ("skipped", "Members only", None)
+
+
 def test_videos_keep_when_they_were_posted_even_ones_listed_before_dates_were_kept(setup):
     settings, mon, fake, (show_id, channel_id) = setup
     fake.videos = [video("old")]

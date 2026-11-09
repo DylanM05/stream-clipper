@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from yt_dlp import YoutubeDL
+from yt_dlp.utils import DownloadError
 
 from .. import rumble
 from ..config import Settings
@@ -15,6 +16,20 @@ from ..ffmpeg import probe_duration
 from ..workspace import Workspace, write_json
 
 log = logging.getLogger(__name__)
+
+# How YouTube says a video is only for the channel's paying members, e.g. "Join this channel to get access to
+# members-only content like this video, and other exclusive perks." or "This video is available to this channel's
+# members on level: ...".
+_MEMBERS_ONLY = ("members-only", "join this channel", "available to this channel's members")
+
+
+class MembersOnly(Exception):
+    """The video is for the channel's paying members, and the account downloading isn't one."""
+
+
+def members_only(error: Exception) -> bool:
+    text = str(error).lower()
+    return any(phrase in text for phrase in _MEMBERS_ONLY)
 
 _META_FIELDS = (
     "id", "title", "uploader", "uploader_id", "channel", "extractor_key", "webpage_url",
@@ -32,7 +47,12 @@ def fetch(
     path = Path(source)
     if path.is_file():
         return _register_local(path, settings)
-    return _download(source, settings, on_progress, settings.download_limit_mbps if limit_mbps is None else limit_mbps)
+    try:
+        return _download(source, settings, on_progress, settings.download_limit_mbps if limit_mbps is None else limit_mbps)
+    except DownloadError as e:
+        if members_only(e):
+            raise MembersOnly(str(e)) from e
+        raise
 
 
 def _register_local(path: Path, settings: Settings) -> Workspace:

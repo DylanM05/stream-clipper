@@ -7,9 +7,14 @@ import { ClipStatusChip, KIND_LABEL } from "./ui";
 
 const SWIPE_DISTANCE = 96; // px to approve (right) or reject (left)
 
-/** A clip in a list: tap to open; in the inbox, swipe or use the buttons to approve or reject. */
+/**
+ * A clip in a list: tap to open (its editor, unless `to` says otherwise); in the inbox, swipe or use the buttons to
+ * approve or reject. `large` puts the thumbnail across the top, for a grid of cards.
+ */
 export function ClipCard(props: {
   clip: Clip;
+  to?: string;
+  large?: boolean;
   onApprove?: () => void;
   onReject?: () => void;
   showStatus?: boolean;
@@ -17,6 +22,41 @@ export function ClipCard(props: {
 }) {
   const { clip } = props;
   const swipe = useSwipe(props.onApprove, props.onReject);
+  const open = () => go(props.to ?? `clip/${clip.id}`);
+  const duration = length(clip.cuts?.length ? keptLength(clip) : clip.end - clip.start);
+
+  if (props.large) {
+    return (
+      <div className="flex h-full flex-col overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-white/5 transition hover:ring-white/15">
+        <button onClick={open} className="group flex flex-1 flex-col text-left active:bg-white/[0.03]">
+          <div className="relative aspect-video w-full overflow-hidden bg-zinc-800">
+            <img
+              src={media.thumb(clip)}
+              alt=""
+              loading="lazy"
+              className="size-full object-cover transition duration-300 group-hover:scale-[1.03]"
+            />
+            <span className="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-semibold tabular-nums">
+              {duration}
+            </span>
+            {props.showStatus && (
+              <div className="absolute left-2 top-2 rounded-full bg-black/60 backdrop-blur-sm">
+                <ClipStatusChip status={clip.status} paused={clip.paused} upload={clip.upload_state} />
+              </div>
+            )}
+          </div>
+          <div className="min-w-0 p-4">
+            <ClipMeta clip={clip} />
+            <h3 className="mt-1.5 line-clamp-2 text-base font-semibold leading-snug">{clip.title}</h3>
+            <p className="mt-1 truncate text-sm text-zinc-500">
+              {clip.kind === "whole" ? clip.vod_title : `${clock(clip.start)} · ${clip.vod_title}`}
+            </p>
+          </div>
+        </button>
+        {props.footer}
+      </div>
+    );
+  }
 
   return (
     <div className="relative overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-white/5">
@@ -38,27 +78,15 @@ export function ClipCard(props: {
         className="relative touch-pan-y bg-zinc-900"
         style={{ transform: `translateX(${swipe.dx}px)`, transition: swipe.dx === 0 ? "transform 0.2s" : "none" }}
       >
-        <button onClick={() => go(`clip/${clip.id}`)} className="flex w-full gap-3 p-3 text-left hover:bg-white/[0.02] active:bg-white/[0.03]">
+        <button onClick={open} className="flex w-full gap-3 p-3 text-left hover:bg-white/[0.02] active:bg-white/[0.03]">
           <div className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-zinc-800">
             <img src={media.thumb(clip)} alt="" loading="lazy" className="size-full object-cover" />
             <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
-              {length(clip.cuts?.length ? keptLength(clip) : clip.end - clip.start)}
+              {duration}
             </span>
           </div>
           <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
-              <span>{KIND_LABEL[clip.kind]}</span>
-              {clip.make_short && (
-                <span className="inline-flex items-center gap-0.5 text-zinc-400">
-                  · <PhoneIcon className="size-3" /> Short
-                </span>
-              )}
-              {clip.manual ? (
-                <span className="ml-auto text-zinc-500">made by you</span>
-              ) : (
-                clip.kind !== "whole" && <span className="ml-auto tabular-nums text-zinc-500">score {clip.score.toFixed(2)}</span>
-              )}
-            </div>
+            <ClipMeta clip={clip} />
             <h3 className="mt-1 line-clamp-2 text-[15px] font-semibold leading-snug">{clip.title}</h3>
             <p className="mt-1 truncate text-xs text-zinc-500">
               {clip.kind === "whole" ? clip.vod_title : `${clock(clip.start)} · ${clip.vod_title}`}
@@ -89,6 +117,25 @@ export function ClipCard(props: {
         )}
         {props.footer}
       </div>
+    </div>
+  );
+}
+
+/** The line above a clip's title: what kind of clip, whether it makes a Short, and its score or who made it. */
+function ClipMeta({ clip }: { clip: Clip }) {
+  return (
+    <div className="flex items-center gap-1.5 text-[11px] font-medium text-zinc-400">
+      <span>{KIND_LABEL[clip.kind]}</span>
+      {clip.make_short && (
+        <span className="inline-flex items-center gap-0.5 text-zinc-400">
+          · <PhoneIcon className="size-3" /> Short
+        </span>
+      )}
+      {clip.manual ? (
+        <span className="ml-auto text-zinc-500">made by you</span>
+      ) : (
+        clip.kind !== "whole" && <span className="ml-auto tabular-nums text-zinc-500">score {clip.score.toFixed(2)}</span>
+      )}
     </div>
   );
 }

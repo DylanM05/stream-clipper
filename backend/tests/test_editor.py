@@ -86,7 +86,7 @@ def test_clips_without_cuts_render_as_before(monkeypatch, tmp_path):
     plain = CUT_CLIP.model_copy(update={"cuts": []})
     render.render_landscape(Path("/src.mp4"), plain, tmp_path / "out.mp4", Settings(hwaccel="none", video_encoder="libx264"))
     args = runs[0]
-    assert args[:6] == ["-ss", "10.000", "-t", "10.000", "-i", "/src.mp4"][:6]
+    assert args[:6] == ["-ss", "10.000", "-t", "10.000", "-i", str(Path("/src.mp4"))]  # \src.mp4 on Windows
     assert "-filter_complex" not in args and args[args.index("-af") + 1].startswith("afade=t=in:d=0.15")
 
 

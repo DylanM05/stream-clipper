@@ -53,6 +53,8 @@ X_PAGES = {"i", "home", "explore", "search", "notifications", "messages", "setti
 # Files in a watched folder that are videos. A partial download's name ends in something else (.part, .!qB).
 VIDEO_SUFFIXES = {".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".ts", ".mpeg", ".mpg"}
 FILE_SETTLE = timedelta(minutes=3)  # a file in a watched folder that changed more recently is still being copied in
+# Why a channel's video for its paying members is skipped: the accounts downloading aren't members, so it can't be had.
+MEMBERS_ONLY = "Members only"
 
 
 class ChannelUrlError(ValueError):
@@ -68,6 +70,7 @@ class Listed:
     live: bool
     final: bool = False  # a post, done as soon as it's up, rather than a stream's VOD
     published: float | None = None  # when it was posted or streamed (unix time), if the platform says
+    members_only: bool = False  # for the channel's paying members, where the listing says so (YouTube's badge)
 
 
 def parse_channel(url: str) -> tuple[str, str]:
@@ -171,6 +174,7 @@ def list_recent(platform: str, channel_url: str, limit: int | None = RECENT) -> 
                 duration=float(entry["duration"]) if entry.get("duration") else None,
                 live=is_live(entry),
                 published=published(entry),
+                members_only=entry.get("availability") == "subscriber_only",
             ))
     return found
 
@@ -257,6 +261,8 @@ def skip_reason(channel: Channel, item: Listed) -> str:
     Keywords are comma-separated, and any one of them will do; one made of parts joined with "+" needs
     all its parts, e.g. "tonight on + night owls". Case and repeated spaces don't matter.
     """
+    if item.members_only:
+        return MEMBERS_ONLY
     title = _words(item.title)
     what = "post" if channel.platform == "x" else "title"
     keywords = [k.strip() for k in channel.keywords.split(",") if k.strip()]
@@ -287,6 +293,14 @@ def backlog_order(channel: Channel, rows: list[ChannelVideo], order: str | None 
 
 def older_reason(channel: Channel) -> str:
     return f"Already {'in the folder' if channel.platform == 'folder' else 'on the channel'} when you added it"
+
+
+def _older(channel: Channel, item: Listed) -> dict:
+    """The status and reason of a video already on the channel when it was added: older, for the backlog or to ask
+    for, except a members-only one, which can't be downloaded."""
+    if item.members_only:
+        return {"status": "skipped", "reason": MEMBERS_ONLY}
+    return {"status": "older", "reason": older_reason(channel)}
 
 
 class Monitor:
@@ -362,7 +376,7 @@ class Monitor:
                     if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
                         s.add(ChannelVideo(
                             channel_id=channel_id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                            duration=item.duration, status="older", reason=older_reason(channel),
+                            duration=item.duration, **_older(channel, item),
                         ))
                         continue
                     row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
@@ -409,7 +423,7 @@ class Monitor:
             when = datetime.fromtimestamp(item.published, timezone.utc) if item.published else None
             s.add(ChannelVideo(
                 channel_id=channel.id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                duration=item.duration, status="older", reason=older_reason(channel),
+                duration=item.duration, **_older(channel, item),
             ))
         channel.history_listed = True
         s.add(channel)

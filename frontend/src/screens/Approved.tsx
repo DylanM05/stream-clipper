@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
 import { api, errorText, type Clip, type UploadState } from "../api";
 import { ClipCard } from "../ClipCard";
-import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon, UploadIcon } from "../icons";
-import { cn, firstSentence, go, upcoming, usePoll } from "../lib";
+import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon } from "../icons";
+import { cn, firstSentence, upcoming, usePoll } from "../lib";
 import { PauseBar, usePauses } from "../PauseBar";
 import { ErrorNote, Fold, Screen, ShowMore, useToast } from "../ui";
 
@@ -62,9 +62,9 @@ function Section(props: {
     <Fold id={props.id} title={props.title} count={props.clips.length} tone={props.tone} defaultOpen={props.defaultOpen}>
       <ShowMore items={props.clips}>
         {(shown) => (
-          <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
+          <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
             {shown.map((c) => (
-              <ClipCard key={c.id} clip={c} showStatus footer={props.footer(c)} />
+              <ClipCard key={c.id} clip={c} to={`upload/${c.id}`} large showStatus footer={props.footer(c)} />
             ))}
           </div>
         )}
@@ -134,9 +134,6 @@ function UploadFooter({ clip, onChanged }: { clip: Clip; onChanged: () => void }
         >
           <TrashIcon className="size-4" /> Delete
         </FooterButton>
-        <FooterButton tone="accent" onClick={() => go(`upload/${clip.id}`)}>
-          <UploadIcon className="size-4" /> {clip.upload_state ? "Details" : "Upload"}
-        </FooterButton>
       </div>
     </div>
   );
@@ -179,14 +176,10 @@ function UploadedFooter({ clip }: { clip: Clip }) {
           <LinkIcon className="size-4" /> On Rumble
         </a>
       )}
-      {clip.youtube_url ? (
+      {clip.youtube_url && (
         <a href={clip.youtube_url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 font-semibold text-emerald-300">
           <LinkIcon className="size-4" /> On YouTube
         </a>
-      ) : !clip.rumble_url && (
-        <button onClick={() => go(`upload/${clip.id}`)} className="font-semibold text-zinc-300 hover:text-zinc-100">
-          Details
-        </button>
       )}
     </div>
   );

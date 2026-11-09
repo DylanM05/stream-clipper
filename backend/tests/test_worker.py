@@ -12,7 +12,9 @@ from typer.testing import CliRunner
 from clipper import cli
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_engine, set_app_setting, utcnow
+from clipper.db import (
+    Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod, get_engine, set_app_setting, utcnow,
+)
 from clipper.llm import UsageLimitError
 from clipper.models import LLMChapter, LLMHighlight, Segmentation, Signals
 from clipper.workspace import Workspace, read_json, write_json, write_text
@@ -290,6 +292,56 @@ def test_usage_limit_waits_and_retries_later(settings, fake_pipeline, monkeypatc
     monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: SEGMENTATION)
     assert w.process_next_vod() is True
     assert get(settings, Vod, vod_id).status == "ready"
+
+
+MEMBERS_ERROR = ("ERROR: [youtube] 1isrqE6jWmo: Join this channel to get access to members-only content like this "
+                 "video, and other exclusive perks.")
+
+
+def members_only(*args, **kwargs):
+    raise worker_module.download.MembersOnly(MEMBERS_ERROR)
+
+
+def test_a_watched_channels_members_only_video_is_skipped_without_a_word(settings, fake_pipeline, monkeypatch):
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
+    monkeypatch.setattr(worker_module.download, "fetch", members_only)
+    vod_id = add_vod(settings, url="https://www.youtube.com/watch?v=1isrqE6jWmo")
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Show")
+        s.add(show)
+        s.commit()
+        channel = Channel(show_id=show.id, url="https://www.youtube.com/@creator", platform="youtube")
+        s.add(channel)
+        s.commit()
+        s.add(ChannelVideo(channel_id=channel.id, video_id="1isrqE6jWmo", url="https://www.youtube.com/watch?v=1isrqE6jWmo",
+                           vod_id=vod_id, status="queued", backlog_at=utcnow()))
+        s.commit()
+
+    worker_module.Worker(settings).process_vod(vod_id)
+
+    assert get(settings, Vod, vod_id) is None and sent == []
+    with Session(get_engine(settings)) as s:
+        row = s.exec(select(ChannelVideo)).one()
+    assert (row.status, row.reason, row.vod_id, row.backlog_at) == ("skipped", "Members only", None, None)
+
+
+def test_a_members_only_video_added_by_hand_fails_but_nothing_is_sent(settings, fake_pipeline, monkeypatch):
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
+    monkeypatch.setattr(worker_module.download, "fetch", members_only)
+    vod_id = add_vod(settings, url="https://www.youtube.com/watch?v=1isrqE6jWmo")
+    worker_module.Worker(settings).process_vod(vod_id)
+    vod = get(settings, Vod, vod_id)
+    assert vod.status == "failed" and vod.error.startswith("Members only:") and sent == []
+
+
+def test_youtubes_members_only_refusals_are_told_apart_from_other_failures():
+    from yt_dlp.utils import DownloadError
+
+    assert worker_module.download.members_only(DownloadError(MEMBERS_ERROR))
+    assert worker_module.download.members_only(DownloadError("This video is available to this channel's members on level: Fan"))
+    assert not worker_module.download.members_only(DownloadError("ERROR: [youtube] abc: Video unavailable"))
 
 
 def test_failures_are_recorded(settings, fake_pipeline, monkeypatch):

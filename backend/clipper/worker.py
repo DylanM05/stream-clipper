@@ -28,13 +28,13 @@ from sqlmodel import Session, col, or_, and_, select
 from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles, transcripts
 from .config import Settings
 from .db import (
-    CLIP_DONE, VOD_ACTIVE, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show, get_app_setting,
-    get_engine, is_paused, set_app_setting, upload_sites, utcnow,
+    CLIP_DONE, VOD_ACTIVE, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show,
+    get_app_setting, get_engine, is_paused, set_app_setting, upload_sites, utcnow,
 )
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
 from .models import Clip, Segmentation, Transcript
-from .monitor import Monitor
+from .monitor import MEMBERS_ONLY, Monitor
 from .notify import Note
 from .overlay import Overlay
 from .pipeline import audio, download, refine, render, segment, signals, transcribe
@@ -304,6 +304,8 @@ class Worker:
                 preview.stop.set()
                 preview.join()  # so it's stopped before the video can start again
             self._update_vod(vod_id, status="queued", progress=0)
+        except download.MembersOnly as e:
+            self._drop_members_only(vod_id, str(e))
         except UsageLimitError as e:
             retry_at = e.resets_at or utcnow() + USAGE_LIMIT_RETRY
             log.warning("%s (%s); video %d retries at %s", e.note, e, vod_id, retry_at)
@@ -316,6 +318,26 @@ class Worker:
             error = f"{type(e).__name__}: {e}"[:2000]
             self._update_vod(vod_id, status="failed", error=error)
             self._notify(Note(f"Failed: {name}", error[:500], link=f"videos/{vod_id}", tone="bad"))
+
+    def _drop_members_only(self, vod_id: int, error: str) -> None:
+        """A video for its channel's paying members, which the account downloading can't get. One a watched channel
+        queued is removed without a word, and the channel lists it as skipped (it isn't queued again, nor does it use
+        up a day's place in the backlog). One added by hand fails, so you see why, but nothing is sent about it."""
+        with Session(self.engine) as s:
+            vod = s.get(Vod, vod_id)
+            seen = s.exec(select(ChannelVideo).where(ChannelVideo.vod_id == vod_id)).all()
+            if not seen:
+                vod.status, vod.error, vod.updated_at = "failed", f"Members only: {error}"[:2000], utcnow()
+                s.add(vod)
+                s.commit()
+                log.info("Video %d is members-only: %s", vod_id, vod.url)
+                return
+            for row in seen:
+                row.vod_id, row.status, row.reason, row.backlog_at, row.updated_at = None, "skipped", MEMBERS_ONLY, None, utcnow()
+                s.add(row)
+            s.delete(vod)  # not downloaded, so it has no folder or clips
+            s.commit()
+            log.info("Skipped video %d, members-only: %s", vod_id, vod.url)
 
     def _start(self, vod_id: int, status: str, part: str) -> None:
         """Begin a step of a video's processing, unless the video or that part of the work is paused."""
