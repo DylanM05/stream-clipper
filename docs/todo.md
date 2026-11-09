@@ -36,11 +36,7 @@ Since Oct 30, 2026, the AI gets each show's track record when it picks a stream'
 
 ## Setup when the app first starts
 
-The first time the app is opened, it walks you through getting set up and working, instead of leaving that to the README (Oct 30, 2026):
-- **The AI:** which one to use (Claude Code, Codex or a model on OpenRouter), signing in to it, and which of its models. You can add, remove or change these later.
-- **Whatever else a new setup needs:** for example the first show (what to make, the title pattern, where its videos go), connecting a YouTube channel or signing in to the upload browser, and notifications.
-
-Today the AI is chosen under Videos, and signing in to it means running a command on the server (README, "The AI"). Signing in from the app instead means running each sign-in in the app's container and passing on what it shows: Codex's device sign-in gives a link and a code, and Claude Code's gives a link and a code to paste back. The OpenRouter key would move from `.env` into the app's settings, kept secret. Some setup only lives in `.env` (the app password, the data folder, notifications): move what makes sense into the app, and have the setup say what to set for the rest.
+The first time the app is opened, it walks you through getting set up and working, instead of leaving that to the README (Oct 30, 2026): the AI (which one, signing in, its models), the first show, YouTube channels, the upload browser and notifications, with what makes sense moved out of `.env` into the app. Planned in phases on Nov 9, 2026: see [the plan](plan.md#setup-in-the-app-planned-nov-9-2026-not-started), which also has the open questions. Not started.
 
 ## User experience pass
 

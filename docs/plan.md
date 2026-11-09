@@ -250,6 +250,105 @@ Keep the code in a git repo, either outside this Nextcloud folder or excluded fr
 
 ---
 
+## Setup in the app (planned Nov 9, 2026, not started)
+
+The first time the app is opened, it walks you through getting set up, instead of leaving that to the README. You pick settings in the app, and the app does what's needed behind the scenes: it signs in to the AI, saves keys and checks that things work.
+
+### How it fits together
+- **One place for settings.** Every setting the app manages is read from the database (`app_setting`) first, then `.env`, then the built-in default. The worker and the web app both read it this way, so a change applies without a restart. Code that reads `.env` directly moves over to it: the OpenRouter key (`ai.py`, `thumbnails.py`), notifications (`notify.py`) and the Google client (`youtube.py`).
+- **Secrets can be written but not read back.** The OpenRouter key, the Google client secret, the Discord webhook and the ntfy token are stored in the database, like YouTube sign-ins already are. The API only says whether each is set, with its last 4 characters. Secrets are never logged.
+- **A Settings screen** is where these settings live from then on: the AI, connections, notifications and the system. The AI card moves there from Videos.
+- **The setup reuses the Settings screen's parts**, one step at a time. So "change it later" means opening Settings, and nothing is built twice.
+
+### What moves into the app, and what stays in `.env`
+- **Moves into the app:**
+  - the AI's provider, sign-in and models, and the OpenRouter key
+  - Discord and ntfy, with a test
+  - the app's address (taken from the browser's address bar)
+  - the Google client ID and secret, the YouTube API key and the upload category
+  - the upload browser's view address (guessed, and editable)
+  - the time zone (filled in from the browser), when the day starts, and the language
+  - the encoder and hwaccel (picked by the system check)
+  - the thumbnail model, the Shorts layout and the minimum free space
+- **Stays in `.env`**, because Docker needs it before the app starts:
+  - `CLIPPER_HOST_DATA_DIR` and `CLIPPER_HOST_MEDIA_DIR` (volume mounts)
+  - `CLIPPER_PORT` and `CLIPPER_BIND`
+  - `CLIPPER_WORKER_MEMORY` (a compose limit)
+  - `CLIPPER_BROWSER_PASSWORD` (passed to the browser container)
+  - the app password, unless decided otherwise (see the open questions below)
+- Anything still set in `.env` stays as the default, so existing installs keep working.
+
+### The setup, step by step
+0. **Welcome and password**, if the password moves into the app.
+1. **System check.** This is `doctor` in the app:
+   - Can the data folder be written to, and how much space is free?
+   - Does NVENC work? If not, it switches to libx264 by itself.
+   - Is the GPU there for Whisper?
+   - Can the upload browser be reached?
+
+   It also starts downloading the Whisper model (about 1.6 GB) in the background, so the first video doesn't wait for it. A problem that can only be fixed in `.env` says which line to set.
+2. **Basics:** the time zone, when the day starts, and the language.
+3. **The AI.** Pick Claude Code, Codex or OpenRouter (more than one is fine):
+   - **Codex:** the app runs `codex login --device-auth` in its container, shows the link and code, and moves on once the sign-in goes through.
+   - **Claude Code:** the app shows the sign-in link, and you paste the code back into the app.
+   - **OpenRouter:** paste the key; it's checked right away. Then pick from OpenRouter's models that support structured outputs.
+
+   Then **Test it** (`llm-check`) and pick the model. Sign out is in Settings.
+4. **Where videos go.** Add a YouTube channel, then pick how it uploads:
+   - **API:** a guided Google Cloud walkthrough that shows the exact redirect URI. Paste the client ID and secret into the app, then press Connect. It warns first if the app isn't open on an https `ts.net` address (`google_accepts`).
+   - **The upload browser:** goes on to step 5.
+   - **By hand.**
+
+   Rumble can be turned on here too.
+5. **Upload browser.** Only shown if needed, for watching X, Studio uploads or Rumble. It shows the noVNC link and checks the YouTube, X and Rumble sign-ins as they happen.
+6. **First show.** A simpler version of the show editor:
+   - the name, what to make and what its videos are
+   - the title pattern, with an example title as you type
+   - a channel to watch, with a check that lists its recent videos
+   - where uploads go
+   - whether each kind waits for review, is rendered, or is uploaded
+7. **Notifications:** Discord and/or ntfy, with **Send a test**.
+8. **Done:** what's set up and what was skipped, and "Paste your first video".
+
+Each step saves as soon as it's done, any step can be skipped, and the setup carries on where you left off. It only appears on a first run: an install that already has shows counts as set up.
+
+### Phases
+- **Phase 0: checks before building.** These are small, and run on the server.
+  - How Claude Code signs in without a terminal in the container: `claude auth login` or `setup-token`, and whether it needs a pseudo-terminal.
+  - What Codex's device sign-in prints.
+  - OpenRouter's endpoints for checking a key and listing models.
+
+  The answers decide how Phase 2 is built. (Neither CLI is installed on the Windows PC.)
+- **Phase 1: settings foundation.**
+  - The database-then-`.env` lookup and write-only secrets, with the code that reads settings moved over to them.
+  - The Settings screen, with the AI card, downloads and disk, and notifications moved into it.
+  - Tests that a setting overrides `.env` and that a secret is never returned.
+- **Phase 2: AI accounts in the app.**
+  - Sign-in sessions in the web container: start the CLI, read the link and code, take the pasted code, report the status, time out.
+  - The OpenRouter key check and model list, Test, and Sign out.
+  - The "run this on the server" messages become **Sign in** buttons.
+- **Phase 3: the rest of `.env` moves in:** notifications, the Google client, the YouTube API key, the app's address, the browser view address, the time zone and language, and picking the encoder.
+- **Phase 4: the setup itself, and its first steps.** First-run detection, `#/setup`, progress, carrying on where you left off, and skipping. Then steps 1–3.
+- **Phase 5: its other steps:** channels and YouTube, the upload browser, the first show, notifications, and Done.
+- **Phase 6: docs and a test on a fresh install.**
+  - The README's quick start comes down to installing Docker and the NVIDIA toolkit, running `docker compose up` and opening the app.
+  - `.env.example` gets shorter.
+  - A full install from scratch (empty data folder and volumes), locally on the CPU and on the server.
+
+Phases 1–3 are useful even before the setup exists, and help the GitHub release (`docs/todo.md`).
+
+### Open questions
+1. **The app password.**
+   - (a) It stays in `.env`.
+   - (b) It's set in the setup, with a one-time setup code printed in `docker compose logs web`, so only someone with access to the server can claim the app.
+   - (c) Whoever opens the app first sets it.
+
+   Leaning (b): it's as easy as (c), without the risk.
+2. **Where Settings goes on a phone.** The tab bar already has 6 tabs. Leaning towards a gear in the header, plus an entry in the desktop sidebar.
+3. **Is the first show part of the setup?** It makes the setup longer, but without it a new install does nothing until you find Shows. Leaning yes, kept simple, with the full editor afterwards.
+
+---
+
 ## Running costs (estimates)
 
 | Item | Cost |
