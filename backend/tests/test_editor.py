@@ -159,16 +159,26 @@ def test_a_cropped_short_is_filled_with_the_middle_of_the_picture(tmp_path, size
     assert not (g > 200 and r < 60)  # the dimmed blur behind the whole picture
 
 
-def test_a_split_shorts_webcam_is_as_tall_as_its_shape_within_limits():
-    assert render.webcam_height((0.75, 0, 0.25, 0.25)) == 608  # 16:9, like the stream
-    assert render.webcam_height((0.1, 0.1, 0.2, 0.3)) == 912  # taller than that
-    assert render.webcam_height((0.1, 0.1, 0.1, 0.5)) == 960  # at most half the Short
-    assert render.webcam_height((0, 0, 1, 0.2)) == 480  # at least a quarter
-    graph = render.split_graph("[0:v]", (0.75, 0, 0.25, 0.25), None)
-    assert "crop=trunc(iw*0.2500/2)*2:trunc(ih*0.2500/2)*2:trunc(iw*0.7500):trunc(ih*0.0000)" in graph
-    assert "scale=1080:608[top]" in graph and "scale=1080:1312[bottom]" in graph and graph.endswith("[top][bottom]vstack")
-    assert "[game]crop='min" in graph  # all of the picture, without a part marked for the game
-    assert "[game]crop=trunc(iw*0.5000" in render.split_graph("[0:v]", (0.75, 0, 0.25, 0.25), (0, 0, 0.5, 1))
+def test_a_split_shorts_webcams_are_as_tall_as_their_shape_within_limits():
+    cam = (0.75, 0, 0.25, 0.25)  # 16:9, like the stream
+    assert render.webcam_grid([cam]) == (1, 1080, 608)
+    assert render.webcam_grid([(0.1, 0.1, 0.2, 0.3)]) == (1, 1080, 912)  # taller than that
+    assert render.webcam_grid([(0.1, 0.1, 0.1, 0.5)]) == (1, 1080, 960)  # at most half the Short
+    assert render.webcam_grid([(0, 0, 1, 0.2)]) == (1, 1080, 480)  # at least a quarter
+    assert render.webcam_grid([cam] * 2) == (2, 540, 480)  # side by side, cropped to fill a quarter of the Short
+    assert render.webcam_grid([cam] * 3) == (3, 360, 480)
+    assert render.webcam_grid([cam] * 4) == (2, 540, 304)  # two by two
+    assert [render.webcams_height([cam] * n) for n in (1, 2, 3, 4)] == [608, 480, 480, 608]
+
+    one = render.split_graph("[0:v]", [cam], None)
+    assert "crop=trunc(iw*0.2500/2)*2:trunc(ih*0.2500/2)*2:trunc(iw*0.7500):trunc(ih*0.0000)" in one
+    assert "scale=1080:608[c0]" in one and "scale=1080:1312[bottom]" in one and one.endswith("[c0][bottom]vstack")
+    assert "[game]crop='min" in one  # all of the picture, without a part marked for the game
+    assert "[game]crop=trunc(iw*0.5000" in render.split_graph("[0:v]", [cam], (0, 0, 0.5, 1))
+    two = render.split_graph("[0:v]", [cam, (0, 0, 0.25, 0.25)], None)
+    assert "split=3[cam0][cam1][game]" in two and "[c0][c1]hstack=inputs=2[row0]" in two and two.endswith("[row0][bottom]vstack")
+    four = render.split_graph("[0:v]", [cam] * 4, None)
+    assert "[c2][c3]hstack=inputs=2[row1]" in four and "[row0][row1]vstack=inputs=2[top]" in four and four.endswith("[top][bottom]vstack")
 
 
 @needs_ffmpeg
@@ -181,13 +191,27 @@ def test_a_split_short_has_the_webcam_on_top_and_the_game_under_it(tmp_path):
     clip = CUT_CLIP.model_copy(update={"start": 0, "end": 1, "cuts": []})
     out = tmp_path / "split.mp4"
     render.render_short(source, clip, [Word(start=0.1, end=0.5, text="hello")], out,
-                        Settings(hwaccel="none", video_encoder="libx264"), split=((0.75, 0, 0.25, 0.25), None))
+                        Settings(hwaccel="none", video_encoder="libx264"), split=([(0.75, 0, 0.25, 0.25)], None))
     video = next(s for s in ffmpeg.probe(out)["streams"] if s["codec_type"] == "video")
     assert (video["width"], video["height"]) == (1080, 1920)
     r, g, b = first_pixel(out, 540, 300)
     assert g > 200 and r < 60  # the webcam fills the top
     r, g, b = first_pixel(out, 540, 1700)
     assert r > 200 and g < 60  # the middle of the game under it
+
+    # A second webcam, yellow in the top-left corner, goes on the right of the first.
+    two = tmp_path / "two.mp4"
+    ffmpeg.run(["-i", str(source), "-vf", "drawbox=x=0:y=0:w=160:h=90:color=yellow:t=fill", "-c:v", "libx264",
+                "-pix_fmt", "yuv420p", str(tmp_path / "two-cams.mp4")])
+    render.render_short(tmp_path / "two-cams.mp4", clip, [Word(start=0.1, end=0.5, text="hello")], two,
+                        Settings(hwaccel="none", video_encoder="libx264"),
+                        split=([(0.75, 0, 0.25, 0.25), (0, 0, 0.25, 0.25)], None))
+    r, g, b = first_pixel(two, 270, 240)
+    assert g > 200 and r < 60  # the green webcam on the left
+    r, g, b = first_pixel(two, 810, 240)
+    assert r > 200 and g > 200 and b < 60  # the yellow one on the right
+    r, g, b = first_pixel(two, 540, 1700)
+    assert r > 200 and g < 60  # the game under them
 
 
 @needs_ffmpeg

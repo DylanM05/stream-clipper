@@ -222,26 +222,31 @@ def test_each_show_says_how_its_shorts_are_laid_out(tmp_path):
     assert client.patch(f"/api/shows/{show['id']}", json={"short_layout": "zoom"}).status_code == 422
 
 
-def test_a_split_short_needs_the_webcam_marked(client):
+def test_a_split_short_needs_a_webcam_marked(client):
     show = client.post("/api/shows", json={"name": "Night Owls"}).json()
     url = f"/api/shows/{show['id']}"
+    assert show["short_webcams"] == [] and show["short_game"] is None
     assert client.patch(url, json={"short_layout": "split"}).status_code == 422  # where's the webcam?
-    assert client.patch(url, json={"short_layout": "split", "short_webcam": [0.8, 0.8, 0.3, 0.2]}).status_code == 422  # off the edge
-    assert client.patch(url, json={"short_layout": "split", "short_webcam": [0.7, 0, 1.2, 0.2]}).status_code == 422
+    assert client.patch(url, json={"short_layout": "split", "short_webcams": []}).status_code == 422
+    assert client.patch(url, json={"short_layout": "split", "short_webcams": [[0.8, 0.8, 0.3, 0.2]]}).status_code == 422  # off the edge
+    assert client.patch(url, json={"short_layout": "split", "short_webcams": [[0.7, 0, 1.2, 0.2]]}).status_code == 422
+    assert client.patch(url, json={"short_layout": "split", "short_webcams": [[0, 0, 0.1, 0.1]] * 5}).status_code == 422  # 4 at most
 
-    split = client.patch(url, json={"short_layout": "split", "short_webcam": [0.75, 0, 0.25, 0.25]}).json()
-    assert (split["short_layout"], split["short_webcam"], split["short_game"]) == ("split", [0.75, 0, 0.25, 0.25], None)
+    split = client.patch(url, json={"short_layout": "split", "short_webcams": [[0.75, 0, 0.25, 0.25]]}).json()
+    assert (split["short_layout"], split["short_webcams"], split["short_game"]) == ("split", [[0.75, 0, 0.25, 0.25]], None)
+    two = client.patch(url, json={"short_webcams": [[0.75, 0, 0.25, 0.25], [0, 0, 0.2, 0.2]]}).json()
+    assert two["short_webcams"] == [[0.75, 0, 0.25, 0.25], [0, 0, 0.2, 0.2]]  # in the order they go across
     game = client.patch(url, json={"short_game": [0, 0.1, 0.7, 0.9]}).json()
-    assert (game["short_webcam"], game["short_game"]) == ([0.75, 0, 0.25, 0.25], [0, 0.1, 0.7, 0.9])
+    assert game["short_game"] == [0, 0.1, 0.7, 0.9]
     assert client.patch(url, json={"short_game": None}).json()["short_game"] is None  # all of the picture again
-    assert client.patch(url, json={"short_webcam": None}).status_code == 422  # still split
+    assert client.patch(url, json={"short_webcams": []}).status_code == 422  # still split
 
     blurred = client.patch(url, json={"short_layout": "blur"}).json()
-    assert (blurred["short_layout"], blurred["short_webcam"]) == ("blur", None)  # kept, for switching back
-    assert client.patch(url, json={"short_layout": "split"}).json()["short_webcam"] == [0.75, 0, 0.25, 0.25]
+    assert (blurred["short_layout"], len(blurred["short_webcams"])) == ("blur", 2)  # kept, for switching back
+    assert client.patch(url, json={"short_layout": "split"}).json()["short_layout"] == "split"
 
-    made = client.post("/api/shows", json={"name": "Day Owls", "short_layout": "split", "short_webcam": [0, 0, 0.3, 0.3]}).json()
-    assert (made["short_layout"], made["short_webcam"]) == ("split", [0, 0, 0.3, 0.3])
+    made = client.post("/api/shows", json={"name": "Day Owls", "short_layout": "split", "short_webcams": [[0, 0, 0.3, 0.3]]}).json()
+    assert (made["short_layout"], made["short_webcams"]) == ("split", [[0, 0, 0.3, 0.3]])
     assert client.post("/api/shows", json={"name": "Dusk Owls", "short_layout": "split"}).status_code == 422
 
 

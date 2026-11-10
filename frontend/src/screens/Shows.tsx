@@ -471,7 +471,7 @@ export const BLANK_SHOW: ShowFields = {
   short_video_top: null,
   short_video_width: 1,
   short_layout: "",
-  short_webcam: null,
+  short_webcams: [],
   short_game: null,
   overlay_episodes: false,
   overlay_x: null,
@@ -498,7 +498,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const episodePattern = fields.episode_template || clipPattern;
   const patternsOk =
     (!hasClips(fields.mode) || clipPattern.includes("{title}")) && (!hasEpisode(fields.mode) || episodePattern.includes("{title}"));
-  const shortsOk = fields.short_layout !== "split" || !!fields.short_webcam;
+  const shortsOk = fields.short_layout !== "split" || fields.short_webcams.length > 0;
   const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => fields[k] !== show[k]);
 
   const save = async () => {
@@ -758,7 +758,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         <ShortsLayout
           show={show}
           layout={fields.short_layout || "blur"}
-          webcam={fields.short_webcam}
+          webcams={fields.short_webcams}
           game={fields.short_game}
           top={fields.short_video_top}
           width={fields.short_video_width}
@@ -950,7 +950,7 @@ function Tick(props: { label: string; checked: boolean; onChange: (checked: bool
 function ShortsLayout(props: {
   show: Show | null;
   layout: "crop" | "blur" | "split";
-  webcam: Box | null;
+  webcams: Box[];
   game: Box | null;
   top: number | null;
   width: number;
@@ -967,7 +967,7 @@ function ShortsLayout(props: {
     return (
       <Group label="Shorts" hint="the vertical videos made from highlights">
         <ShortsChoice layout={props.layout} onChange={props.onChange} />
-        <SplitLayout show={show} webcam={props.webcam} game={props.game} onChange={props.onChange} />
+        <SplitLayout show={show} webcams={props.webcams} game={props.game} onChange={props.onChange} />
       </Group>
     );
   }
@@ -1087,21 +1087,31 @@ function ShortsChoice({ layout, onChange }: { layout: "crop" | "blur" | "split";
   );
 }
 
-/** The webcam's share of a split Short's height, as the server works it out (render.webcam_height). */
-function webcamShare([, , w, h]: Box): number {
-  const tall = (1080 * h * 9) / (w * 16);
-  return Math.min(960, Math.max(480, Math.round(tall / 2) * 2)) / 1920;
+/**
+ * How a split Short's webcams sit across its top, as the server works it out (render.webcam_grid): side by side, or two
+ * by two for four, each `width` x `height` of the Short's 1080x1920.
+ */
+function webcamGrid(webcams: Box[]): { columns: number; rows: number; width: number; height: number } {
+  const cams: Box[] = webcams.length ? webcams : [[0, 0, 0.25, 0.25]];
+  const columns = cams.length === 4 ? 2 : cams.length;
+  const rows = Math.ceil(cams.length / columns);
+  const width = Math.floor(1080 / columns);
+  const tall = (rows * cams.reduce((sum, [, , w, h]) => sum + (width * h * 9) / (w * 16), 0)) / cams.length;
+  return { columns, rows, width, height: Math.round(Math.min(960, Math.max(480, tall)) / rows / 2) * 2 };
 }
 
+const MAX_WEBCAMS = 4; // as the server allows
 const WHOLE: Box = [0, 0, 1, 1];
 
 /**
- * A split Short: the streamer's webcam across the top and the game under it. Both are marked by dragging over a still
- * from the show's newest video; the game is all of the picture until a part of it is marked.
+ * A split Short: the webcams across the top (one for each person on a show with several) and the game under them. Each
+ * is marked by dragging over a still from the show's newest video; the game is all of the picture until a part of it
+ * is marked.
  */
-function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box | null; onChange: (fields: Partial<ShowFields>) => void }) {
-  const { show, webcam, game } = props;
-  const [marking, setMarking] = useState<"webcam" | "game">("webcam");
+function SplitLayout(props: { show: Show | null; webcams: Box[]; game: Box | null; onChange: (fields: Partial<ShowFields>) => void }) {
+  const { show, webcams, game } = props;
+  // What a drag marks: a webcam by its number from 0 (one past the last adds one), or "game".
+  const [marking, setMarking] = useState("0");
   const [moment, setMoment] = useState(0); // which still: another one when this one doesn't show the webcam
   const [missing, setMissing] = useState(false);
   const picture = useRef<HTMLDivElement>(null);
@@ -1109,18 +1119,32 @@ function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box |
   if (!show) return <p className="mt-3 text-xs text-zinc-500">Add the show first, then mark where the webcam is on one of its videos.</p>;
 
   const still = `/media/shows/${show.id}/still.jpg?n=${moment}`;
-  const share = webcamShare(webcam ?? [0, 0, 0.25, 0.25]);
+  const camera = marking === "game" ? -1 : Number(marking);
+  const adding = camera >= webcams.length; // a new one, not drawn yet
+  const count = Math.max(1, webcams.length + (adding ? 1 : 0));
+  const name = (i: number) => (count === 1 ? "Webcam" : `Cam ${i + 1}`); // short enough for five tabs on a phone
+  const options: Record<string, string> = {};
+  for (let i = 0; i < count; i++) options[String(i)] = name(i);
+  options.game = "Game";
+  const grid = webcamGrid(webcams);
+  const share = (grid.rows * grid.height) / 1920;
   const point = (e: ReactPointerEvent) => {
     const area = picture.current!.getBoundingClientRect();
     return { x: clamp((e.clientX - area.left) / area.width, 0, 1), y: clamp((e.clientY - area.top) / area.height, 0, 1) };
   };
   const round = (v: number) => Math.round(v * 10000) / 10000;
+  const mark = (box: Box) => {
+    if (camera < 0) return props.onChange({ short_game: box });
+    const next = [...webcams];
+    next[camera] = box;
+    props.onChange({ short_webcams: next });
+  };
 
   return (
     <div className="mt-3 space-y-3">
       <div className="flex items-center gap-3">
         <span className="shrink-0 text-sm text-zinc-300">Mark the</span>
-        <Segmented options={{ webcam: "Webcam", game: "Game" }} value={marking} onChange={setMarking} />
+        <Segmented options={options} value={marking} onChange={setMarking} />
       </div>
       <div
         ref={picture}
@@ -1134,7 +1158,7 @@ function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box |
           if (!start) return;
           const to = point(e);
           const box: Box = [round(Math.min(start.x, to.x)), round(Math.min(start.y, to.y)), round(Math.abs(to.x - start.x)), round(Math.abs(to.y - start.y))];
-          if (box[2] >= 0.02 && box[3] >= 0.02) props.onChange(marking === "webcam" ? { short_webcam: box } : { short_game: box });
+          if (box[2] >= 0.02 && box[3] >= 0.02) mark(box);
         }}
         onPointerUp={() => (from.current = null)}
         onPointerCancel={() => (from.current = null)}
@@ -1146,24 +1170,54 @@ function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box |
         ) : (
           <img src={still} alt="" draggable={false} onError={() => setMissing(true)} className="pointer-events-none size-full" />
         )}
-        {game && <Marked box={game} label="Game" className="outline-sky-300 bg-sky-400/15" />}
-        {webcam && <Marked box={webcam} label="Webcam" className="outline-violet-300 bg-violet-400/20" />}
+        {game && <Marked box={game} label="Game" className={cn("outline-sky-300", camera < 0 ? "bg-sky-400/30" : "bg-sky-400/10")} />}
+        {webcams.map((box, i) => (
+          <Marked key={i} box={box} label={name(i)} className={cn("outline-violet-300", camera === i ? "bg-violet-400/35" : "bg-violet-400/10")} />
+        ))}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-violet-300">
         <button type="button" onClick={() => { setMissing(false); setMoment((m) => m + 1); }}>
           Another frame
         </button>
+        {webcams.length > 0 && webcams.length < MAX_WEBCAMS && !adding && (
+          <button type="button" onClick={() => setMarking(String(webcams.length))}>
+            + Add a webcam
+          </button>
+        )}
+        {camera >= 0 && camera < webcams.length && (
+          <button
+            type="button"
+            onClick={() => {
+              props.onChange({ short_webcams: webcams.filter((_, i) => i !== camera) });
+              setMarking("0");
+            }}
+            className="text-red-300"
+          >
+            Remove {count === 1 ? "webcam" : `cam ${camera + 1}`}
+          </button>
+        )}
         {game && (
           <button type="button" onClick={() => props.onChange({ short_game: null })}>
             Game: all of the picture
           </button>
         )}
       </div>
+      {adding && webcams.length > 0 && <p className="text-xs text-amber-300">Drag over {name(camera)} on the picture.</p>}
 
       <div className="flex gap-4">
         <div className="relative flex aspect-[9/16] w-28 shrink-0 flex-col overflow-hidden rounded-xl bg-zinc-800 ring-1 ring-white/10">
-          <div className="relative shrink-0 overflow-hidden bg-violet-500/40" style={{ height: `${share * 100}%` }}>
-            {webcam && !missing && <PartOf src={still} box={webcam} aspect={1080 / (share * 1920)} />}
+          <div
+            className="grid shrink-0 bg-violet-500/40"
+            style={{ height: `${share * 100}%`, gridTemplateColumns: `repeat(${grid.columns}, 1fr)`, gridTemplateRows: `repeat(${grid.rows}, 1fr)` }}
+          >
+            {webcams.map((box, i) => (
+              <div key={i} className="relative overflow-hidden">
+                {!missing && <PartOf src={still} box={box} aspect={grid.width / grid.height} />}
+                {webcams.length > 1 && (
+                  <span className="absolute left-0.5 top-0.5 rounded bg-black/60 px-0.5 text-[7px] font-bold text-white">{i + 1}</span>
+                )}
+              </div>
+            ))}
           </div>
           <div className="relative min-h-0 flex-1 overflow-hidden bg-sky-500/30">
             {!missing && <PartOf src={still} box={game ?? WHOLE} aspect={1080 / ((1 - share) * 1920)} />}
@@ -1177,16 +1231,22 @@ function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box |
           </p>
         </div>
         <p className="min-w-0 flex-1 text-xs text-zinc-500">
-          {webcam ? (
+          {webcams.length === 0 ? (
+            <span className="text-amber-300">Drag over the webcam on the picture to mark it.</span>
+          ) : webcams.length === 1 ? (
             <>
-              The webcam goes across the top, as tall as its shape makes it (between a quarter and half of the Short), and
-              the {game ? "part marked as the game" : "middle of the picture"} fills the rest. The captions go just under
-              where they meet.
+              The webcam goes across the top, as tall as its shape makes it (between a quarter and half of the Short).
+              For a show with more than one person on camera, add a webcam for each, up to four.
             </>
           ) : (
-            <span className="text-amber-300">Drag over the webcam on the picture to mark it.</span>
+            <>
+              The webcams go across the top in the order they're numbered{webcams.length === 4 ? ", two by two" : ", side by side"},
+              each cropped to fill its place (keep the faces in the middle of what you mark).
+            </>
           )}{" "}
-          The same spots are used for every Short of the show, so check them against a stream if the layout changes.
+          The {game ? "part marked as the game" : "middle of the picture"} fills the rest, with the captions just under
+          where they meet. The same spots are used for every Short of the show, so check them if the stream's layout
+          changes.
         </p>
       </div>
     </div>
@@ -1200,7 +1260,7 @@ function Marked({ box: [x, y, w, h], label, className }: { box: Box; label: stri
       className={cn("pointer-events-none absolute outline-2 outline-dashed", className)}
       style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` }}
     >
-      <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] font-semibold text-white">{label}</span>
+      <span className="absolute left-1 top-1 whitespace-nowrap rounded bg-black/70 px-1 text-[10px] font-semibold text-white">{label}</span>
     </div>
   );
 }

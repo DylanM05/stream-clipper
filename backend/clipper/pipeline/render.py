@@ -90,14 +90,14 @@ def render_short(
     video_top: float | None = None,
     video_width: float = 1.0,
     crop: bool | None = None,
-    split: tuple[Box, Box | None] | None = None,
+    split: tuple[list[Box], Box | None] | None = None,
 ) -> None:
     """The whole frame over a blurred copy of itself, or over the show's `background` image. `video_top` and
     `video_width` place the video on it as fractions of the Short (None centres it); the captions go just
     under it. `crop` instead fills the Short with the middle of the frame, with the captions in its lower third;
-    without it, CLIPPER_SHORT_LAYOUT=crop does, for a Short without a background image. `split` (the webcam's part
-    of the picture, and the game's or None for all of it) instead puts the webcam across the top and the game under
-    it, with the captions just below where they meet."""
+    without it, CLIPPER_SHORT_LAYOUT=crop does, for a Short without a background image. `split` (the webcams' parts
+    of the picture, and the game's or None for all of it) instead puts the webcams across the top (webcam_grid) and
+    the game under them, with the captions just below where they meet."""
     if split:
         crop, background = False, None
     elif crop is None:
@@ -109,7 +109,7 @@ def render_short(
     top = round((SHORT_H - height) / 2 if video_top is None else video_top * SHORT_H)
     captions = out.with_name(out.stem + ".ass")
     if split:
-        margin = SHORT_H - webcam_height(split[0]) - SPLIT_CAPTION_DROP
+        margin = SHORT_H - webcams_height(split[0]) - SPLIT_CAPTION_DROP
     else:
         margin = 520 if crop else max(60, SHORT_H - top - height - CAPTION_GAP)  # 520 under a centred video
     if clip.cuts:  # the captions follow the video as it comes out, with the cuts closed up
@@ -158,27 +158,47 @@ def render_short(
     tmp.replace(out)
 
 
-SPLIT_CAPTION_DROP = 330  # a split Short's captions end this far below where the webcam meets the game
+SPLIT_CAPTION_DROP = 330  # a split Short's captions end this far below where the webcams meet the game
+MAX_WEBCAMS = 4
 
 
-def webcam_height(webcam: Box) -> int:
-    """How tall the webcam is across the top of a split Short: as its own shape makes it at the Short's full width
-    (from a 16:9 picture), between a quarter and half of the Short."""
-    _, _, w, h = webcam
-    tall = SHORT_W * (h * 9) / (w * 16)
-    return min(SHORT_H // 2, max(SHORT_H // 4, round(tall / 2) * 2))
+def webcam_grid(webcams: list[Box]) -> tuple[int, int, int]:
+    """How a split Short's webcams sit across its top, as (columns, each one's width, each one's height): side by side,
+    or two by two for four. Together they're as tall as their shapes make them at that width (from a 16:9 picture),
+    between a quarter and half of the Short; each is cropped to fill its place."""
+    columns = 2 if len(webcams) == 4 else len(webcams)
+    rows = -(-len(webcams) // columns)
+    width = SHORT_W // columns
+    tall = rows * sum(width * (h * 9) / (w * 16) for _, _, w, h in webcams) / len(webcams)
+    return columns, width, round(min(SHORT_H // 2, max(SHORT_H // 4, tall)) / rows / 2) * 2
 
 
-def split_graph(picture: str, webcam: Box, game: Box | None) -> str:
-    """Filters from `picture` to the webcam stacked on the game, each cut from its part of the picture and cropped to
-    fill its share of the Short without being stretched."""
-    top = webcam_height(webcam)
-    return (
-        f"{picture},split=2[cam][game];"
-        f"[cam]{_crop_to(webcam)},{_fill(SHORT_W, top)}[top];"
-        f"[game]{_crop_to(game) + ',' if game else ''}{_fill(SHORT_W, SHORT_H - top)}[bottom];"
-        "[top][bottom]vstack"
-    )
+def webcams_height(webcams: list[Box]) -> int:
+    """How tall the webcams are together, across the top of a split Short."""
+    columns, _, height = webcam_grid(webcams)
+    return height * -(-len(webcams) // columns)
+
+
+def split_graph(picture: str, webcams: list[Box], game: Box | None) -> str:
+    """Filters from `picture` to the webcams (webcam_grid) stacked on the game, each cut from its part of the picture
+    and cropped to fill its place without being stretched."""
+    columns, width, height = webcam_grid(webcams)
+    n = len(webcams)
+    chains = [f"{picture},split={n + 1}" + "".join(f"[cam{i}]" for i in range(n)) + "[game]"]
+    chains += [f"[cam{i}]{_crop_to(box)},{_fill(width, height)}[c{i}]" for i, box in enumerate(webcams)]
+    rows = []
+    for r, first in enumerate(range(0, n, columns)):
+        row = "".join(f"[c{i}]" for i in range(first, min(first + columns, n)))
+        if row.count("[") > 1:
+            chains.append(f"{row}hstack=inputs={row.count('[')}[row{r}]")
+            row = f"[row{r}]"
+        rows.append(row)
+    top = rows[0]
+    if len(rows) > 1:
+        chains.append(f"{''.join(rows)}vstack=inputs={len(rows)}[top]")
+        top = "[top]"
+    chains.append(f"[game]{_crop_to(game) + ',' if game else ''}{_fill(SHORT_W, SHORT_H - webcams_height(webcams))}[bottom]")
+    return ";".join(chains) + f";{top}[bottom]vstack"
 
 
 def _crop_to(box: Box) -> str:

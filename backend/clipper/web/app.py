@@ -32,7 +32,8 @@ from .. import ai, cuts, ffmpeg, learning, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
     PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
-    get_app_setting, get_engine, is_paused, queue_vod, set_app_setting, sites_name, upload_sites, utcnow,
+    get_app_setting, get_engine, is_paused, parse_box, parse_boxes, queue_vod, set_app_setting, sites_name, upload_sites,
+    utcnow,
 )
 from ..monitor import (
     VIDEO_SUFFIXES, ChannelUrlError, backlog_order, episode_order, list_folder, older_reason, parse_channel, parse_folder,
@@ -218,7 +219,7 @@ class ShowIn(BaseModel):
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
     short_layout: Literal["", "crop", "blur", "split"] = ""  # "" goes by CLIPPER_SHORT_LAYOUT
-    short_webcam: BoxIn | None = None  # for "split", which it needs
+    short_webcams: list[BoxIn] = Field(default=[], max_length=4)  # for "split", which needs one; in order across the Short
     short_game: BoxIn | None = None  # null for all of the picture
     overlay_episodes: bool = False
     overlay_x: float | None = Field(default=None, ge=0, le=1)
@@ -258,7 +259,7 @@ class ShowPatch(BaseModel):
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
     short_layout: Literal["crop", "blur", "split"] | None = None
-    short_webcam: BoxIn | None = None
+    short_webcams: list[BoxIn] | None = Field(default=None, max_length=4)
     short_game: BoxIn | None = None  # null for all of the picture
     overlay_episodes: bool | None = None
     overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
@@ -521,7 +522,7 @@ class ShowOut(BaseModel):
     short_video_top: float | None
     short_video_width: float
     short_layout: str  # "crop", "blur" or "split", as its Shorts are made
-    short_webcam: list[float] | None  # x, y, w, h as fractions of the picture
+    short_webcams: list[list[float]]  # each x, y, w, h as fractions of the picture, kept whatever the layout
     short_game: list[float] | None  # null for all of the picture
     short_background: str  # the image's address in the app, or "" for none
     overlay: str  # the overlay image's address in the app, or "" for none
@@ -781,11 +782,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
         overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen)
         background = settings.short_background(show.id)
-        split = show.short_split()
-        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout", "short_webcam", "short_game"}),
-                       short_layout="split" if split else "crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
-                       short_webcam=list(split[0]) if split else None,
-                       short_game=list(split[1]) if split and split[1] else None,
+        game = parse_box(show.short_game)
+        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout", "short_webcams", "short_game"}),
+                       short_layout="split" if show.short_split() else "crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
+                       short_webcams=[list(box) for box in parse_boxes(show.short_webcams)],
+                       short_game=list(game) if game else None,
                        short_background=image_url(background, f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
                        overlay_box=list(overlay.box) if overlay else None,
@@ -1236,7 +1237,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/shows", status_code=201)
     def add_show(body: ShowIn, s: Session = Depends(db)) -> ShowOut:
         check_destinations(s, body.clip_destination_id, body.episode_destination_id)
-        show = Show(**body.model_dump() | {"short_webcam": box_text(body.short_webcam), "short_game": box_text(body.short_game)})
+        show = Show(**body.model_dump() | {"short_webcams": boxes_text(body.short_webcams), "short_game": box_text(body.short_game)})
         check_split(show)
         show.name, show.title_template = show.name.strip(), valid_template(show.title_template)
         show.episode_template = valid_template(show.episode_template, optional=True)
@@ -1267,9 +1268,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             field = f"{kind}_destination_id"
             if field in changes and changes[field] != getattr(show, field):
                 changes.setdefault(f"{kind}_playlist_id", "")
-        for k in ("short_webcam", "short_game"):
-            if k in changes:
-                changes[k] = box_text(changes[k])
+        if "short_webcams" in changes:
+            changes["short_webcams"] = boxes_text(changes["short_webcams"])
+        if "short_game" in changes:
+            changes["short_game"] = box_text(changes["short_game"])
         for k, v in changes.items():
             setattr(show, k, v.strip() if k == "name" else v)
         check_split(show)
@@ -1279,16 +1281,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return show_out(s, show)
 
     def box_text(box: tuple[float, ...] | None) -> str:
-        """A part of the picture as the database keeps it (db.parse_box), "" for none; it has to be inside the picture."""
-        if box is None:
-            return ""
+        """A part of the picture as the database keeps it (db.parse_box), "" for none."""
+        return json.dumps(inside_picture(box)) if box else ""
+
+    def boxes_text(boxes: list[tuple[float, ...]] | None) -> str:
+        """Parts of the picture as the database keeps them (db.parse_boxes), "" for none."""
+        return json.dumps([inside_picture(box) for box in boxes]) if boxes else ""
+
+    def inside_picture(box: tuple[float, ...]) -> list[float]:
         x, y, w, h = box
         if w < 0.02 or h < 0.02 or x + w > 1.001 or y + h > 1.001:
             raise HTTPException(422, "That part of the picture isn't inside it")
-        return json.dumps([round(v, 4) for v in box])
+        return [round(v, 4) for v in box]
 
     def check_split(show: Show) -> None:
-        if show.short_layout == "split" and not show.short_webcam:
+        if show.short_layout == "split" and not show.short_webcams:
             raise HTTPException(422, "Mark where the webcam is first")
 
     @app.delete("/api/shows/{show_id}", status_code=204)

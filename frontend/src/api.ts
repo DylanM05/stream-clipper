@@ -281,9 +281,9 @@ export interface Show {
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
   // Its Shorts: "crop" fills them with the middle of the picture, "blur" puts the whole picture on the background,
-  // "split" puts the webcam across the top and the game under it. A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
+  // "split" puts the webcams across the top and the game under them. A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
   short_layout: "" | "crop" | "blur" | "split";
-  short_webcam: Box | null; // for "split": where the webcam is in the picture
+  short_webcams: Box[]; // for "split": where the webcams are in the picture, in the order they go across the Short (4 at most)
   short_game: Box | null; // and the part the game is in; null for all of it
   overlay: string; // the overlay image's address, or "" for none
   overlay_box: [number, number, number, number] | null; // x, y, w, h of its visible part, as drawn, in its 1920×1080
