@@ -44,7 +44,7 @@ from ..studio import Studio, launch_desktop_browser, read_status, resolve_channe
 from ..pipeline import audio, render
 from ..rumble_upload import CATEGORIES as RUMBLE_CATEGORIES, LICENCE as RUMBLE_LICENCE
 from ..workspace import Workspace, remove
-from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id
+from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id, with_footer
 from .auth import COOKIE, MAX_AGE_S, Auth
 
 log = logging.getLogger(__name__)
@@ -106,6 +106,8 @@ class ClipOut(BaseModel):
     end: float
     title: str
     description: str
+    upload_description: str  # as it's uploaded: with the show's footer under it (youtube.with_footer)
+    description_footer: str  # the show's, "" for none
     why: str
     score: float
     manual: bool  # made in the app, so it has no score from Claude
@@ -213,6 +215,7 @@ class ShowIn(BaseModel):
     chapter_thumbnails: bool = False
     episode_thumbnails: bool = False
     thumbnail_guidance: str = Field(default="", max_length=2000)
+    description_footer: str = Field(default="", max_length=2000)
     learning_notes: str = Field(default="", max_length=4000)
     save_transcripts: bool = False
     breakdown: str = Field(default="", max_length=4000)
@@ -253,6 +256,7 @@ class ShowPatch(BaseModel):
     chapter_thumbnails: bool | None = None
     episode_thumbnails: bool | None = None
     thumbnail_guidance: str | None = Field(default=None, max_length=2000)  # what every thumbnail must have
+    description_footer: str | None = Field(default=None, max_length=2000)  # under every upload's description
     learning_notes: str | None = Field(default=None, max_length=4000)  # what you've noticed works (learning.py)
     save_transcripts: bool | None = None  # also saved as files, for use outside the app (transcripts.py)
     breakdown: str | None = Field(default=None, max_length=4000)  # categories the AI sorts streams' time into
@@ -516,6 +520,7 @@ class ShowOut(BaseModel):
     chapter_thumbnails: bool
     episode_thumbnails: bool
     thumbnail_guidance: str
+    description_footer: str
     learning_notes: str
     save_transcripts: bool
     breakdown: str
@@ -843,6 +848,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
             upload_to=sites_name(upload_sites(show, clip.kind, dest)),
+            upload_description=with_footer(clip.description, show.description_footer if show else ""),
+            description_footer=show.description_footer.strip() if show else "",
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
             upload_state=upload_state,
             next_upload=iso(next_upload),

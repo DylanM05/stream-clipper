@@ -154,7 +154,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
 
           <Step n={5} title="Title and description">
             <CopyBox label="Title" text={clip.title} onCopy={() => copy(clip.title, "Title")} />
-            <CopyBox label="Description" text={clip.description} onCopy={() => copy(clip.description, "Description")} long />
+            <CopyBox label="Description" text={clip.upload_description} onCopy={() => copy(clip.upload_description, "Description")} long />
           </Step>
 
           <Step n={6} title="Done?">

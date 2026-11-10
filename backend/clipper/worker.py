@@ -44,7 +44,7 @@ from .studio import Studio, StudioError, Upload, write_status
 from .thumbnails import ThumbnailError
 from .timecode import to_seconds
 from .workspace import Workspace, disk_free_gb
-from .youtube import Google, Video, YouTubeError, video_id
+from .youtube import Google, Video, YouTubeError, video_id, with_footer
 
 log = logging.getLogger(__name__)
 
@@ -711,7 +711,10 @@ class Worker:
             clip = s.get(ClipRecord, job.clip_id)
             dest = s.get(Destination, clip.destination_id) if clip.destination_id else None
             path = clip.short_path if job.which == "short" else clip.video_path
+            vod = s.get(Vod, clip.vod_id)
+            show = s.get(Show, vod.show_id) if vod and vod.show_id else None
         file = Path(path).resolve() if path else None
+        description = with_footer(clip.description, show.description_footer if show else "")
         on_rumble = job.site == "rumble"
         through_api = not on_rumble and bool(self.youtube and dest and dest.youtube_token)
         method = "browser" if on_rumble else "api" if through_api else "studio"
@@ -724,11 +727,11 @@ class Worker:
         note = ""
         try:
             if on_rumble:
-                url = self._upload_to_rumble(job, clip, dest, file)
+                url = self._upload_to_rumble(job, clip, dest, file, description)
             elif through_api:
-                url, note = self._upload_through_api(job, clip, dest, file)
+                url, note = self._upload_through_api(job, clip, dest, file, description)
             else:
-                upload = Upload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+                upload = Upload(file=file, title=clip.title, description=description, visibility=job.visibility,
                                 channel_id=dest.channel_id if dest else "")
                 url = self.studio.upload(upload, on_progress=self._upload_progress(job_id))
                 missing = [what for what, wanted in (("playlist", clip.playlist_id), ("thumbnail", clip.thumbnail_status == "done"))
@@ -804,12 +807,14 @@ class Worker:
             setattr(clip, field, "")
             log.info("Deleted %s now that it's uploaded", Path(path).name)
 
-    def _upload_through_api(self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path) -> tuple[str, str]:
+    def _upload_through_api(
+        self, job: UploadJob, clip: ClipRecord, dest: Destination, file: Path, description: str,
+    ) -> tuple[str, str]:
         """Upload with the channel's Google sign-in, then, unless it's the Short (Shorts never go in playlists or
         get thumbnails), add it to the clip's playlist and give it the clip's thumbnail. Returns the link, and a
         note if YouTube didn't use the visibility asked for (what Google does to uploads from projects it hasn't
         audited), or the playlist or thumbnail didn't work."""
-        video = Video(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+        video = Video(file=file, title=clip.title, description=description, visibility=job.visibility,
                       category_id=self.settings.youtube_category_id, short=job.which == "short")
         # An earlier attempt's session only carries on if the same file is going to the same place, the same way.
         key = hashlib.sha256(json.dumps(
@@ -840,7 +845,9 @@ class Worker:
                 notes.append(f"It doesn't have its thumbnail: {e}")
         return result.url, " ".join(notes)
 
-    def _upload_to_rumble(self, job: UploadJob, clip: ClipRecord, dest: Destination | None, file: Path) -> str:
+    def _upload_to_rumble(
+        self, job: UploadJob, clip: ClipRecord, dest: Destination | None, file: Path, description: str,
+    ) -> str:
         """Upload through Rumble's upload page, to the channel the upload browser is signed in to. Its video gets the
         clip's thumbnail if it has one, else a frame from a third of the way in, as does a Short."""
         own = Path(clip.thumbnail_path) if (job.which == "video" and clip.thumbnail_status == "done"
@@ -855,7 +862,7 @@ class Worker:
                     raise RumbleUploadError(f"Couldn't take a frame of the video for its thumbnail: {e}"[:500], retry=True) from e
             return rumble_upload.upload(
                 self.settings.studio_cdp_url,
-                RumbleUpload(file=file, title=clip.title, description=clip.description, visibility=job.visibility,
+                RumbleUpload(file=file, title=clip.title, description=description, visibility=job.visibility,
                              category=dest.rumble_category if dest else "Entertainment", thumbnail=own or frame),
                 self.settings.studio_dir,
                 on_progress=self._upload_progress(job.id),

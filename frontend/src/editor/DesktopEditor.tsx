@@ -609,6 +609,9 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
           onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value }))}
           className="w-full rounded-xl bg-zinc-900 px-3 py-2.5 text-sm outline-none ring-1 ring-white/10 focus:ring-2 focus:ring-violet-500"
         />
+        {clip?.description_footer && !draft.description.includes(clip.description_footer) && (
+          <p className="mt-1.5 line-clamp-2 text-xs text-zinc-500">Goes up with the show's footer under it: {clip.description_footer}</p>
+        )}
       </Field>
 
       {draft.kind === "highlight" && (

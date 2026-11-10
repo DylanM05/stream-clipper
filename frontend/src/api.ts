@@ -59,6 +59,8 @@ export interface Clip {
   end: number;
   title: string;
   description: string;
+  upload_description: string; // as it's uploaded: with the show's footer under it
+  description_footer: string; // the show's, "" for none
   why: string;
   score: number;
   manual: boolean; // made in the app, so it has no score from the AI
@@ -274,6 +276,7 @@ export interface Show {
   chapter_thumbnails: boolean; // clips (kind "chapter") get a thumbnail once rendered
   episode_thumbnails: boolean; // and full episodes
   thumbnail_guidance: string; // what every thumbnail of the show must have, e.g. words on it
+  description_footer: string; // added under the description of everything the show uploads
   learning_notes: string; // what you've noticed works, which the AI follows over how past clips did
   save_transcripts: boolean; // each stream's transcript is also saved as files, for use outside the app
   breakdown: string; // categories the AI sorts each stream's time into, saved with it: one per line, "Name: what it covers"

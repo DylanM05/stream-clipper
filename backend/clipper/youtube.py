@@ -151,11 +151,26 @@ def clean_title(title: str) -> str:
 
 def clean_description(text: str) -> str:
     """Within YouTube's 5000-byte limit, cut at a line break."""
-    text = _no_angle_brackets(text)
+    return _fit(_no_angle_brackets(text), DESCRIPTION_MAX_BYTES)
+
+
+def with_footer(description: str, footer: str) -> str:
+    """A video's description as it's uploaded: with its show's footer (Show.description_footer) under it, unless it's
+    in it already. The description is cut short, at a line break, to leave the footer room within YouTube's limit."""
+    footer, body = footer.strip(), description.rstrip()
+    if not footer or footer in body:
+        return description
+    grows = len(_no_angle_brackets(body).encode()) - len(body.encode())  # < and > become ‹ and › (clean_description)
+    body = _fit(body, DESCRIPTION_MAX_BYTES - len(_no_angle_brackets(footer).encode()) - 2 - grows).rstrip()
+    return f"{body}\n\n{footer}" if body else footer
+
+
+def _fit(text: str, max_bytes: int) -> str:
+    """`text` within `max_bytes`, cut at a line break if it's longer."""
     data = text.encode()
-    if len(data) <= DESCRIPTION_MAX_BYTES:
+    if len(data) <= max_bytes:
         return text
-    cut = data[:DESCRIPTION_MAX_BYTES].decode("utf-8", "ignore")
+    cut = data[:max(0, max_bytes)].decode("utf-8", "ignore")
     return cut.rsplit("\n", 1)[0] if "\n" in cut else cut
 
 

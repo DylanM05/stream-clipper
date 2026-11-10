@@ -465,6 +465,7 @@ export const BLANK_SHOW: ShowFields = {
   chapter_thumbnails: false,
   episode_thumbnails: false,
   thumbnail_guidance: "",
+  description_footer: "",
   learning_notes: "",
   save_transcripts: false,
   breakdown: "",
@@ -587,6 +588,22 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           onChange={(v) => set({ title_template: v })}
         />
       )}
+
+      <Field label="Description footer" hint="under every upload's description">
+        <textarea
+          value={fields.description_footer}
+          onChange={(e) => set({ description_footer: e.target.value })}
+          rows={3}
+          maxLength={2000}
+          placeholder={"e.g. Watch the whole show live: https://kick.com/yourshow\nFollow the hosts: https://x.com/yourshow"}
+          className={input}
+        />
+        <p className="mt-1.5 text-xs text-zinc-500">
+          Added under the description of every clip, Short and full episode the show uploads, including videos posted whole
+          from X, whose description is the post's text. Anything not uploaded yet gets it too. A long description is cut
+          short so the footer always fits within YouTube's limit.
+        </p>
+      </Field>
 
       <div className="grid gap-4 sm:grid-cols-2">
         {hasEpisode(fields.mode) && (

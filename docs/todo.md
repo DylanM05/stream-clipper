@@ -13,10 +13,6 @@ Since Nov 1, 2026, the Library works through folders of videos on the server (`C
 
 Redesign the clip editor (trimming, the preview, title and description, the Short) so it looks and feels polished, not just functional.
 
-## Description footer for each show
-
-A show setting with text added to the end of every upload's description, such as the creators' channel links (Oct 30, 2026). Asking the AI for it in the show's notes doesn't work reliably, and a video posted whole (a pre-show from X) gets the post's own text as its description, which the AI never writes, so the link never gets in.
-
 ## People shared between shows
 
 One list of the people the shows feature or talk about: who each is, the names they go by, their real name and what they look like, which several shows can use instead of each describing them in its own notes and thumbnail rules (Oct 30, 2026). The same people are described in three shows now, so a change has to be made three times, and the copies drift apart.

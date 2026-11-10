@@ -17,7 +17,7 @@ from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine, utcn
 from clipper.web import app as web_app
 from clipper.youtube import (
     PLAYLIST_ITEMS_URL, PLAYLISTS_URL, TOKEN_URL, UPLOAD_URL, Google, Playlist, Stats, Uploaded, Video, YouTubeError,
-    _api_error, clean_description, sign_in_url, video_id,
+    _api_error, clean_description, sign_in_url, video_id, with_footer,
 )
 
 
@@ -262,6 +262,20 @@ def test_long_descriptions_are_cut_at_a_line_within_5000_bytes():
     text = "\n".join(f"{i:02d}:00 ♥️ chapter {i}" for i in range(400))
     cut = clean_description(text)
     assert len(cut.encode()) <= 5000 and text.startswith(cut) and text[len(cut)] == "\n"
+
+
+def test_the_shows_footer_goes_under_the_description_and_always_fits():
+    footer = "Watch the full show: https://example.com/nightowls\nFollow <the hosts>: https://example.com/hosts"
+    assert with_footer("A great moment.\n", footer + "\n") == f"A great moment.\n\n{footer}"
+    assert with_footer("", footer) == footer  # a post's video with no text of its own
+    assert with_footer("A great moment.", "  ") == "A great moment."  # no footer
+    assert with_footer(f"Already there.\n\n{footer}", footer) == f"Already there.\n\n{footer}"  # not twice
+
+    chapters = "\n".join(f"{i:02d}:00 ♥️ chapter <{i}>" for i in range(400))  # far too long, with < and > to grow
+    uploaded = clean_description(with_footer(chapters, footer))
+    assert len(uploaded.encode()) <= 5000
+    assert uploaded.endswith(clean_description(footer))  # the footer is kept whole; the chapters are cut short
+    assert "chapter ‹0›" in uploaded and "\n\n" in uploaded
 
 
 # --- The worker ---

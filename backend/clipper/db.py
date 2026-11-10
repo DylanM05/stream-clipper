@@ -186,6 +186,8 @@ class Show(SQLModel, table=True):
     chapter_thumbnails: bool = False
     episode_thumbnails: bool = False
     thumbnail_guidance: str = ""  # for Claude: what every thumbnail of the show must have, e.g. words on it
+    # Added under the description of everything the show uploads, such as the creators' links (youtube.with_footer).
+    description_footer: str = ""
     # For the AI: what you've noticed works for the show, which it puts first among what its past clips teach it
     # (learning.py).
     learning_notes: str = ""

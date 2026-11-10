@@ -8,7 +8,7 @@ from sqlmodel import Session
 
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Destination, UploadJob, Vod, get_engine
+from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_engine
 from clipper.studio import StudioError, read_status, resolve_channel_id, write_status
 from clipper.web import app as web_app
 
@@ -89,6 +89,59 @@ def test_worker_uploads_to_the_clips_channel_and_records_the_link(settings, clip
     assert (clip.status, clip.youtube_url) == ("uploaded", "https://youtu.be/abc123")
     assert read_status(settings.studio_dir / "status.json")["signed_in"] is True
     assert w.upload_next() is False
+
+
+def test_every_upload_has_the_shows_footer_under_its_description(settings, clip_id, monkeypatch):
+    from clipper.youtube import Uploaded
+
+    with Session(get_engine(settings)) as s:
+        show = Show(name="Night Owls", description_footer="Full shows: https://example.com/nightowls")
+        s.add(show)
+        s.commit()
+        show_id = show.id
+        vod = s.get(Vod, 1)
+        vod.show_id = show_id
+        s.add_all([vod, UploadJob(clip_id=clip_id), UploadJob(clip_id=clip_id, site="rumble")])
+        s.commit()
+    expected = "Jer returns.\n\nFull shows: https://example.com/nightowls"
+
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio()
+    assert w.upload_next() is True
+    assert w.studio.uploads[0].description == expected  # through YouTube Studio
+
+    rumble = []
+    monkeypatch.setattr(worker_module.rumble_upload, "upload", lambda cdp, job, shots, on_progress=None: (
+        rumble.append(job), "https://rumble.com/v6test1-a-moment.html")[1])
+    monkeypatch.setattr(worker_module, "probe_duration", lambda path: 39.0)
+    monkeypatch.setattr(worker_module.ffmpeg, "run", lambda args: Path(args[-1]).write_bytes(b"jpeg"))
+    assert w.upload_next() is True
+    assert rumble[0].description == expected  # to Rumble
+
+    class FakeGoogle:
+        videos = []
+
+        def upload(self, refresh_token, video, on_progress=lambda _: None, session_url="", on_session=lambda _: None):
+            self.videos.append(video)
+            return Uploaded("vid123", "https://youtu.be/vid123", video.visibility)
+
+    with Session(get_engine(settings)) as s:
+        dest = s.get(Destination, 1)
+        dest.youtube_token = "refresh"
+        s.add_all([dest, UploadJob(clip_id=clip_id, which="video")])
+        s.commit()
+    w.youtube = FakeGoogle()
+    assert w.upload_next() is True
+    assert FakeGoogle.videos[0].description == expected  # through the YouTube API
+
+    client = TestClient(web_app.create_app(settings))
+    clip = client.get(f"/api/clips/{clip_id}").json()
+    assert (clip["description"], clip["upload_description"], clip["description_footer"]) == (
+        "Jer returns.", expected, "Full shows: https://example.com/nightowls",  # to copy, for uploading by hand
+    )
+    edited = client.patch(f"/api/shows/{show_id}", json={"description_footer": "  Subscribe!\n"}).json()
+    assert edited["description_footer"] == "  Subscribe!\n"
+    assert client.get(f"/api/clips/{clip_id}").json()["upload_description"] == "Jer returns.\n\nSubscribe!"
 
 
 def test_a_rendered_file_is_deleted_once_its_uploaded_and_the_upload_is_notified(settings, clip_id, monkeypatch):
