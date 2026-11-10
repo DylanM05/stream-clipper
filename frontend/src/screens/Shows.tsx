@@ -460,6 +460,7 @@ export const BLANK_SHOW: ShowFields = {
   auto_chapters: "review",
   auto_shorts: "review",
   auto_upload_score: 0,
+  upload_approved: false,
   auto_visibility: "public",
   upload_gap_hours: 0,
   chapter_thumbnails: false,
@@ -705,6 +706,19 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             </p>
           </>
         )}
+        <div className="mt-3 flex items-center gap-3">
+          <span className="w-24 shrink-0 text-sm text-zinc-300">Once approved</span>
+          <Segmented
+            options={APPROVED_LABEL}
+            value={fields.upload_approved ? "upload" : "wait"}
+            onChange={(v) => set({ upload_approved: v === "upload" })}
+          />
+        </div>
+        <p className="mt-1.5 text-xs text-zinc-500">
+          {fields.upload_approved
+            ? "What you approve (from the inbox, the extras, or a clip you made) uploads by itself once it's rendered, to its channel."
+            : "What you approve waits in Ready to upload until you tap Upload."}
+        </p>
         {autoUploads(fields) && (
           <div className="mt-3 flex items-center gap-3">
             <span className="w-24 shrink-0 text-sm text-zinc-300">Uploaded as</span>
@@ -909,13 +923,15 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
 
 const AUTO_LABEL: Record<Auto, string> = { review: "Review", render: "Render", upload: "Upload" };
 const VISIBILITY_LABEL: Record<Visibility, string> = { public: "Public", unlisted: "Unlisted", private: "Private" };
+const APPROVED_LABEL: Record<string, string> = { wait: "Wait for me", upload: "Upload" };
 // The AI's score (0–1) from which a clip or Short uploads without review.
 const SCORE_LABEL: Record<string, string> = { "0": "Off", "0.8": "0.8+", "0.85": "0.85+", "0.9": "0.9+", "0.95": "0.95+" };
 // Hours between a channel's clip uploads.
 const GAP_LABEL: Record<string, string> = { "0": "Off", "1": "1h", "2": "2h", "3": "3h", "6": "6h", "12": "12h" };
 
-/** Whether any video the show makes is uploaded without review. */
+/** Whether any video the show makes is uploaded by itself: without review, or once you approve it. */
 const autoUploads = (f: ShowFields) =>
+  f.upload_approved ||
   (hasEpisode(f.mode) && f.auto_episode === "upload") ||
   (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload" || f.auto_upload_score > 0));
 

@@ -666,14 +666,16 @@ class Worker:
                 s.commit()
 
     def _auto_upload(self, clip_id: int) -> None:
-        """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review:
-        for a highlight its Short if it has one, else the video. It goes where its channel's uploads go: YouTube,
-        Rumble or both."""
+        """Queue the upload of a freshly rendered clip whose show uploads its kind or score without review, or
+        uploads what you approve and you approved it: for a highlight its Short if it has one, else the video. It goes
+        where its channel's uploads go: YouTube, Rumble or both."""
         with Session(self.engine) as s:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod.show_id else None
-            if not show or show.auto_for_clip(clip.kind, clip.score) != "upload" or clip.status != "rendered":
+            if not show or clip.status != "rendered":
+                return
+            if show.auto_for_clip(clip.kind, clip.score) != "upload" and not (show.upload_approved and clip.approved_in_review):
                 return
             which = "short" if clip.short_path else "video"
             if s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id, UploadJob.which == which)).first():
