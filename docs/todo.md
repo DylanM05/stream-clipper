@@ -50,13 +50,6 @@ Get the project ready to publish on GitHub, then post it to selfh.st and r/selfh
 - **Generic test data:** the prompts, the app's example texts, the README and the code's comments use made-up shows and people since Oct 30, 2026, but the tests' sample data still names the owner's shows and the people on them (about 250 lines). Swap those for made-up names too.
 - **Be upfront about the risky parts:** YouTube Studio uploads (YouTube's terms only allow the API), reading X through a signed-in browser (X's terms), Rumble requests passed off as Chrome, and that clipping someone's streams needs their permission.
 
-## Intro on videos (on hold, Oct 27, 2026)
-
-A short intro (3–5 seconds; longer costs watch time) at the start of each video, set per show like the overlay: upload an intro video, with switches for clips and full episodes.
-- **Clips (chapters, highlights):** joined on in the render that happens anyway, so it only adds the intro's own seconds to the encode.
-- **Full episodes:** they go up as the original file, with no re-encode. Encode the intro to match each stream (resolution, frame rate, codec, audio) and join the two without re-encoding: seconds of GPU and a few minutes of disk. Re-encoding the whole stream instead would take an estimated 1–2½ hours of GPU per 8-hour stream.
-- **Shorts:** off by default. Viewers swipe away in the first second or two, and the show's overlay already brands them.
-
 ## Watching subreddits (on hold, Oct 25, 2026)
 
 Watch subreddits for their top videos (livestream fails, mostly) and queue them like videos from a watched channel.

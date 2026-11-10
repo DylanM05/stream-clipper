@@ -140,6 +140,10 @@ class Settings(BaseSettings):
         """A show's overlay for its landscape videos, uploaded in the app; 1920x1080 once saved (overlay.py)."""
         return self.data_dir / "overlays" / f"show-{show_id}.png"
 
+    def show_intro(self, show_id: int) -> Path:
+        """A show's intro, uploaded in the app and kept as MP4, joined onto the start of its videos (pipeline/intro.py)."""
+        return self.data_dir / "intros" / f"show-{show_id}.mp4"
+
     @property
     def transcripts_dir(self) -> Path:
         """Transcripts of the shows that save them, a folder per show (transcripts.py)."""

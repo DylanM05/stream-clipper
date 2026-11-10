@@ -3,6 +3,7 @@ import shutil
 import sqlite3
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import unquote
 
 import pytest
@@ -248,6 +249,45 @@ def test_a_split_short_needs_a_webcam_marked(client):
     made = client.post("/api/shows", json={"name": "Day Owls", "short_layout": "split", "short_webcams": [[0, 0, 0.3, 0.3]]}).json()
     assert (made["short_layout"], made["short_webcams"]) == ("split", [[0, 0, 0.3, 0.3]])
     assert client.post("/api/shows", json={"name": "Dusk Owls", "short_layout": "split"}).status_code == 422
+
+
+def test_a_shows_intro_is_kept_as_mp4_with_switches_for_each_kind(client, settings, monkeypatch):
+    probed = {"streams": [{"codec_type": "video"}, {"codec_type": "audio"}], "format": {"duration": "4.52"}}
+    runs = []
+
+    def run(args, **kwargs):
+        runs.append(args)
+        if "copy" in args and probed.get("only_reencodes"):
+            raise web_app.ffmpeg.FFmpegError("vp9 can't go in this MP4")
+        Path(args[-1]).write_bytes(b"mp4")
+        return ""
+
+    monkeypatch.setattr(web_app.ffmpeg, "probe", lambda path: probed)
+    monkeypatch.setattr(web_app.ffmpeg, "run", run)
+    show = client.post("/api/shows", json={"name": "Night Owls"}).json()
+    assert (show["intro"], show["intro_seconds"], show["intro_clips"], show["intro_episodes"], show["intro_shorts"]) == (
+        "", 0, True, True, False,
+    )
+    url = f"/api/shows/{show['id']}/intro"
+
+    added = client.put(url, content=b"a video").json()
+    assert added["intro"].startswith(f"/media/shows/{show['id']}/intro.mp4?v=") and added["intro_seconds"] == 4.52
+    assert runs[-1][runs[-1].index("-c") + 1] == "copy"  # rewrapped as it is
+    assert client.get(f"/media/shows/{show['id']}/intro.mp4").content == b"mp4"
+    probed["only_reencodes"] = True
+    assert client.put(url, content=b"a webm").status_code == 200 and runs[-1][runs[-1].index("-c:v") + 1] == "libx264"
+
+    probed["format"]["duration"] = "45"
+    assert "30 seconds at most" in client.put(url, content=b"too long").json()["detail"]
+    probed["streams"] = [{"codec_type": "audio"}]
+    assert client.put(url, content=b"just sound").status_code == 422
+    assert sorted(p.name for p in settings.show_intro(show["id"]).parent.iterdir()) == ["show-1.mp4"]  # nothing left over
+
+    switched = client.patch(f"/api/shows/{show['id']}", json={"intro_clips": False, "intro_shorts": True}).json()
+    assert (switched["intro_clips"], switched["intro_episodes"], switched["intro_shorts"]) == (False, True, True)
+    removed = client.delete(url).json()
+    assert (removed["intro"], removed["intro_seconds"]) == ("", 0) and not settings.show_intro(show["id"]).exists()
+    assert client.get(f"/media/shows/{show['id']}/intro.mp4").status_code == 404
 
 
 def test_a_still_to_mark_the_webcam_on_comes_from_the_shows_newest_preview(client, settings):

@@ -220,6 +220,11 @@ class Show(SQLModel, table=True):
     overlay_x: float | None = None
     overlay_y: float | None = None
     overlay_scale: float = 1.0
+    # Its intro (Settings.show_intro, pipeline/intro.py): how long it is, and which of its videos get it at the start.
+    intro_seconds: float = 0
+    intro_clips: bool = True  # clips and highlights
+    intro_episodes: bool = True  # full episodes
+    intro_shorts: bool = False  # viewers swipe away in the first second or two
     created_at: datetime = Field(default_factory=utcnow)
 
     @property
@@ -327,6 +332,9 @@ class ClipRecord(SQLModel, table=True):
     # Uploads to make again once it's rendered again, after one went wrong on the site's side (a video YouTube
     # won't play): JSON [[which, site, visibility], ...]; "" for none.
     reupload: str = ""
+    # How long the show's intro at the start of its rendered video is (0 for none): its description's chapter times
+    # are moved on by this as it's uploaded (titles.shift_chapters).
+    intro_s: float = 0
     # Parts taken out of the middle in the app's editor (cuts.py): JSON [[start, end], ...] in the stream's
     # seconds, inside start-end; "" for none. The video jumps over them.
     cuts: str = ""

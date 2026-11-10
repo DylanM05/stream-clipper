@@ -478,6 +478,9 @@ export const BLANK_SHOW: ShowFields = {
   overlay_x: null,
   overlay_y: null,
   overlay_scale: 1,
+  intro_clips: true,
+  intro_episodes: true,
+  intro_shorts: false,
 };
 
 function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
@@ -486,8 +489,10 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const [fields, setFields] = useState<ShowFields>(() => {
     if (!show) return BLANK_SHOW;
     // The images are saved on their own, straight away, so they aren't part of the form.
-    const { id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s, ...rest } =
-      show;
+    const {
+      id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s,
+      intro: _n, intro_seconds: _l, ...rest
+    } = show;
     return rest;
   });
   const [busy, setBusy] = useState(false);
@@ -790,6 +795,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         onChange={set}
         onChanged={props.onChanged}
       />
+      <Intro show={show} fields={fields} onChange={set} onChanged={props.onChanged} />
 
       <Field label="About the show" hint="context for the AI">
         <textarea
@@ -1442,7 +1448,56 @@ function ClipOverlay(props: {
   );
 }
 
-/** Add, change or remove one of a show's images. Unlike the show's other settings, it's saved straight away. */
+/**
+ * A short video joined onto the start of the show's videos, without re-encoding them (pipeline/intro.py), with a
+ * switch for each kind it makes.
+ */
+function Intro(props: { show: Show | null; fields: ShowFields; onChange: (fields: Partial<ShowFields>) => void; onChanged: () => void }) {
+  const { show, fields } = props;
+  const video = show?.intro;
+  return (
+    <Group label="Intro" hint="a few seconds at the start of each video">
+      {video && (
+        <div className="mb-2 flex items-start gap-3">
+          <video src={video} controls muted playsInline preload="metadata" className="aspect-video w-full max-w-xs rounded-xl bg-black ring-1 ring-white/10" />
+          <span className="text-xs text-zinc-500">{show.intro_seconds.toFixed(1)} s</span>
+        </div>
+      )}
+      <ImageButtons
+        show={show}
+        what="intro"
+        has={!!video}
+        accept="video/*"
+        upload={api.uploadIntro}
+        remove={api.deleteIntro}
+        onChanged={props.onChanged}
+      />
+      {video && (
+        <div className="mt-3 space-y-2">
+          <p className="text-sm text-zinc-300">Put it at the start of:</p>
+          {hasClips(fields.mode) && (
+            <Tick label="Clips and highlights" checked={fields.intro_clips} onChange={(intro_clips) => props.onChange({ intro_clips })} />
+          )}
+          {hasEpisode(fields.mode) && (
+            <Tick label="Full episodes" checked={fields.intro_episodes} onChange={(intro_episodes) => props.onChange({ intro_episodes })} />
+          )}
+          {hasClips(fields.mode) && (
+            <Tick label="Shorts" checked={fields.intro_shorts} onChange={(intro_shorts) => props.onChange({ intro_shorts })} />
+          )}
+        </div>
+      )}
+      <p className="mt-2 text-xs text-zinc-500">
+        Keep it to 3–5 seconds (30 at most): every second costs watch time. It's joined onto each video once it's
+        rendered, without re-encoding the video, so a full episode takes seconds rather than hours, but needs a copy of
+        the stream on disk until it's uploaded. A full episode's chapter times move on to match. Shorts are best without
+        one, as viewers swipe away in the first second or two, and one that would go over 3 minutes is left without it.
+        Videos rendered from now on get it.
+      </p>
+    </Group>
+  );
+}
+
+/** Add, change or remove one of a show's images, or its intro. Unlike the show's other settings, it's saved straight away. */
 function ImageButtons(props: {
   show: Show | null;
   what: string;
@@ -1490,7 +1545,7 @@ function ImageButtons(props: {
         onClick={() => file.current?.click()}
         className="rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold active:bg-zinc-700 disabled:opacity-40"
       >
-        {busy ? "Saving…" : props.has ? `Change ${what}` : `Add ${what === "overlay" ? "an" : "a"} ${what}`}
+        {busy ? "Saving…" : props.has ? `Change ${what}` : `Add ${/^[aeiou]/.test(what) ? "an" : "a"} ${what}`}
       </button>
       {props.has && (
         <button

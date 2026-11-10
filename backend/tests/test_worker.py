@@ -500,6 +500,59 @@ def test_whole_videos_are_not_re_encoded(settings, fake_pipeline, fake_render):
     assert fake_render == []
 
 
+def test_the_shows_intro_is_joined_on_as_the_show_has_it_for_each_kind(settings, fake_pipeline, fake_render, monkeypatch):
+    show_id = add_show(settings, name="Night Owls", match="twitch.tv/videos", mode="both", intro_seconds=4.5)
+    intro_file = settings.show_intro(show_id)
+    intro_file.parent.mkdir(parents=True)
+    intro_file.write_bytes(b"intro")
+    joined = []
+
+    def prepend(intro_path, video, out, s, max_length=None, on_progress=None):
+        if video.name == "source.mp4" and "refuse" in joined:
+            raise worker_module.intro.IntroError("The video is HEVC: an intro can only be joined on without re-encoding H.264.")
+        joined.append((video.name, out.name, max_length))
+        out.write_bytes(b"with the intro")
+        return 4.5
+
+    monkeypatch.setattr(worker_module.intro, "prepend", prepend)
+    sent = collect_notes(monkeypatch)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    clip_id = approve(settings, "hl01")
+    w.render_next_clip()
+    assert joined == [("hl01-vertical.mp4", "hl01-vertical.mp4", None)]  # the render itself; not its Short, by default
+    clip = get(settings, ClipRecord, clip_id)
+    assert (Path(clip.video_path).name, clip.intro_s) == ("hl01-vertical.mp4", 4.5)
+
+    with Session(get_engine(settings)) as s:
+        show = s.get(Show, show_id)
+        show.intro_clips, show.intro_shorts = False, True
+        s.add(show)
+        s.commit()
+    approve(settings, "hl01")
+    w.render_next_clip()
+    assert joined[1:] == [("hl01-vertical-short.mp4", "hl01-vertical-short.mp4", 180)]  # kept within a Short's 3 minutes
+    assert get(settings, ClipRecord, clip_id).intro_s == 0
+
+    full_id = approve(settings, "full")
+    w.render_next_clip()
+    episode = get(settings, ClipRecord, full_id)
+    assert joined[-1][0] == "source.mp4" and Path(episode.video_path).parent.name == "clips"  # a copy, with the intro
+    assert episode.intro_s == 4.5 and fake_render == ["hl01-vertical.mp4", "hl01-vertical-short.mp4"] * 2  # not re-encoded
+
+    joined.append("refuse")
+    with Session(get_engine(settings)) as s:
+        full = s.get(ClipRecord, full_id)
+        full.status = "approved"
+        s.add(full)
+        s.commit()
+    w.render_next_clip()
+    episode = get(settings, ClipRecord, full_id)
+    assert (Path(episode.video_path).name, episode.intro_s, episode.status) == ("source.mp4", 0, "rendered")  # goes up without
+    assert not list((Path(episode.video_path).parent / "clips").glob("full-*"))  # the earlier copy with the intro is gone
+    assert sent[-1].title.startswith("No intro on:") and "HEVC" in sent[-1].message
+
+
 def test_a_clip_edited_during_its_render_is_rendered_again(settings, fake_pipeline, monkeypatch):
     w = worker_module.Worker(settings)
     w.process_vod(add_vod(settings))

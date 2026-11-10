@@ -295,13 +295,18 @@ export interface Show {
   overlay_x: number | null; // a logo's top-left as fractions of the picture; null: where it was drawn
   overlay_y: number | null;
   overlay_scale: number; // a logo's size compared with as drawn
+  intro: string; // the intro video's address, or "" for none
+  intro_seconds: number;
+  intro_clips: boolean; // which of its videos get the intro at the start: clips and highlights
+  intro_episodes: boolean; // full episodes
+  intro_shorts: boolean;
   channels: Channel[];
   video_count: number;
 }
 
 export type ShowFields = Omit<
   Show,
-  "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen"
+  "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen" | "intro" | "intro_seconds"
 >;
 export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
 export type BacklogFields = Pick<Channel, "backlog_per_day" | "backlog_paused" | "backlog_order">;
@@ -558,6 +563,13 @@ export const api = {
       headers: { "Content-Type": image.type || "application/octet-stream" },
     }),
   deleteOverlay: (id: number) => request<Show>(`/api/shows/${id}/overlay`, { method: "DELETE" }),
+  uploadIntro: (id: number, video: File) =>
+    request<Show>(`/api/shows/${id}/intro`, {
+      method: "PUT",
+      body: video,
+      headers: { "Content-Type": video.type || "application/octet-stream" },
+    }),
+  deleteIntro: (id: number) => request<Show>(`/api/shows/${id}/intro`, { method: "DELETE" }),
 
   addChannel: (showId: number, body: { url: string } & Partial<ChannelFields & BacklogFields & { backlog: boolean }>) =>
     post<Channel>(`/api/shows/${showId}/channels`, body),

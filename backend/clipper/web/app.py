@@ -41,7 +41,7 @@ from ..monitor import (
 from ..overlay import Overlay, save as save_overlay_image
 from ..schedule import Turn, upload_turns
 from ..studio import Studio, launch_desktop_browser, read_status, resolve_channel_id, write_status
-from ..pipeline import audio, render
+from ..pipeline import audio, intro, render
 from ..rumble_upload import CATEGORIES as RUMBLE_CATEGORIES, LICENCE as RUMBLE_LICENCE
 from ..workspace import Workspace, remove
 from ..youtube import CALLBACK_PATH, Google, YouTubeError, sign_in_url, video_id, with_footer
@@ -51,8 +51,9 @@ log = logging.getLogger(__name__)
 
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 
-MAX_SHORT_S = 180  # YouTube's limit for Shorts
+MAX_SHORT_S = render.MAX_SHORT_S
 MAX_BACKGROUND_BYTES = 30_000_000
+MAX_INTRO_BYTES = 200_000_000
 REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 # Google's sign-in returns to the callback in whatever browser it ran in, which on an iPhone isn't the
 # home-screen app and has no login cookie. The signed `state` it carries stands in for the login there.
@@ -228,6 +229,9 @@ class ShowIn(BaseModel):
     overlay_x: float | None = Field(default=None, ge=0, le=1)
     overlay_y: float | None = Field(default=None, ge=0, le=1)
     overlay_scale: float = Field(default=1.0, ge=0.1, le=5)
+    intro_clips: bool = True
+    intro_episodes: bool = True
+    intro_shorts: bool = False
 
 
 class ShowPatch(BaseModel):
@@ -269,6 +273,9 @@ class ShowPatch(BaseModel):
     overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
     overlay_y: float | None = Field(default=None, ge=0, le=1)
     overlay_scale: float | None = Field(default=None, ge=0.1, le=5)
+    intro_clips: bool | None = None  # which of its videos get its intro at the start
+    intro_episodes: bool | None = None
+    intro_shorts: bool | None = None
 
 
 class DestinationIn(BaseModel):
@@ -537,6 +544,11 @@ class ShowOut(BaseModel):
     overlay_x: float | None
     overlay_y: float | None
     overlay_scale: float
+    intro: str  # the intro's address in the app, or "" for none
+    intro_seconds: float
+    intro_clips: bool
+    intro_episodes: bool
+    intro_shorts: bool
     channels: list[ChannelOut]
     video_count: int
 
@@ -794,6 +806,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                        short_game=list(game) if game else None,
                        short_background=image_url(background, f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
+                       intro=image_url(settings.show_intro(show.id), f"/media/shows/{show.id}/intro.mp4"),
                        overlay_box=list(overlay.box) if overlay else None,
                        overlay_screen=list(overlay.screen) if overlay and overlay.screen else None,
                        channels=[channel_out(s, c) for c in channels], video_count=videos)
@@ -848,7 +861,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             destination_name=dest.name if dest else "",
             destination_url=dest.url if dest else "",
             upload_to=sites_name(upload_sites(show, clip.kind, dest)),
-            upload_description=with_footer(clip.description, show.description_footer if show else ""),
+            upload_description=with_footer(titles.shift_chapters(clip.description, clip.intro_s),
+                                           show.description_footer if show else ""),
             description_footer=show.description_footer.strip() if show else "",
             thumbnail_url=image_url(thumbnail, f"/media/clips/{clip.id}/thumbnail.jpg") if thumbnail else "",
             upload_state=upload_state,
@@ -1319,6 +1333,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         settings.short_background(show_id).unlink(missing_ok=True)
         settings.show_overlay(show_id).unlink(missing_ok=True)
+        settings.show_intro(show_id).unlink(missing_ok=True)
 
     @app.put("/api/shows/{show_id}/short-background")
     async def upload_short_background(show_id: int, request: Request) -> ShowOut:
@@ -1392,6 +1407,69 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         s.refresh(show)
         return show_out(s, show)
+
+    @app.put("/api/shows/{show_id}/intro")
+    async def upload_intro(show_id: int, request: Request) -> ShowOut:
+        """The request's body is the video, of MAX_INTRO_S at most. It's kept as MP4: rewrapped as it is if its picture
+        and sound go in one, else re-encoded, which takes a moment for a few seconds of video."""
+        data = await request.body()
+        if len(data) > MAX_INTRO_BYTES:
+            raise HTTPException(413, "That video is too big: 200 MB at most")
+        return await run_in_threadpool(save_intro, show_id, data)
+
+    def save_intro(show_id: int, data: bytes) -> ShowOut:
+        with Session(engine) as s:
+            show = found(s, Show, show_id, "show")
+            video = settings.show_intro(show_id)
+            video.parent.mkdir(parents=True, exist_ok=True)
+            upload, tmp = video.with_suffix(".upload"), video.with_suffix(".tmp.mp4")
+            upload.write_bytes(data)
+            try:
+                try:
+                    probe = ffmpeg.probe(upload)
+                except ffmpeg.FFmpegError:
+                    raise HTTPException(422, "That isn't a video the app can read") from None
+                if not any(st.get("codec_type") == "video" for st in probe.get("streams", [])):
+                    raise HTTPException(422, "That has no picture: an intro has to be a video")
+                seconds = float(probe.get("format", {}).get("duration") or 0)
+                if not 0 < seconds <= intro.MAX_INTRO_S:
+                    raise HTTPException(422, f"An intro can be {intro.MAX_INTRO_S} seconds at most (3 to 5 is best); "
+                                             f"that one's {seconds:.0f}")
+                streams = ["-i", str(upload), "-map", "0:v:0", "-map", "0:a:0?"]
+                try:
+                    ffmpeg.run([*streams, "-c", "copy", "-movflags", "+faststart", str(tmp)])
+                except ffmpeg.FFmpegError:
+                    ffmpeg.run([*streams, "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
+                                "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", str(tmp)])
+                tmp.replace(video)
+            except ffmpeg.FFmpegError:
+                raise HTTPException(422, "That video couldn't be read") from None
+            finally:
+                upload.unlink(missing_ok=True)
+                tmp.unlink(missing_ok=True)
+            show.intro_seconds = round(seconds, 2)
+            s.add(show)
+            s.commit()
+            s.refresh(show)
+            return show_out(s, show)
+
+    @app.delete("/api/shows/{show_id}/intro")
+    def delete_intro(show_id: int, s: Session = Depends(db)) -> ShowOut:
+        show = found(s, Show, show_id, "show")
+        settings.show_intro(show_id).unlink(missing_ok=True)
+        show.intro_seconds = 0
+        s.add(show)
+        s.commit()
+        s.refresh(show)
+        return show_out(s, show)
+
+    @app.get("/media/shows/{show_id}/intro.mp4")
+    def intro_video(show_id: int) -> FileResponse:
+        video = settings.show_intro(show_id)
+        if not video.exists():
+            raise HTTPException(404, "No intro")
+        # Its address changes with the video (show_out), so it can be kept.
+        return FileResponse(video, media_type="video/mp4", headers={"Cache-Control": "max-age=31536000"})
 
     @app.get("/media/shows/{show_id}/overlay.png")
     def overlay_image(show_id: int) -> FileResponse:

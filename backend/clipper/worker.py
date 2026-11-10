@@ -37,7 +37,7 @@ from .models import Clip, Segmentation, Transcript
 from .monitor import MEMBERS_ONLY, Monitor
 from .notify import Note
 from .overlay import Overlay
-from .pipeline import audio, download, refine, render, segment, signals, transcribe
+from .pipeline import audio, download, intro, refine, render, segment, signals, transcribe
 from .rumble_upload import RumbleUpload, RumbleUploadError
 from .schedule import upload_turns
 from .studio import Studio, StudioError, Upload, write_status
@@ -524,15 +524,15 @@ class Worker:
                 settings.show_overlay(show.id), show.overlay_box, show.overlay_screen,
                 show.overlay_x, show.overlay_y, show.overlay_scale,
             ) if show else None
+            # Remove files from an earlier render; the title (and so the file name) may have changed.
+            for old in (clip.video_path, clip.short_path):
+                if old and Path(old).parent == ws.clips_dir:
+                    Path(old).unlink(missing_ok=True)
+            stem = f"{clip.key}-{render.slugify(clip.title)}"
+            ws.clips_dir.mkdir(exist_ok=True)
             if clip.kind == "whole" and not (overlay and show.overlay_episodes):
                 video, short = ws.source, None  # posted as it is: no re-encode
             else:
-                # Remove files from an earlier render; the title (and so the file name) may have changed.
-                for old in (clip.video_path, clip.short_path):
-                    if old and Path(old).parent == ws.clips_dir:
-                        Path(old).unlink(missing_ok=True)
-                stem = f"{clip.key}-{render.slugify(clip.title)}"
-                ws.clips_dir.mkdir(exist_ok=True)
                 source = ws.source.resolve()
                 pipeline_clip = Clip(
                     id=clip.key, kind=clip.kind, start=clip.start, end=clip.end, title=clip.title,
@@ -558,7 +558,9 @@ class Worker:
                         video_width=show.short_video_width if show else 1.0,
                         split=split,
                     )
-            rendered = self._finish_render(clip_id, status="rendered", video_path=str(video), short_path=str(short or ""), error="")
+            video, intro_s = self._join_intro(show, clip, video, short, ws.clips_dir / f"{stem}.mp4", check)
+            rendered = self._finish_render(clip_id, status="rendered", video_path=str(video), short_path=str(short or ""),
+                                           intro_s=intro_s, error="")
         except Paused:
             log.info("Stopped rendering clip %d", clip_id)
             for unfinished in (settings.vods_dir / vod.workspace / "clips").glob(f"{clip.key}-*.tmp.*"):
@@ -603,6 +605,37 @@ class Worker:
                     raise Paused
 
         return check
+
+    def _join_intro(
+        self, show: Show | None, clip: ClipRecord, video: Path, short: Path | None, out: Path,
+        check: Callable[[float], None],
+    ) -> tuple[Path, float]:
+        """The show's intro joined onto the start of the video and the Short, as the show has it for each, without
+        re-encoding them (pipeline/intro.py). The video comes out as `out`: the render itself, or for a full episode a
+        copy of the stream with the intro, which goes once it's uploaded. Returns the video and how long its intro is
+        (0 for none). One that can't be joined goes up without it, and a notification says why."""
+        intro_file = self.settings.show_intro(show.id) if show else None
+        if not show or not intro_file or not intro_file.exists():
+            return video, 0.0
+        intro_s = 0.0
+        if show.intro_episodes if clip.kind == "whole" else show.intro_clips:
+            try:
+                intro_s = intro.prepend(intro_file, video, out, self.settings, on_progress=check)
+                video = out
+            except (intro.IntroError, ffmpeg.FFmpegError) as e:
+                self._no_intro(clip, "its video", e)
+        if short and show.intro_shorts:
+            try:
+                intro.prepend(intro_file, short, short, self.settings, max_length=render.MAX_SHORT_S, on_progress=check)
+            except (intro.IntroError, ffmpeg.FFmpegError) as e:
+                self._no_intro(clip, "its Short", e)
+        return video, intro_s
+
+    def _no_intro(self, clip: ClipRecord, which: str, error: Exception) -> None:
+        log.warning("No intro on clip %d's %s: %s", clip.id, which.removeprefix("its "), error)
+        reason = str(error).splitlines()[0] if isinstance(error, intro.IntroError) else "ffmpeg couldn't join them."
+        self._notify(Note(f"No intro on: {clip.title}", f"It goes up without the intro on {which}. {reason}",
+                          link=f"clip/{clip.id}", tone="bad"))
 
     def _finish_render(self, clip_id: int, **fields) -> bool:
         """Record how a render ended. False if the clip changed in the meantime, which leaves it alone."""
@@ -714,7 +747,8 @@ class Worker:
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod and vod.show_id else None
         file = Path(path).resolve() if path else None
-        description = with_footer(clip.description, show.description_footer if show else "")
+        text = titles.shift_chapters(clip.description, clip.intro_s) if job.which == "video" else clip.description
+        description = with_footer(text, show.description_footer if show else "")
         on_rumble = job.site == "rumble"
         through_api = not on_rumble and bool(self.youtube and dest and dest.youtube_token)
         method = "browser" if on_rumble else "api" if through_api else "studio"

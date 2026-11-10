@@ -55,6 +55,14 @@ def test_the_part_claude_wrote_comes_back_out_of_a_full_title():
     assert titles.own_part("{title}", "Anything") == "Anything"
 
 
+def test_chapter_times_move_on_by_an_intro_except_the_first():
+    text = "What happened.\n\nChapters\n0:00 Start\n4:10 News\n59:58 Games\n1:02:03 Mailbag\nAt 1:00 we laughed"
+    assert titles.shift_chapters(text, 4.6) == (
+        "What happened.\n\nChapters\n0:00 Start\n4:15 News\n1:00:03 Games\n1:02:08 Mailbag\nAt 1:00 we laughed"
+    )
+    assert titles.shift_chapters(text, 0) == text
+
+
 def test_chapter_list_for_youtube():
     assert titles.chapter_list([(125, "Ethan Klein news"), (952, "Tonight's lineup"), (3725, "Late show")]) == (
         "Chapters\n0:00 Start\n2:05 Ethan Klein news\n15:52 Tonight's lineup\n1:02:05 Late show"

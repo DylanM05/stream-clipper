@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from .config import Settings
 from . import ai
+from .timecode import to_seconds
 
 MAX_TITLE = 100  # YouTube's limit
 PROMPTS_DIR = Path(__file__).resolve().parent / "prompts"
@@ -95,6 +96,22 @@ def chapter_list(chapters: list[tuple[float, str]]) -> str:
     if len(kept) < 3:
         return ""
     return "Chapters\n" + "\n".join(f"{_stamp(t)} {title}" for t, title in kept)
+
+
+_STAMPED_LINE = re.compile(r"^([ \t]*)((?:\d+:)?\d{1,2}:\d{2})(?=[ \t])", re.MULTILINE)
+
+
+def shift_chapters(text: str, seconds: float) -> str:
+    """A description's chapter times moved on by `seconds`, for its video with an intro joined onto the start: every
+    line that starts with a time, except 0:00, where YouTube needs the first chapter (the intro becomes part of it)."""
+    if seconds <= 0:
+        return text
+
+    def moved(m: re.Match) -> str:
+        at = to_seconds(m.group(2))
+        return m.group(1) + (m.group(2) if at == 0 else _stamp(at + round(seconds)))
+
+    return _STAMPED_LINE.sub(moved, text)
 
 
 def _stamp(seconds: float) -> str:

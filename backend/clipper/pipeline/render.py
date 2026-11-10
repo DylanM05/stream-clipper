@@ -76,6 +76,7 @@ def render_landscape(
 
 
 SHORT_W, SHORT_H = 1080, 1920
+MAX_SHORT_S = 180  # YouTube's limit for Shorts
 CAPTION_GAP = 136  # from the bottom of the video to the bottom of the captions under it
 
 

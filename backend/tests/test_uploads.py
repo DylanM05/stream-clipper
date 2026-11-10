@@ -144,6 +144,20 @@ def test_every_upload_has_the_shows_footer_under_its_description(settings, clip_
     assert client.get(f"/api/clips/{clip_id}").json()["upload_description"] == "Jer returns.\n\nSubscribe!"
 
 
+def test_a_videos_chapter_times_go_up_moved_on_by_its_intro(settings, clip_id):
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        clip.description, clip.intro_s = "Jer returns.\n\nChapters\n0:00 Start\n0:30 Huck Blend", 5.0
+        s.add_all([clip, UploadJob(clip_id=clip_id)])
+        s.commit()
+    w = worker_module.Worker(settings)
+    w.studio = FakeStudio()
+    assert w.upload_next() is True
+    moved = "Jer returns.\n\nChapters\n0:00 Start\n0:35 Huck Blend"
+    assert w.studio.uploads[0].description == moved
+    assert TestClient(web_app.create_app(settings)).get(f"/api/clips/{clip_id}").json()["upload_description"] == moved
+
+
 def test_a_rendered_file_is_deleted_once_its_uploaded_and_the_upload_is_notified(settings, clip_id, monkeypatch):
     clips_dir = settings.vods_dir / "kickvod-1" / "clips"
     clips_dir.mkdir(parents=True)
