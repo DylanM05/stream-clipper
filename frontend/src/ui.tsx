@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VideoType, VodStatus } from "./api";
-import { BackIcon, ChevronIcon } from "./icons";
+import { BackIcon, ChevronIcon, GearIcon } from "./icons";
 import { cn, loadSetting, saveSetting } from "./lib";
 
 /**
@@ -35,6 +35,12 @@ export function Screen(props: {
           {props.subtitle && <p className="truncate text-sm text-zinc-400">{props.subtitle}</p>}
         </div>
         {props.actions}
+        {/* A phone's way to Settings: the tab bar has no room for it, and a desktop has it in the sidebar. */}
+        {!props.onBack && (
+          <a href="#/settings" className="-mr-2 rounded-full p-2 text-zinc-400 hover:bg-white/5 active:bg-white/10 lg:hidden" aria-label="Settings">
+            <GearIcon className="size-6" />
+          </a>
+        )}
       </header>
       {props.children}
     </div>

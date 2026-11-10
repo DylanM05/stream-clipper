@@ -8,6 +8,7 @@ import { Inbox } from "./screens/Inbox";
 import { AddToLibrary, BacklogPage, Library } from "./screens/Library";
 import { Login } from "./screens/Login";
 import { Overview } from "./screens/Overview";
+import { Settings } from "./screens/Settings";
 import { ShowEditor, Shows, UploadChannels } from "./screens/Shows";
 import { Stats } from "./screens/Stats";
 import { UploadKit } from "./screens/UploadKit";
@@ -71,6 +72,7 @@ function Shell() {
   else if (screen === "approved") page = <Approved />;
   else if (screen === "stats") page = <Stats />;
   else if (screen === "overview") page = <Overview summary={summary} />;
+  else if (screen === "settings") page = <Settings />;
   else if (screen === "upload" && param) page = <UploadKit key={param} id={Number(param)} />;
   else if (screen === "shows" && param === "youtube") page = <UploadChannels />;
   else if (screen === "shows")

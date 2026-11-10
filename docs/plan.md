@@ -257,7 +257,7 @@ The first time the app is opened, it walks you through getting set up, instead o
 ### How it fits together
 - **One place for settings.** Every setting the app manages is read from the database (`app_setting`) first, then `.env`, then the built-in default. The worker and the web app both read it this way, so a change applies without a restart. Code that reads `.env` directly moves over to it: the OpenRouter key (`ai.py`, `thumbnails.py`), notifications (`notify.py`) and the Google client (`youtube.py`).
 - **Secrets can be written but not read back.** The OpenRouter key, the Google client secret, the Discord webhook and the ntfy token are stored in the database, like YouTube sign-ins already are. The API only says whether each is set, with its last 4 characters. Secrets are never logged.
-- **A Settings screen** is where these settings live from then on: the AI, connections, notifications and the system. The AI card moves there from Videos.
+- **A Settings screen** is where these settings live from then on: the AI, connections, notifications and the system. Built on Nov 9, 2026 (`#/settings`, `screens/Settings.tsx`) with what was under Videos: downloads, disk, the AI and notifications. Each setting is a row (`Row`) in a card (`Section`), for the new ones to follow.
 - **The setup reuses the Settings screen's parts**, one step at a time. So "change it later" means opening Settings, and nothing is built twice.
 
 ### What moves into the app, and what stays in `.env`
@@ -321,7 +321,7 @@ Each step saves as soon as it's done, any step can be skipped, and the setup car
   The answers decide how Phase 2 is built. (Neither CLI is installed on the Windows PC.)
 - **Phase 1: settings foundation.**
   - The database-then-`.env` lookup and write-only secrets, with the code that reads settings moved over to them.
-  - The Settings screen, with the AI card, downloads and disk, and notifications moved into it.
+  - ~~The Settings screen, with the AI card, downloads and disk, and notifications moved into it.~~ Done Nov 9, 2026.
   - Tests that a setting overrides `.env` and that a secret is never returned.
 - **Phase 2: AI accounts in the app.**
   - Sign-in sessions in the web container: start the CLI, read the link and code, take the pasted code, report the status, time out.
@@ -344,7 +344,7 @@ Phases 1–3 are useful even before the setup exists, and help the GitHub releas
    - (c) Whoever opens the app first sets it.
 
    Leaning (b): it's as easy as (c), without the risk.
-2. **Where Settings goes on a phone.** The tab bar already has 6 tabs. Leaning towards a gear in the header, plus an entry in the desktop sidebar.
+2. ~~**Where Settings goes on a phone.**~~ Decided Nov 9, 2026: a gear at the top of each tab (`Screen`, on pages without a back button), and an entry at the bottom of the desktop sidebar.
 3. **Is the first show part of the setup?** It makes the setup longer, but without it a new install does nothing until you find Shows. Leaning yes, kept simple, with the full editor afterwards.
 
 ---

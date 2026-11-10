@@ -1,13 +1,13 @@
 import type { ComponentType } from "react";
 import { api, type Summary } from "./api";
-import { ChartIcon, FilmIcon, GridIcon, InboxIcon, LibraryIcon, TvIcon, UploadIcon } from "./icons";
+import { ChartIcon, FilmIcon, GearIcon, GridIcon, InboxIcon, LibraryIcon, TvIcon, UploadIcon } from "./icons";
 import { cn, usePoll } from "./lib";
 import { PauseBar, usePauses } from "./PauseBar";
 import { DiskMeter } from "./ui";
 
 /**
  * The desktop's navigation down the left, in place of the phone's tab bar: the same pages plus the overview,
- * with the switches that pause the work and how full the disk is always in view.
+ * with the switches that pause the work and how full the disk is always in view, and Settings below them.
  */
 export function Sidebar({ screen, summary }: { screen: string; summary?: Summary }) {
   const { pauses, setPauses } = usePauses();
@@ -44,7 +44,7 @@ export function Sidebar({ screen, summary }: { screen: string; summary?: Summary
         <SideLink to="shows" label="Shows" icon={TvIcon} active={screen === "shows"} />
       </nav>
 
-      <div className="mt-auto space-y-5 px-4 pb-6 pt-8">
+      <div className="mt-auto space-y-5 px-4 pt-8">
         {pauses && (
           <section>
             <h2 className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Work</h2>
@@ -58,6 +58,9 @@ export function Sidebar({ screen, summary }: { screen: string; summary?: Summary
           </section>
         )}
       </div>
+      <nav className="px-3 pb-6 pt-3" aria-label="Settings">
+        <SideLink to="settings" label="Settings" icon={GearIcon} active={screen === "settings"} />
+      </nav>
     </aside>
   );
 }
