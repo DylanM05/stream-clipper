@@ -221,6 +221,35 @@ def test_each_show_says_how_its_shorts_are_laid_out(tmp_path):
     assert client.patch(f"/api/shows/{show['id']}", json={"short_layout": "crop"}).json()["short_layout"] == "crop"
     assert client.patch(f"/api/shows/{show['id']}", json={"short_layout": "zoom"}).status_code == 422
 
+
+def test_a_split_short_needs_the_webcam_marked(client):
+    show = client.post("/api/shows", json={"name": "Night Owls"}).json()
+    url = f"/api/shows/{show['id']}"
+    assert client.patch(url, json={"short_layout": "split"}).status_code == 422  # where's the webcam?
+    assert client.patch(url, json={"short_layout": "split", "short_webcam": [0.8, 0.8, 0.3, 0.2]}).status_code == 422  # off the edge
+    assert client.patch(url, json={"short_layout": "split", "short_webcam": [0.7, 0, 1.2, 0.2]}).status_code == 422
+
+    split = client.patch(url, json={"short_layout": "split", "short_webcam": [0.75, 0, 0.25, 0.25]}).json()
+    assert (split["short_layout"], split["short_webcam"], split["short_game"]) == ("split", [0.75, 0, 0.25, 0.25], None)
+    game = client.patch(url, json={"short_game": [0, 0.1, 0.7, 0.9]}).json()
+    assert (game["short_webcam"], game["short_game"]) == ([0.75, 0, 0.25, 0.25], [0, 0.1, 0.7, 0.9])
+    assert client.patch(url, json={"short_game": None}).json()["short_game"] is None  # all of the picture again
+    assert client.patch(url, json={"short_webcam": None}).status_code == 422  # still split
+
+    blurred = client.patch(url, json={"short_layout": "blur"}).json()
+    assert (blurred["short_layout"], blurred["short_webcam"]) == ("blur", None)  # kept, for switching back
+    assert client.patch(url, json={"short_layout": "split"}).json()["short_webcam"] == [0.75, 0, 0.25, 0.25]
+
+    made = client.post("/api/shows", json={"name": "Day Owls", "short_layout": "split", "short_webcam": [0, 0, 0.3, 0.3]}).json()
+    assert (made["short_layout"], made["short_webcam"]) == ("split", [0, 0, 0.3, 0.3])
+    assert client.post("/api/shows", json={"name": "Dusk Owls", "short_layout": "split"}).status_code == 422
+
+
+def test_a_still_to_mark_the_webcam_on_comes_from_the_shows_newest_preview(client, settings):
+    show = client.post("/api/shows", json={"name": "Night Owls"}).json()
+    assert client.get(f"/media/shows/{show['id']}/still.jpg").status_code == 404  # no videos yet
+    assert client.get("/media/shows/999/still.jpg").status_code == 404
+
 def test_choosing_a_folder_from_the_media_folder(tmp_path):
     media = tmp_path / "media"
     for name in ("TV/Show/Season 10/S10E01.mkv", "TV/Show/Season 2/S02E01.mkv", "TV/Show/Season 1/S01E02.mkv",

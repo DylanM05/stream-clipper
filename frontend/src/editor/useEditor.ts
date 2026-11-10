@@ -7,8 +7,8 @@ import { go, goBack, goInstead, loadSetting, saveSetting, usePoll } from "../lib
 import { useToast } from "../ui";
 import { createClock } from "./clock";
 import {
-  clamp, cutAt, FPS, keptLength, MAX_SHORT_S, MIN_CLIP_S, round2, sameCuts, sameGeometry, shifted, tidy, withCut,
-  withEnd, withoutCut, withStart, type Geometry, type Range,
+  clamp, cutAt, FPS, keptLength, MAX_CUTS, MAX_SHORT_S, MIN_CLIP_S, pauseCuts, round2, sameCuts, sameGeometry, shifted,
+  streamTime, tidy, withCut, withEnd, withoutCut, withStart, type Geometry, type Range,
 } from "./edit";
 
 export type View = { from: number; to: number };
@@ -197,12 +197,19 @@ export function useEditor(source: Source, desktop: boolean) {
   // newest is kept and gone to once it's there: each seek can fetch from the server, and on a slow connection
   // they'd pile up.
   const pendingSeek = useRef<number | null>(null);
-  const wanted = useRef(0); // the last spot asked for
+  const wanted = useRef(draft.start); // the last spot asked for
   const seek = useCallback((t: number) => {
     const v = video.current;
     const to = clamp(t, 0, length);
     wanted.current = to;
     clock.set(to);
+    // On a desktop, a jump off the timeline (a key, a line) pages it along, as playing does.
+    const f = follow.current;
+    if (f?.desktop && (to > f.view.to || to < f.view.from)) {
+      const span = f.view.to - f.view.from;
+      f.view = { from: to - span * 0.1, to: to + span * 0.9 };
+      f.setView(f.view);
+    }
     if (!v) return;
     if (v.seeking) pendingSeek.current = to;
     else v.currentTime = to;
@@ -216,6 +223,12 @@ export function useEditor(source: Source, desktop: boolean) {
   };
   /** The clip as it comes out: from its start to its end, jumping over the cuts. */
   const playClip = () => playRange(draftRef.current.start, draftRef.current.end);
+  /** The first or last `seconds` of the clip as it comes out. */
+  const playFirst = (seconds: number) => playRange(draftRef.current.start, streamTime(draftRef.current, seconds));
+  const playLast = (seconds: number) => {
+    const g = draftRef.current;
+    playRange(streamTime(g, keptLength(g) - seconds), g.end);
+  };
   const togglePlay = () => {
     const v = video.current;
     if (!v) return;
@@ -224,10 +237,13 @@ export function useEditor(source: Source, desktop: boolean) {
       play();
     } else pause();
   };
-  /** Where the playhead is, or is on its way to: steps pressed while the video is still seeking count from there. */
+  /**
+   * Where the playhead is, or is on its way to: steps pressed while the video is still seeking count from there, and
+   * before it has loaded (or while its preview is still being made), from where they've taken the playhead so far.
+   */
   const position = () => {
     const v = video.current;
-    return v && !v.seeking && pendingSeek.current === null ? v.currentTime : wanted.current;
+    return v && v.readyState > 0 && !v.seeking && pendingSeek.current === null ? v.currentTime : wanted.current;
   };
   // Jump back or ahead while watching. It keeps playing, even past the end of a preview.
   const skip = (seconds: number) => {
@@ -268,7 +284,7 @@ export function useEditor(source: Source, desktop: boolean) {
       v.volume = volume;
       v.muted = muted;
       v.playbackRate = rate;
-      seek(draftRef.current.start);
+      seek(wanted.current); // the clip's start, unless the playhead was moved while it loaded
     },
     onPlay: () => setPlaying(true),
     onPause: () => setPlaying(false),
@@ -340,6 +356,44 @@ export function useEditor(source: Source, desktop: boolean) {
     load.then(setLines, () => setLines([]));
   }, [desktop, clip?.id, vodId]); // eslint-disable-line react-hooks/exhaustive-deps -- the clip's id, not each poll of it
   const { data: destinations } = usePoll(api.destinations, 0);
+
+  /** To the start of the next line of the transcript, or back to the start of this one (once a moment into it) or the
+   * one before. Playing carries on. */
+  const toLine = (direction: 1 | -1) => {
+    const t = position();
+    let next: Line | undefined;
+    if (direction > 0) next = lines.find((l) => l.start > t + 0.05);
+    else for (const l of lines) if (l.start < t - 0.3) next = l;
+    if (!next) return;
+    stopAt.current = null;
+    seek(next.start);
+  };
+
+  /** Cut out the pauses of at least `minPause` seconds between the clip's words, as one edit (undone together). */
+  const tighten = (minPause: number) =>
+    run(async () => {
+      const asked = geometry();
+      const said = await api.vodTranscript(vodId, { start: asked.start, end: asked.end, words: true });
+      const words = said.flatMap((l) => (l.words ?? []).map(([a, b]): Range => [a, b]));
+      if (!words.length) {
+        toast({ text: "There are no words in this part of the transcript to go by." });
+        return;
+      }
+      const g = geometry(); // as it is now, in case it changed while the words loaded
+      const pauses = pauseCuts(words, g, minPause, MAX_CUTS - g.cuts.length).filter(
+        ([a, b]) => !g.cuts.some(([c, d]) => c <= a && d >= b), // not already cut out
+      );
+      const next = tidy({ ...g, cuts: [...g.cuts, ...pauses] });
+      const shorter = keptLength(g) - keptLength(next);
+      if (!pauses.length || shorter < 0.05) {
+        toast({ text: `No pauses of ${minPause} s or more left to cut out.` });
+        return;
+      }
+      commit(next);
+      toast({
+        text: `Cut out ${pauses.length} pause${pauses.length === 1 ? "" : "s"}: ${shorter.toFixed(1)} s shorter. Undo puts them back.`,
+      });
+    });
 
   // --- Saving, deciding, making ---
 
@@ -429,9 +483,9 @@ export function useEditor(source: Source, desktop: boolean) {
     commit, live, undo, redo, canUndo: past.current.length > 0, canRedo: future.current.length > 0,
     // playback
     video, videoProps, clock, playing, videoError, rate, setRate, loop, setLoop, volume, setVolume, muted, setMuted,
-    volumeAdjustable, seek, play, pause, playRange, playClip, togglePlay, skip, step, faster,
+    volumeAdjustable, seek, play, pause, playRange, playClip, playFirst, playLast, togglePlay, skip, step, faster, toLine,
     // edits
-    setStart, setEnd, cutOut, restoreCut, trimTo, moveBy, previewJoin,
+    setStart, setEnd, cutOut, restoreCut, trimTo, moveBy, previewJoin, tighten,
     // timeline view
     view, setView, zoom, fitClip, fitAll,
     // data

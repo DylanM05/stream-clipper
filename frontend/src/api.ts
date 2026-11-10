@@ -244,6 +244,9 @@ export type BacklogOrder = "first" | "latest" | "random";
 /** What a show's videos are, for the AI: livestreams, TV episodes, or anything else (podcasts, vlogs, talks). */
 export type VideoType = "streams" | "episodes" | "other";
 
+/** A part of the picture: x, y, width and height, as fractions of it. */
+export type Box = [number, number, number, number];
+
 export interface Show {
   id: number;
   name: string;
@@ -277,9 +280,11 @@ export interface Show {
   short_video_top: number | null; // where the video's top sits on its Shorts, as a fraction; null centres it
   short_video_width: number; // fraction of the Short's width
   short_background: string; // the background image's address, or "" for a blurred copy of the stream
-  // Its Shorts: "crop" fills them with the middle of the picture, "blur" puts the whole picture on the background.
-  // A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
-  short_layout: "" | "crop" | "blur";
+  // Its Shorts: "crop" fills them with the middle of the picture, "blur" puts the whole picture on the background,
+  // "split" puts the webcam across the top and the game under it. A new show sends "" for the server's CLIPPER_SHORT_LAYOUT.
+  short_layout: "" | "crop" | "blur" | "split";
+  short_webcam: Box | null; // for "split": where the webcam is in the picture
+  short_game: Box | null; // and the part the game is in; null for all of it
   overlay: string; // the overlay image's address, or "" for none
   overlay_box: [number, number, number, number] | null; // x, y, w, h of its visible part, as drawn, in its 1920×1080
   overlay_screen: [number, number, number, number] | null; // x, y, w, h of a frame's screen

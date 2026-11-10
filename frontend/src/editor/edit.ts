@@ -52,6 +52,39 @@ export function kept({ start, end, cuts }: Geometry): Range[] {
 /** How long the clip comes out, with the cuts taken out. */
 export const keptLength = (g: Geometry) => kept(g).reduce((sum, [a, b]) => sum + b - a, 0);
 
+/** Where in the stream the clip, as it comes out, is `t` seconds in. */
+export function streamTime(g: Geometry, t: number): number {
+  let left = Math.max(0, t);
+  for (const [a, b] of kept(g)) {
+    if (left <= b - a) return a + left;
+    left -= b - a;
+  }
+  return g.end;
+}
+
+export const MAX_CUTS = 500; // the same as the server's
+// Left either side of a pause that's cut out, so the words around it aren't clipped (word timings are a little loose).
+const PAUSE_KEEP_AFTER = 0.3;
+const PAUSE_KEEP_BEFORE = 0.2;
+
+/**
+ * The pauses between the clip's words (as [start, end] in the stream) of at least `minPause` seconds, as parts to cut
+ * out, less a little either side. Only those between words: the clip's own start and end stay where they are. At most
+ * `limit`, the longest ones.
+ */
+export function pauseCuts(words: Range[], g: Geometry, minPause: number, limit = MAX_CUTS): Range[] {
+  const found: Range[] = [];
+  let spoken = -Infinity; // the end of the words so far
+  for (const [a, b] of words.filter(([a, b]) => b > g.start && a < g.end).sort((p, q) => p[0] - q[0])) {
+    if (spoken > -Infinity && a - spoken >= minPause) found.push([round2(spoken + PAUSE_KEEP_AFTER), round2(a - PAUSE_KEEP_BEFORE)]);
+    spoken = Math.max(spoken, b);
+  }
+  return found
+    .sort((p, q) => q[1] - q[0] - (p[1] - p[0]))
+    .slice(0, Math.max(0, limit))
+    .sort((p, q) => p[0] - q[0]);
+}
+
 /** The cut that `t` is in, or -1. */
 export const cutAt = (cuts: Range[], t: number) => cuts.findIndex(([a, b]) => t >= a && t < b);
 

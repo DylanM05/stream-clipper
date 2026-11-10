@@ -159,6 +159,37 @@ def test_a_cropped_short_is_filled_with_the_middle_of_the_picture(tmp_path, size
     assert not (g > 200 and r < 60)  # the dimmed blur behind the whole picture
 
 
+def test_a_split_shorts_webcam_is_as_tall_as_its_shape_within_limits():
+    assert render.webcam_height((0.75, 0, 0.25, 0.25)) == 608  # 16:9, like the stream
+    assert render.webcam_height((0.1, 0.1, 0.2, 0.3)) == 912  # taller than that
+    assert render.webcam_height((0.1, 0.1, 0.1, 0.5)) == 960  # at most half the Short
+    assert render.webcam_height((0, 0, 1, 0.2)) == 480  # at least a quarter
+    graph = render.split_graph("[0:v]", (0.75, 0, 0.25, 0.25), None)
+    assert "crop=trunc(iw*0.2500/2)*2:trunc(ih*0.2500/2)*2:trunc(iw*0.7500):trunc(ih*0.0000)" in graph
+    assert "scale=1080:608[top]" in graph and "scale=1080:1312[bottom]" in graph and graph.endswith("[top][bottom]vstack")
+    assert "[game]crop='min" in graph  # all of the picture, without a part marked for the game
+    assert "[game]crop=trunc(iw*0.5000" in render.split_graph("[0:v]", (0.75, 0, 0.25, 0.25), (0, 0, 0.5, 1))
+
+
+@needs_ffmpeg
+def test_a_split_short_has_the_webcam_on_top_and_the_game_under_it(tmp_path):
+    source = tmp_path / "source.mp4"
+    # Blue, with a green webcam in the top-right corner and the game in red down the middle.
+    ffmpeg.run(["-f", "lavfi", "-i", "color=blue:s=640x360:d=1:r=10", "-vf",
+                "drawbox=x=480:y=0:w=160:h=90:color=lime:t=fill,drawbox=x=iw*0.3:y=0:w=iw*0.4:h=ih:color=red:t=fill",
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", str(source)])
+    clip = CUT_CLIP.model_copy(update={"start": 0, "end": 1, "cuts": []})
+    out = tmp_path / "split.mp4"
+    render.render_short(source, clip, [Word(start=0.1, end=0.5, text="hello")], out,
+                        Settings(hwaccel="none", video_encoder="libx264"), split=((0.75, 0, 0.25, 0.25), None))
+    video = next(s for s in ffmpeg.probe(out)["streams"] if s["codec_type"] == "video")
+    assert (video["width"], video["height"]) == (1080, 1920)
+    r, g, b = first_pixel(out, 540, 300)
+    assert g > 200 and r < 60  # the webcam fills the top
+    r, g, b = first_pixel(out, 540, 1700)
+    assert r > 200 and g < 60  # the middle of the game under it
+
+
 @needs_ffmpeg
 def test_the_overlay_goes_on_after_the_parts_are_joined(tmp_path):
     from clipper.overlay import Overlay

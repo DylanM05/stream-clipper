@@ -404,7 +404,7 @@ def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(setting
     w.process_vod(add_vod(settings))
     approve(settings, "hl01")
     w.render_next_clip()
-    assert layouts == [{"crop": False, "background": None, "video_top": 0.32, "video_width": 0.9}]  # no image uploaded yet
+    assert layouts == [{"crop": False, "background": None, "video_top": 0.32, "video_width": 0.9, "split": None}]  # no image uploaded yet
 
     background = settings.short_background(show_id)
     background.parent.mkdir(parents=True)
@@ -422,6 +422,16 @@ def test_shorts_go_on_the_shows_background_where_the_show_puts_the_video(setting
     w.render_next_clip()
     assert (layouts[-1]["crop"], layouts[-1]["background"]) == (True, None)
 
+    with Session(get_engine(settings)) as s:  # the webcam on top instead, which leaves the image out too
+        show = s.get(Show, show_id)
+        show.short_layout, show.short_webcam, show.short_game = "split", "[0.75, 0, 0.25, 0.25]", "[0, 0.1, 0.7, 0.9]"
+        s.add(show)
+        s.commit()
+    approve(settings, "hl01")
+    w.render_next_clip()
+    assert (layouts[-1]["crop"], layouts[-1]["background"]) == (False, None)
+    assert layouts[-1]["split"] == ((0.75, 0, 0.25, 0.25), (0, 0.1, 0.7, 0.9))
+
 
 def test_shorts_are_cropped_as_the_show_says_or_else_as_the_server_does():
     show = Show(name="Kino")
@@ -432,6 +442,17 @@ def test_shorts_are_cropped_as_the_show_says_or_else_as_the_server_does():
     assert show.short_crop("blur", background=True)
     show.short_layout = "blur"
     assert not show.short_crop("crop", background=False)
+
+
+def test_shorts_are_split_once_the_webcam_is_marked():
+    show = Show(name="Night Owls", short_layout="split")
+    assert show.short_split() is None  # not marked yet
+    show.short_webcam = "[0.75, 0, 0.25, 0.25]"
+    assert show.short_split() == ((0.75, 0, 0.25, 0.25), None)
+    show.short_game = "not a box"
+    assert show.short_split() == ((0.75, 0, 0.25, 0.25), None)
+    show.short_layout = "crop"
+    assert show.short_split() is None and show.short_crop("blur", background=False)
 
 
 def test_the_shows_overlay_goes_on_clips_and_on_full_episodes_only_when_switched_on(settings, fake_pipeline, monkeypatch):

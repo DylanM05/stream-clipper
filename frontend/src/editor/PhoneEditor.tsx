@@ -71,8 +71,8 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
             {playing ? <PauseIcon className="size-4" /> : <PlayIcon className="size-4" />}
             {playing ? "Pause" : "Play clip"}
           </Button>
-          <Button onClick={() => ed.playRange(draft.start, Math.min(draft.end, draft.start + 5))}>First 5s</Button>
-          <Button onClick={() => ed.playRange(Math.max(draft.start, draft.end - 5), draft.end)}>Last 5s</Button>
+          <Button onClick={() => ed.playFirst(5)}>First 5s</Button>
+          <Button onClick={() => ed.playLast(5)}>Last 5s</Button>
         </div>
         <div className="-mt-3 grid grid-cols-4 gap-2">
           {[-10, -5, 5, 10].map((seconds) => (

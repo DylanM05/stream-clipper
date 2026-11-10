@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from functools import lru_cache, partial
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 from urllib.parse import urlparse
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
@@ -63,6 +63,8 @@ BacklogOrder = Literal["first", "latest", "random"]  # db.BACKLOG_ORDERS
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
 Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
+Fraction = Annotated[float, Field(ge=0, le=1)]
+BoxIn = tuple[Fraction, Fraction, Fraction, Fraction]  # x, y, w, h of a part of the picture, as fractions of it
 ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")  # statuses with a render queued, running or done
 
 
@@ -215,7 +217,9 @@ class ShowIn(BaseModel):
     breakdown: str = Field(default="", max_length=4000)
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)
     short_video_width: float = Field(default=1.0, ge=0.4, le=1)
-    short_layout: Literal["", "crop", "blur"] = ""  # "" goes by CLIPPER_SHORT_LAYOUT
+    short_layout: Literal["", "crop", "blur", "split"] = ""  # "" goes by CLIPPER_SHORT_LAYOUT
+    short_webcam: BoxIn | None = None  # for "split", which it needs
+    short_game: BoxIn | None = None  # null for all of the picture
     overlay_episodes: bool = False
     overlay_x: float | None = Field(default=None, ge=0, le=1)
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -253,7 +257,9 @@ class ShowPatch(BaseModel):
     breakdown: str | None = Field(default=None, max_length=4000)  # categories the AI sorts streams' time into
     short_video_top: float | None = Field(default=None, ge=0, le=0.9)  # null centres it
     short_video_width: float | None = Field(default=None, ge=0.4, le=1)
-    short_layout: Literal["crop", "blur"] | None = None
+    short_layout: Literal["crop", "blur", "split"] | None = None
+    short_webcam: BoxIn | None = None
+    short_game: BoxIn | None = None  # null for all of the picture
     overlay_episodes: bool | None = None
     overlay_x: float | None = Field(default=None, ge=0, le=1)  # null puts the logo back where it was drawn
     overlay_y: float | None = Field(default=None, ge=0, le=1)
@@ -514,7 +520,9 @@ class ShowOut(BaseModel):
     breakdown: str
     short_video_top: float | None
     short_video_width: float
-    short_layout: str  # "crop" or "blur", as its Shorts are made
+    short_layout: str  # "crop", "blur" or "split", as its Shorts are made
+    short_webcam: list[float] | None  # x, y, w, h as fractions of the picture
+    short_game: list[float] | None  # null for all of the picture
     short_background: str  # the image's address in the app, or "" for none
     overlay: str  # the overlay image's address in the app, or "" for none
     overlay_box: list[int] | None  # x, y, w, h of its visible part, as drawn (in its 1920x1080)
@@ -773,8 +781,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         videos = s.exec(select(func.count()).select_from(Vod).where(Vod.show_id == show.id)).one()
         overlay = Overlay.load(settings.show_overlay(show.id), show.overlay_box, show.overlay_screen)
         background = settings.short_background(show.id)
-        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout"}),
-                       short_layout="crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
+        split = show.short_split()
+        return ShowOut(**show.model_dump(exclude={"created_at", "overlay_box", "overlay_screen", "short_layout", "short_webcam", "short_game"}),
+                       short_layout="split" if split else "crop" if show.short_crop(settings.short_layout, background.exists()) else "blur",
+                       short_webcam=list(split[0]) if split else None,
+                       short_game=list(split[1]) if split and split[1] else None,
                        short_background=image_url(background, f"/media/shows/{show.id}/short-background.png"),
                        overlay=image_url(settings.show_overlay(show.id), f"/media/shows/{show.id}/overlay.png") if overlay else "",
                        overlay_box=list(overlay.box) if overlay else None,
@@ -1225,7 +1236,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/shows", status_code=201)
     def add_show(body: ShowIn, s: Session = Depends(db)) -> ShowOut:
         check_destinations(s, body.clip_destination_id, body.episode_destination_id)
-        show = Show(**body.model_dump())
+        show = Show(**body.model_dump() | {"short_webcam": box_text(body.short_webcam), "short_game": box_text(body.short_game)})
+        check_split(show)
         show.name, show.title_template = show.name.strip(), valid_template(show.title_template)
         show.episode_template = valid_template(show.episode_template, optional=True)
         s.add(show)
@@ -1255,12 +1267,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             field = f"{kind}_destination_id"
             if field in changes and changes[field] != getattr(show, field):
                 changes.setdefault(f"{kind}_playlist_id", "")
+        for k in ("short_webcam", "short_game"):
+            if k in changes:
+                changes[k] = box_text(changes[k])
         for k, v in changes.items():
             setattr(show, k, v.strip() if k == "name" else v)
+        check_split(show)
         s.add(show)
         s.commit()
         s.refresh(show)
         return show_out(s, show)
+
+    def box_text(box: tuple[float, ...] | None) -> str:
+        """A part of the picture as the database keeps it (db.parse_box), "" for none; it has to be inside the picture."""
+        if box is None:
+            return ""
+        x, y, w, h = box
+        if w < 0.02 or h < 0.02 or x + w > 1.001 or y + h > 1.001:
+            raise HTTPException(422, "That part of the picture isn't inside it")
+        return json.dumps([round(v, 4) for v in box])
+
+    def check_split(show: Show) -> None:
+        if show.short_layout == "split" and not show.short_webcam:
+            raise HTTPException(422, "Mark where the webcam is first")
 
     @app.delete("/api/shows/{show_id}", status_code=204)
     def delete_show(show_id: int, s: Session = Depends(db)) -> None:
@@ -1356,6 +1385,31 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not image.exists():
             raise HTTPException(404, "No overlay")
         return FileResponse(image, media_type="image/png", headers={"Cache-Control": "max-age=31536000"})
+
+    @app.get("/media/shows/{show_id}/still.jpg")
+    async def show_still(show_id: int, n: int = Query(default=0, ge=0, le=50)) -> Response:
+        """A still from the show's newest video that has its preview copy, at the preview's size, to mark where the
+        webcam is on. Each `n` is another moment, for when one doesn't show it."""
+        def newest(s: Session) -> list[Vod]:
+            found(s, Show, show_id, "show")
+            return list(s.exec(select(Vod).where(Vod.show_id == show_id, col(Vod.workspace).is_not(None))
+                               .order_by(col(Vod.id).desc()).limit(10)))
+        vod = next((v for v in await run_in_threadpool(looked_up, newest) if workspace(v).proxy_mp4.exists()), None)
+        if not vod:
+            raise HTTPException(404, "None of the show's videos has its preview copy: add one in Videos first")
+        ws = workspace(vod)
+        length = vod.duration or await run_in_threadpool(ffmpeg.probe_duration, ws.proxy_mp4)
+        out = ws.frames_dir / f"show-still-{n}.jpg"
+        if not out.exists():
+            moment = length * (0.1 + (0.2 + 0.37 * n) % 0.8)  # spread through the video, away from its ends
+            async with frame_slots:
+                make = partial(render.render_frame, ws.proxy_mp4, moment, out, settings.proxy_height)
+                try:
+                    await asyncio.get_running_loop().run_in_executor(frame_pool, make)
+                except ffmpeg.FFmpegError as e:
+                    raise HTTPException(404, "No still there") from e
+        # Checked each time: the show's newest video, and so the still, changes as new ones come in.
+        return FileResponse(out, media_type="image/jpeg", headers={"Cache-Control": "no-cache"})
 
     @app.get("/media/shows/{show_id}/short-background.png")
     def short_background_image(show_id: int) -> FileResponse:

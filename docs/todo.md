@@ -67,3 +67,13 @@ Watch subreddits for their top videos (livestream fails, mostly) and queue them 
 
 
 think of rebrand name
+
+## Maybe
+
+Ideas from Nov 9, 2026, not decided on yet:
+- **Keys in the Inbox on a computer:** approve, reject, move between clips, and Enter to open one in the editor. The Inbox has no shortcuts yet.
+- **Even out the volume when rendering:** streams vary a lot in loudness, and YouTube turns loud videos down but doesn't bring quiet ones up. One more ffmpeg step (loudnorm) in each render.
+- **A nightly backup of the database:** it holds every show's settings and the track record the AI learns from, and none of that is anywhere else.
+- **Upload captions with each video**, made from the transcript: YouTube's own captions mishear names, and the transcripts use the names from the show's notes. Each caption upload costs 400 of the 10,000 daily YouTube API units, about a quarter of an upload's 1,600.
+- **"Best of the week" compilations:** a show's top moments from several streams, joined into one longer video.
+- **Shorts on TikTok and Instagram Reels too:** the vertical videos are already made, but both sites need an application for access to their posting APIs first (TikTok's Content Posting API is audited; Instagram needs a business account).

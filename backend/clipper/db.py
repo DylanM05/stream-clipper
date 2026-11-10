@@ -3,6 +3,7 @@
 The web app and the worker share it; WAL mode lets both use it at once.
 """
 
+import json
 import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from sqlalchemy import Engine, event
 from sqlmodel import Field, Session, SQLModel, col, create_engine, select
 
 from .config import Settings
+from .models import Box
 
 # Video statuses, in pipeline order. "waiting" means it can't go on yet (the AI's usage limit, or not
 # enough disk space); `error` says why, and it retries at retry_at.
@@ -118,6 +120,15 @@ class UploadJob(SQLModel, table=True):
     updated_at: datetime = Field(default_factory=utcnow)
 
 
+def parse_box(text: str) -> Box | None:
+    """A part of the picture saved as JSON [x, y, w, h]; None for "" or anything that isn't one."""
+    try:
+        x, y, w, h = (float(v) for v in json.loads(text))
+    except (ValueError, TypeError):
+        return None
+    return (x, y, w, h) if w > 0 and h > 0 else None
+
+
 class Show(SQLModel, table=True):
     """A show's settings, applied to every video that matches it."""
 
@@ -172,8 +183,13 @@ class Show(SQLModel, table=True):
     short_video_top: float | None = None
     short_video_width: float = 1.0
     # Shorts: "crop" fills them with the middle of the picture instead; "blur" puts the whole picture on the background,
-    # as above; "" goes by CLIPPER_SHORT_LAYOUT (short_crop).
+    # as above; "split" puts the streamer's webcam across the top and the game under it (short_split); "" goes by
+    # CLIPPER_SHORT_LAYOUT (short_crop).
     short_layout: str = ""
+    # For "split": where the webcam is in the picture, marked in the app, and the part of it the game is in ("" for
+    # all of it), each JSON [x, y, w, h] as fractions of the picture (parse_box).
+    short_webcam: str = ""
+    short_game: str = ""
     # The overlay on its landscape videos (Settings.show_overlay, overlay.py): where its design and, for a
     # frame, its screen are (JSON [x, y, w, h], found when it's uploaded), and whether full episodes get it
     # too, which means re-encoding the whole stream.
@@ -206,6 +222,14 @@ class Show(SQLModel, table=True):
         if self.short_layout:
             return self.short_layout == "crop"
         return default == "crop" and not background
+
+    def short_split(self) -> tuple[Box, Box | None] | None:
+        """Where its Shorts take the webcam and the game from, when they're split; None when they aren't, or the webcam
+        hasn't been marked."""
+        webcam = parse_box(self.short_webcam)
+        if self.short_layout != "split" or not webcam:
+            return None
+        return webcam, parse_box(self.short_game)
 
     def terms(self) -> list[str]:
         return [t.strip().lower() for t in re.split(r"[\n,]+", self.match) if t.strip()]

@@ -547,12 +547,16 @@ class Worker:
                     short = ws.clips_dir / f"{stem}-short.mp4"
                     background = settings.short_background(show.id) if show else None
                     background = background if background and background.exists() else None
-                    crop = show.short_crop(settings.short_layout, bool(background)) if show else settings.short_layout == "crop"
+                    split = show.short_split() if show else None
+                    crop = not split and (
+                        show.short_crop(settings.short_layout, bool(background)) if show else settings.short_layout == "crop"
+                    )
                     render.render_short(
                         source, pipeline_clip, words, short, settings, on_progress=check, crop=crop,
-                        background=None if crop else background,
+                        background=None if crop or split else background,
                         video_top=show.short_video_top if show else None,
                         video_width=show.short_video_width if show else 1.0,
+                        split=split,
                     )
             rendered = self._finish_render(clip_id, status="rendered", video_path=str(video), short_path=str(short or ""), error="")
         except Paused:

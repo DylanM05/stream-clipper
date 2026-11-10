@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
+Box = tuple[float, float, float, float]  # x, y, w, h, as fractions of a picture
+
 # --- Transcription ---------------------------------------------------------
 
 

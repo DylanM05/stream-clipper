@@ -12,7 +12,7 @@ from pathlib import Path
 from .. import cuts as cuts_
 from .. import ffmpeg
 from ..config import Settings
-from ..models import Clip, Word
+from ..models import Box, Clip, Word
 from ..overlay import Overlay, filter_graph
 from ..workspace import Workspace, write_text
 from .captions import build_ass
@@ -90,12 +90,17 @@ def render_short(
     video_top: float | None = None,
     video_width: float = 1.0,
     crop: bool | None = None,
+    split: tuple[Box, Box | None] | None = None,
 ) -> None:
     """The whole frame over a blurred copy of itself, or over the show's `background` image. `video_top` and
     `video_width` place the video on it as fractions of the Short (None centres it); the captions go just
     under it. `crop` instead fills the Short with the middle of the frame, with the captions in its lower third;
-    without it, CLIPPER_SHORT_LAYOUT=crop does, for a Short without a background image."""
-    if crop is None:
+    without it, CLIPPER_SHORT_LAYOUT=crop does, for a Short without a background image. `split` (the webcam's part
+    of the picture, and the game's or None for all of it) instead puts the webcam across the top and the game under
+    it, with the captions just below where they meet."""
+    if split:
+        crop, background = False, None
+    elif crop is None:
         crop = settings.short_layout == "crop" and not background
     if crop:
         background = None
@@ -103,7 +108,10 @@ def render_short(
     height = round(width * 9 / 16)  # streams are 16:9
     top = round((SHORT_H - height) / 2 if video_top is None else video_top * SHORT_H)
     captions = out.with_name(out.stem + ".ass")
-    margin = 520 if crop else max(60, SHORT_H - top - height - CAPTION_GAP)  # 520 under a centred video
+    if split:
+        margin = SHORT_H - webcam_height(split[0]) - SPLIT_CAPTION_DROP
+    else:
+        margin = 520 if crop else max(60, SHORT_H - top - height - CAPTION_GAP)  # 520 under a centred video
     if clip.cuts:  # the captions follow the video as it comes out, with the cuts closed up
         ass = build_ass(kept_words(words, clip), 0, clip.duration, font=settings.caption_font, margin=margin)
     else:
@@ -113,7 +121,9 @@ def render_short(
     joined = _cut_graph(clip, audio) + ";" if clip.cuts else ""
     # Square pixels first: a DVD's widescreen picture is stored squeezed (720x480) and would come out squashed.
     picture = f"{'[vc]' if clip.cuts else '[0:v]'}scale='trunc(iw*sar/2)*2':ih,setsar=1"
-    if crop:  # the middle 9:16 of it, or of a picture that's narrower than that already, the middle of its height
+    if split:
+        video = split_graph(picture, *split)
+    elif crop:  # the middle 9:16 of it, or of a picture that's narrower than that already, the middle of its height
         video = f"{picture},crop='min(iw,trunc(ih*9/16/2)*2)':'min(ih,trunc(iw*16/9/2)*2)',scale=1080:1920"
     else:
         blurred = (
@@ -146,6 +156,40 @@ def render_short(
         duration=clip.duration,
     )
     tmp.replace(out)
+
+
+SPLIT_CAPTION_DROP = 330  # a split Short's captions end this far below where the webcam meets the game
+
+
+def webcam_height(webcam: Box) -> int:
+    """How tall the webcam is across the top of a split Short: as its own shape makes it at the Short's full width
+    (from a 16:9 picture), between a quarter and half of the Short."""
+    _, _, w, h = webcam
+    tall = SHORT_W * (h * 9) / (w * 16)
+    return min(SHORT_H // 2, max(SHORT_H // 4, round(tall / 2) * 2))
+
+
+def split_graph(picture: str, webcam: Box, game: Box | None) -> str:
+    """Filters from `picture` to the webcam stacked on the game, each cut from its part of the picture and cropped to
+    fill its share of the Short without being stretched."""
+    top = webcam_height(webcam)
+    return (
+        f"{picture},split=2[cam][game];"
+        f"[cam]{_crop_to(webcam)},{_fill(SHORT_W, top)}[top];"
+        f"[game]{_crop_to(game) + ',' if game else ''}{_fill(SHORT_W, SHORT_H - top)}[bottom];"
+        "[top][bottom]vstack"
+    )
+
+
+def _crop_to(box: Box) -> str:
+    """Crops the picture to `box`, given as fractions of it."""
+    x, y, w, h = box
+    return f"crop=trunc(iw*{w:.4f}/2)*2:trunc(ih*{h:.4f}/2)*2:trunc(iw*{x:.4f}):trunc(ih*{y:.4f})"
+
+
+def _fill(width: int, height: int) -> str:
+    """The middle of the picture at the shape of `width` x `height`, scaled to it."""
+    return f"crop='min(iw,trunc(ih*{width}/{height}/2)*2)':'min(ih,trunc(iw*{height}/{width}/2)*2)',scale={width}:{height}"
 
 
 def render_proxy(ws: Workspace, settings: Settings, on_progress: Callable[[float], None] | None = None) -> Path:

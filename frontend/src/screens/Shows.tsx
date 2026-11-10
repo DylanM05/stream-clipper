@@ -1,8 +1,9 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   api,
   errorText,
   type Auto,
+  type Box,
   type Channel,
   type ChannelFields,
   type ChannelVideo,
@@ -470,6 +471,8 @@ export const BLANK_SHOW: ShowFields = {
   short_video_top: null,
   short_video_width: 1,
   short_layout: "",
+  short_webcam: null,
+  short_game: null,
   overlay_episodes: false,
   overlay_x: null,
   overlay_y: null,
@@ -495,6 +498,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const episodePattern = fields.episode_template || clipPattern;
   const patternsOk =
     (!hasClips(fields.mode) || clipPattern.includes("{title}")) && (!hasEpisode(fields.mode) || episodePattern.includes("{title}"));
+  const shortsOk = fields.short_layout !== "split" || !!fields.short_webcam;
   const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => fields[k] !== show[k]);
 
   const save = async () => {
@@ -754,6 +758,8 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         <ShortsLayout
           show={show}
           layout={fields.short_layout || "blur"}
+          webcam={fields.short_webcam}
+          game={fields.short_game}
           top={fields.short_video_top}
           width={fields.short_video_width}
           onChange={set}
@@ -870,7 +876,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             Delete
           </Button>
         )}
-        <Button tone="primary" onClick={save} disabled={busy || !fields.name.trim() || !patternsOk || !dirty} className="flex-1">
+        <Button tone="primary" onClick={save} disabled={busy || !fields.name.trim() || !patternsOk || !shortsOk || !dirty} className="flex-1">
           {busy ? "Saving…" : show ? (dirty ? "Save show" : "Saved") : "Add show"}
         </Button>
       </div>
@@ -943,7 +949,9 @@ function Tick(props: { label: string; checked: boolean; onChange: (checked: bool
  */
 function ShortsLayout(props: {
   show: Show | null;
-  layout: "crop" | "blur";
+  layout: "crop" | "blur" | "split";
+  webcam: Box | null;
+  game: Box | null;
   top: number | null;
   width: number;
   onChange: (fields: Partial<ShowFields>) => void;
@@ -955,6 +963,14 @@ function ShortsLayout(props: {
   const videoTop = top ?? (1 - height) / 2;
   const background = show?.short_background;
 
+  if (props.layout === "split") {
+    return (
+      <Group label="Shorts" hint="the vertical videos made from highlights">
+        <ShortsChoice layout={props.layout} onChange={props.onChange} />
+        <SplitLayout show={show} webcam={props.webcam} game={props.game} onChange={props.onChange} />
+      </Group>
+    );
+  }
   if (crop) {
     return (
       <Group label="Shorts" hint="the vertical videos made from highlights">
@@ -1059,15 +1075,149 @@ function ShortsLayout(props: {
   );
 }
 
-function ShortsChoice({ layout, onChange }: { layout: "crop" | "blur"; onChange: (fields: Partial<ShowFields>) => void }) {
+function ShortsChoice({ layout, onChange }: { layout: "crop" | "blur" | "split"; onChange: (fields: Partial<ShowFields>) => void }) {
   return (
     <div className="flex">
       <Segmented
-        options={{ crop: "Cropped to fill", blur: "On a background" }}
+        options={{ crop: "Cropped to fill", blur: "On a background", split: "Webcam on top" }}
         value={layout}
         onChange={(short_layout) => onChange({ short_layout })}
       />
     </div>
+  );
+}
+
+/** The webcam's share of a split Short's height, as the server works it out (render.webcam_height). */
+function webcamShare([, , w, h]: Box): number {
+  const tall = (1080 * h * 9) / (w * 16);
+  return Math.min(960, Math.max(480, Math.round(tall / 2) * 2)) / 1920;
+}
+
+const WHOLE: Box = [0, 0, 1, 1];
+
+/**
+ * A split Short: the streamer's webcam across the top and the game under it. Both are marked by dragging over a still
+ * from the show's newest video; the game is all of the picture until a part of it is marked.
+ */
+function SplitLayout(props: { show: Show | null; webcam: Box | null; game: Box | null; onChange: (fields: Partial<ShowFields>) => void }) {
+  const { show, webcam, game } = props;
+  const [marking, setMarking] = useState<"webcam" | "game">("webcam");
+  const [moment, setMoment] = useState(0); // which still: another one when this one doesn't show the webcam
+  const [missing, setMissing] = useState(false);
+  const picture = useRef<HTMLDivElement>(null);
+  const from = useRef<{ x: number; y: number } | null>(null);
+  if (!show) return <p className="mt-3 text-xs text-zinc-500">Add the show first, then mark where the webcam is on one of its videos.</p>;
+
+  const still = `/media/shows/${show.id}/still.jpg?n=${moment}`;
+  const share = webcamShare(webcam ?? [0, 0, 0.25, 0.25]);
+  const point = (e: ReactPointerEvent) => {
+    const area = picture.current!.getBoundingClientRect();
+    return { x: clamp((e.clientX - area.left) / area.width, 0, 1), y: clamp((e.clientY - area.top) / area.height, 0, 1) };
+  };
+  const round = (v: number) => Math.round(v * 10000) / 10000;
+
+  return (
+    <div className="mt-3 space-y-3">
+      <div className="flex items-center gap-3">
+        <span className="shrink-0 text-sm text-zinc-300">Mark the</span>
+        <Segmented options={{ webcam: "Webcam", game: "Game" }} value={marking} onChange={setMarking} />
+      </div>
+      <div
+        ref={picture}
+        className="relative aspect-video w-full max-w-md cursor-crosshair touch-none select-none overflow-hidden rounded-xl bg-black ring-1 ring-white/10"
+        onPointerDown={(e) => {
+          e.currentTarget.setPointerCapture(e.pointerId);
+          from.current = point(e);
+        }}
+        onPointerMove={(e) => {
+          const start = from.current;
+          if (!start) return;
+          const to = point(e);
+          const box: Box = [round(Math.min(start.x, to.x)), round(Math.min(start.y, to.y)), round(Math.abs(to.x - start.x)), round(Math.abs(to.y - start.y))];
+          if (box[2] >= 0.02 && box[3] >= 0.02) props.onChange(marking === "webcam" ? { short_webcam: box } : { short_game: box });
+        }}
+        onPointerUp={() => (from.current = null)}
+        onPointerCancel={() => (from.current = null)}
+      >
+        {missing ? (
+          <p className="absolute inset-0 grid place-items-center p-4 text-center text-xs text-zinc-400">
+            None of the show's videos has its preview yet. Add one in Videos, then mark the webcam on it.
+          </p>
+        ) : (
+          <img src={still} alt="" draggable={false} onError={() => setMissing(true)} className="pointer-events-none size-full" />
+        )}
+        {game && <Marked box={game} label="Game" className="outline-sky-300 bg-sky-400/15" />}
+        {webcam && <Marked box={webcam} label="Webcam" className="outline-violet-300 bg-violet-400/20" />}
+      </div>
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs font-semibold text-violet-300">
+        <button type="button" onClick={() => { setMissing(false); setMoment((m) => m + 1); }}>
+          Another frame
+        </button>
+        {game && (
+          <button type="button" onClick={() => props.onChange({ short_game: null })}>
+            Game: all of the picture
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-4">
+        <div className="relative flex aspect-[9/16] w-28 shrink-0 flex-col overflow-hidden rounded-xl bg-zinc-800 ring-1 ring-white/10">
+          <div className="relative shrink-0 overflow-hidden bg-violet-500/40" style={{ height: `${share * 100}%` }}>
+            {webcam && !missing && <PartOf src={still} box={webcam} aspect={1080 / (share * 1920)} />}
+          </div>
+          <div className="relative min-h-0 flex-1 overflow-hidden bg-sky-500/30">
+            {!missing && <PartOf src={still} box={game ?? WHOLE} aspect={1080 / ((1 - share) * 1920)} />}
+          </div>
+          {/* just under where they meet, as render.render_short puts them on a split Short */}
+          <p
+            className="absolute inset-x-0 text-center text-[8px] font-extrabold text-white [text-shadow:0_0_2px_black,0_0_2px_black]"
+            style={{ top: `${((share * 1920 + 250) / 1920) * 100}%` }}
+          >
+            <span className="text-yellow-300">YOUR</span> CAPTIONS
+          </p>
+        </div>
+        <p className="min-w-0 flex-1 text-xs text-zinc-500">
+          {webcam ? (
+            <>
+              The webcam goes across the top, as tall as its shape makes it (between a quarter and half of the Short), and
+              the {game ? "part marked as the game" : "middle of the picture"} fills the rest. The captions go just under
+              where they meet.
+            </>
+          ) : (
+            <span className="text-amber-300">Drag over the webcam on the picture to mark it.</span>
+          )}{" "}
+          The same spots are used for every Short of the show, so check them against a stream if the layout changes.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+/** A marked part of the still, outlined. */
+function Marked({ box: [x, y, w, h], label, className }: { box: Box; label: string; className: string }) {
+  return (
+    <div
+      className={cn("pointer-events-none absolute outline-2 outline-dashed", className)}
+      style={{ left: `${x * 100}%`, top: `${y * 100}%`, width: `${w * 100}%`, height: `${h * 100}%` }}
+    >
+      <span className="absolute left-1 top-1 rounded bg-black/70 px-1 text-[10px] font-semibold text-white">{label}</span>
+    </div>
+  );
+}
+
+/** A part of the still filling a box of this shape (width ÷ height), cropped rather than stretched, as the render does. */
+function PartOf({ src, box: [x, y, w, h], aspect }: { src: string; box: Box; aspect: number }) {
+  const width = Math.max(1 / w, 16 / (9 * h * aspect)); // the still's width, in widths of the box
+  const left = 0.5 - (x + w / 2) * width;
+  const top = 0.5 - (y + h / 2) * width * (9 / 16) * aspect; // in heights of the box
+  return (
+    <img
+      src={src}
+      alt=""
+      draggable={false}
+      className="pointer-events-none absolute max-w-none"
+      style={{ width: `${width * 100}%`, left: `${left * 100}%`, top: `${top * 100}%` }}
+    />
   );
 }
 

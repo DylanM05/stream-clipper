@@ -12,11 +12,13 @@ import { cn, go, goBack, loadSetting, saveSetting } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, useToast } from "../ui";
 import { indexAt, startAt, useClock, useSettled, type Clock } from "./clock";
-import { FPS, FRAME, MAX_SHORT_S, parseTimecode, round2, timecode, type Range } from "./edit";
+import { FRAME, MAX_SHORT_S, parseTimecode, round2, timecode, type Range } from "./edit";
 import { Timeline } from "./Timeline";
 import type { Editor } from "./useEditor";
 
 const RATES = [0.5, 1, 1.5, 2];
+const TEXT_FIELDS =
+  "textarea, [contenteditable=true], input:not([type=checkbox], [type=radio], [type=range], [type=button], [type=submit], [type=color], [type=file])";
 // The transcript lists this many lines around the playhead, and moves along only once the playhead's line comes within
 // MARGIN of either end, so playing and scrubbing don't rebuild the whole list.
 const TRANSCRIPT_WINDOW = 120;
@@ -73,7 +75,8 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
     const onKey = (e: KeyboardEvent) => {
       const { ed, selection, selectedCut, cutSelection, nudge, primary, toggleSnap } = latest.current;
       const target = e.target as HTMLElement;
-      const typing = !!target.closest("input, textarea, select, [contenteditable=true]");
+      // Only a box being typed in keeps the keys: a checkbox, slider or menu that was clicked last doesn't.
+      const typing = !!target.closest(TEXT_FIELDS);
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key;
       if (mod && key.toLowerCase() === "s") {
@@ -111,8 +114,14 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
         case "k": ed.pause(); break;
         case "l": ed.faster(); break;
         case "j": ed.skip(-5); break;
-        case "ArrowLeft": ed.step(shift ? -FPS : -1); break;
-        case "ArrowRight": ed.step(shift ? FPS : 1); break;
+        case "ArrowLeft": ed.skip(shift ? -5 : -1); break;
+        case "ArrowRight": ed.skip(shift ? 5 : 1); break;
+        case "ArrowUp": ed.toLine(-1); break;
+        case "ArrowDown": ed.toLine(1); break;
+        case "[": ed.playFirst(5); break;
+        case "{": ed.playFirst(10); break;
+        case "]": ed.playLast(5); break;
+        case "}": ed.playLast(10); break;
         case "i":
           if (shift) ed.seek(ed.draft.start);
           else {
@@ -413,7 +422,7 @@ function Transport({ ed, onEdge }: { ed: Editor; onEdge: (which: "start" | "end"
         <IconButton title="Go to the start (⇧I)" onClick={() => ed.seek(draft.start)}>
           <ToStartIcon className="size-4" />
         </IconButton>
-        <IconButton title="Back a frame (←); a second with ⇧" onClick={() => ed.step(-1)}>
+        <IconButton title="Back a frame" onClick={() => ed.step(-1)}>
           <FrameBackIcon className="size-4" />
         </IconButton>
         <button
@@ -423,7 +432,7 @@ function Transport({ ed, onEdge }: { ed: Editor; onEdge: (which: "start" | "end"
         >
           {ed.playing ? <PauseIcon className="size-4" /> : <PlayIcon className="ml-0.5 size-4" />}
         </button>
-        <IconButton title="Ahead a frame (→); a second with ⇧" onClick={() => ed.step(1)}>
+        <IconButton title="Ahead a frame" onClick={() => ed.step(1)}>
           <FrameForwardIcon className="size-4" />
         </IconButton>
         <IconButton title="Go to the end (⇧O)" onClick={() => ed.seek(draft.end)}>
@@ -437,6 +446,15 @@ function Transport({ ed, onEdge }: { ed: Editor; onEdge: (which: "start" | "end"
         <ToolButton onClick={() => ed.setLoop((l) => !l)} active={ed.loop} title="Loop the clip (R)">
           <LoopIcon className="size-3.5" /> Loop
         </ToolButton>
+      </div>
+      {/* The clip's ends as they come out, to check it doesn't start late or get cut off */}
+      <div className="flex items-center gap-1 text-xs">
+        <span className="mr-0.5 text-zinc-500">First</span>
+        <ToolButton onClick={() => ed.playFirst(5)} title="Play the clip's first 5 seconds ([)">5s</ToolButton>
+        <ToolButton onClick={() => ed.playFirst(10)} title="Play the clip's first 10 seconds (⇧[)">10s</ToolButton>
+        <span className="ml-2 mr-0.5 text-zinc-500">Last</span>
+        <ToolButton onClick={() => ed.playLast(5)} title="Play the clip's last 5 seconds (])">5s</ToolButton>
+        <ToolButton onClick={() => ed.playLast(10)} title="Play the clip's last 10 seconds (⇧])">10s</ToolButton>
       </div>
       {ed.editable && (
         <div className="flex items-center gap-2 text-xs">
@@ -646,9 +664,10 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
 
       {ed.editable && (
         <section>
-          <h2 className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-zinc-500">
-            Cut out · {draft.cuts.length}
-          </h2>
+          <div className="mb-1.5 flex items-center gap-2">
+            <h2 className="flex-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Cut out · {draft.cuts.length}</h2>
+            <Tighten ed={ed} />
+          </div>
           {draft.cuts.length === 0 ? (
             <p className="text-xs text-zinc-500">
               Nothing yet. Select a part on the timeline, or a line below, and cut it out: the video jumps over it.
@@ -675,6 +694,38 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
 
       <TranscriptPanel ed={ed} />
     </div>
+  );
+}
+
+const PAUSES = [1, 1.5, 2, 3]; // seconds: how long a pause between words has to be for Tighten to cut it out
+
+/** Cut out the pauses between words at once, of at least the length picked (remembered on this device). */
+function Tighten({ ed }: { ed: Editor }) {
+  const [pause, setPause] = useState(() => loadSetting("clipper.tightenPause", 1));
+  return (
+    <span className="flex items-center gap-1">
+      <select
+        value={pause}
+        onChange={(e) => {
+          setPause(Number(e.target.value));
+          saveSetting("clipper.tightenPause", Number(e.target.value));
+        }}
+        title="How long a pause between words has to be to cut it out"
+        className="rounded-md bg-zinc-800 px-1.5 py-1 text-xs font-semibold text-zinc-300 outline-none hover:bg-zinc-700/80 focus:ring-2 focus:ring-violet-500"
+      >
+        {PAUSES.map((s) => (
+          <option key={s} value={s}>
+            pauses ≥ {s}s
+          </option>
+        ))}
+      </select>
+      <ToolButton
+        onClick={() => void ed.tighten(pause)}
+        title="Cut out every pause between words at least this long, leaving a moment either side. Undo puts them all back."
+      >
+        <ScissorsIcon className="size-3.5" /> Tighten
+      </ToolButton>
+    </span>
   );
 }
 
@@ -788,7 +839,9 @@ const TranscriptRow = memo(function TranscriptRow(props: {
 const KEYS: [string, string][] = [
   ["Space", "Play or pause"],
   ["J / K / L", "Back 5 seconds / pause / play (again: faster)"],
-  ["← / →", "Back or ahead a frame (with ⇧, a second)"],
+  ["← / →", "Back or ahead a second (with ⇧, 5 seconds)"],
+  ["↑ / ↓", "To the start of this or the last line of the transcript / the next one"],
+  ["[ / ]", "Play the clip's first / last 5 seconds (with ⇧, 10)"],
   ["I / O", "Start or end the clip at the playhead"],
   ["⇧I / ⇧O", "Go to the clip's start or end"],
   [", / .", "Nudge the last edge you moved by a frame (< and >: a second)"],
