@@ -90,7 +90,7 @@ def problem(settings: Settings, choice: Choice) -> str:
     llm = backend(settings, choice)
     if isinstance(llm, Codex) and not llm.signed_in():
         return ("Codex isn't signed in on the server: run "
-                "docker compose run --rm --entrypoint codex worker login --device-auth there.")
+                "docker compose run --rm --no-deps --entrypoint codex worker login --device-auth there.")
     if isinstance(llm, ClaudeCode) and not llm.signed_in():
-        return "Claude Code isn't signed in on the server: run docker compose run --rm --entrypoint claude worker there."
+        return "Claude Code isn't signed in on the server: run docker compose run --rm --no-deps --entrypoint claude worker there."
     return ""

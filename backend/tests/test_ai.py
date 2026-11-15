@@ -98,6 +98,18 @@ def test_codex_usage_limit_says_when_to_try_again(monkeypatch):
     assert abs((err.value.resets_at - soon).total_seconds()) < 60
 
 
+def test_codex_usage_limit_says_when_to_try_again_as_it_words_it_now():
+    now = datetime(2026, 11, 11, 9, 0).astimezone()
+    today = codex._reset_time("You’ve hit your usage limit. Try again at 3:45 PM.", now)
+    assert today == datetime(2026, 11, 11, 15, 45).astimezone()
+    another_day = codex._reset_time(
+        "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+        "https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 12:05 AM.", now)
+    assert another_day == datetime(2026, 11, 13, 0, 5).astimezone()
+    assert codex._reset_time("You’ve hit your usage limit. Try again at 8:15 AM.", now) is None  # gone: try again soon
+    assert codex._reset_time("You’ve hit your usage limit. Try again later.", now) is None
+
+
 def test_codex_not_signed_in_or_failing_says_so(monkeypatch):
     signed_out = events({"type": "error", "message": "Not logged in. Run codex login."})
     with pytest.raises(LLMError, match="codex login --device-auth"):

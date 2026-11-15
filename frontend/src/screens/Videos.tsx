@@ -2,7 +2,7 @@ import { useState, type FormEvent } from "react";
 import { api, errorText, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
-import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, timeOfDay, titleDate, useDesktop, usePoll } from "../lib";
+import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, titleDate, upcoming, useDesktop, usePoll } from "../lib";
 import { PauseBar, usePauses } from "../PauseBar";
 import { Button, ErrorNote, Fold, MODE_LABEL, ProgressBar, Screen, ShowMore, VodStatusChip, useToast } from "../ui";
 
@@ -193,6 +193,11 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
   );
 }
 
+/** Why a video is waiting, and when it tries again. */
+export function waitingText(vod: Vod): string {
+  return `${vod.error || "Waiting."} It tries again ${vod.retry_at ? upcoming(vod.retry_at) : "soon"}.`;
+}
+
 /** Why a queued video isn't moving, when a whole part of the work is paused. */
 function heldBy(vod: Vod, pauses?: Pauses): string {
   if (vod.paused || vod.status !== "queued" || !pauses) return "";
@@ -286,9 +291,19 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
         </div>
       )}
       {vod.status === "waiting" && (
-        <p className="mt-2 text-sm text-amber-300">
-          {vod.error || "Waiting."} It tries again {vod.retry_at ? `at ${timeOfDay(vod.retry_at)}` : "soon"}.
-        </p>
+        // Retrying now is for when it can go on sooner: another AI chosen in Settings, or space freed up.
+        <div className="mt-2 flex items-start gap-3">
+          <p className="flex-1 text-sm text-amber-300">{waitingText(vod)}</p>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              void retry();
+            }}
+            className="shrink-0 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-semibold active:bg-zinc-700"
+          >
+            Retry now
+          </button>
+        </div>
       )}
       {vod.status === "failed" && (
         <div className="mt-2 flex items-start gap-3">
@@ -321,6 +336,15 @@ export function VideoDetail({ id }: { id: number }) {
   const offered = data?.clips.filter((c) => c.status !== "extra") ?? [];
   const extras = data?.clips.filter((c) => c.status === "extra") ?? [];
 
+  const retry = async () => {
+    try {
+      await api.retryVod(id);
+      void refresh();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+
   const deleteFiles = async () => {
     const dropped = data?.clips.filter((c) => !["uploaded", "rejected"].includes(c.status)).length ?? 0;
     const warning = dropped ? ` ${dropped} clip${dropped === 1 ? " that isn't" : "s that aren't"} uploaded can't be cut any more and will be rejected.` : "";
@@ -342,6 +366,16 @@ export function VideoDetail({ id }: { id: number }) {
       wide
     >
       {error && <ErrorNote>{error}</ErrorNote>}
+      {vod && (vod.status === "waiting" || vod.status === "failed") && (
+        <div className="mb-4 flex items-start gap-3 rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">
+          <p className={cn("min-w-0 flex-1 break-words text-sm", vod.status === "failed" ? "text-red-300" : "text-amber-300")}>
+            {vod.status === "failed" ? vod.error : waitingText(vod)}
+          </p>
+          <button onClick={retry} className="shrink-0 rounded-lg bg-zinc-800 px-3 py-1.5 text-sm font-semibold active:bg-zinc-700">
+            {vod.status === "failed" ? "Retry" : "Retry now"}
+          </button>
+        </div>
+      )}
       {vod && (
         <div className="mb-4 space-y-2 text-sm text-zinc-400">
           <a href={vod.url} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 text-violet-300 hover:text-violet-200">

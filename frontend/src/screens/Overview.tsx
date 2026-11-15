@@ -1,13 +1,13 @@
 import type { ReactNode } from "react";
 import { api, media, type Clip, type Destination, type Pauses, type Stats, type StatsUpload, type Summary, type Vod } from "../api";
 import { AlertIcon, LinkIcon } from "../icons";
-import { ago, cn, compact, firstSentence, length, platformName, timeOfDay, total, upcoming, usePoll } from "../lib";
+import { ago, cn, compact, firstSentence, length, platformName, total, upcoming, usePoll } from "../lib";
 import { usePauses } from "../PauseBar";
 import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, StatTile, VodStatusChip } from "../ui";
 import { GOING_UP, inUploadOrder } from "./Approved";
 import { LibraryPanel } from "./Library";
 import { UploadBrowserStatus } from "./UploadKit";
-import { ACTIVE, WITH_PROGRESS } from "./Videos";
+import { ACTIVE, WITH_PROGRESS, waitingText } from "./Videos";
 
 const DAY_MS = 86400000;
 const LIST_MAX = 8; // rows a panel shows before "and N more"
@@ -158,7 +158,7 @@ function Attention({ clips, vods }: { clips: Clip[]; vods: Vod[] }) {
         key: `w${v.id}`,
         tone: "warn",
         title: v.title || v.url,
-        detail: `${v.error || "Waiting."} It tries again ${v.retry_at ? `at ${timeOfDay(v.retry_at)}` : "soon"}.`,
+        detail: waitingText(v),
         href: `#/videos/${v.id}`,
       })),
   ];

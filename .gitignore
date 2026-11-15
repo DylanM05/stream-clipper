@@ -32,3 +32,6 @@ Thumbs.db
 
 # Scan results in progress (deploy/scan.sh)
 .scan/
+
+# Claude Code skills and settings for this computer
+.claude/

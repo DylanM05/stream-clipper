@@ -483,18 +483,19 @@ export const BLANK_SHOW: ShowFields = {
   intro_shorts: false,
 };
 
+/** A show's settings that the form edits. The images are saved on their own, straight away, so they aren't part of it. */
+function formFields(show: Show): ShowFields {
+  const {
+    id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s,
+    intro: _n, intro_seconds: _l, ...rest
+  } = show;
+  return rest;
+}
+
 function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
   const { show, destinations } = props;
   const toast = useToast();
-  const [fields, setFields] = useState<ShowFields>(() => {
-    if (!show) return BLANK_SHOW;
-    // The images are saved on their own, straight away, so they aren't part of the form.
-    const {
-      id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s,
-      intro: _n, intro_seconds: _l, ...rest
-    } = show;
-    return rest;
-  });
+  const [fields, setFields] = useState<ShowFields>(() => (show ? formFields(show) : BLANK_SHOW));
   const [busy, setBusy] = useState(false);
   const { data: thumbnailSetup } = usePoll(api.thumbnails, 0);
   const set = (patch: Partial<ShowFields>) => setFields((f) => ({ ...f, ...patch }));
@@ -505,14 +506,17 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const patternsOk =
     (!hasClips(fields.mode) || clipPattern.includes("{title}")) && (!hasEpisode(fields.mode) || episodePattern.includes("{title}"));
   const shortsOk = fields.short_layout !== "split" || fields.short_webcams.length > 0;
-  const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => fields[k] !== show[k]);
+  // By value: the webcam boxes are arrays, and each refresh of the show brings new ones.
+  const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => JSON.stringify(fields[k]) !== JSON.stringify(show[k]));
 
   const save = async () => {
     setBusy(true);
     try {
       const body = { ...fields, title_template: clipPattern };
       if (show) {
-        await api.updateShow(show.id, body);
+        // The form takes what was saved (the pattern filled in, the boxes rounded), so it matches the show from now on.
+        setFields(formFields(await api.updateShow(show.id, body)));
+        props.onChanged();
         toast({ text: "Saved. New videos use these settings." });
       } else {
         const created = await api.addShow(body);

@@ -1,5 +1,7 @@
 # docker compose up -d       starts the review app (port 8080), the worker and the upload browser (port 6080)
-# docker compose run --rm worker <command>     runs a one-off command, e.g. doctor or process "<url>"
+# docker compose run --rm --no-deps worker <command>     runs a one-off command, e.g. doctor or process "<url>".
+#   --no-deps leaves the upload browser alone: without it, Compose may make the browser's container again, which
+#   closes it and leaves the running worker (on the browser's network) with no network until `up -d`.
 
 x-clipper: &clipper
   build:
