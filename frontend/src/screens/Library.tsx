@@ -390,7 +390,7 @@ const SMALL = "rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zin
 
 function Small({ onClick, tone, children }: { onClick: () => void; tone?: "primary"; children: ReactNode }) {
   return (
-    <button onClick={onClick} className={cn(SMALL, tone === "primary" && "bg-violet-600/80 text-white hover:bg-violet-600 active:bg-violet-700")}>
+    <button onClick={onClick} className={cn(SMALL, tone === "primary" && "bg-mark text-ink hover:bg-violet-400 active:bg-violet-600")}>
       {children}
     </button>
   );
@@ -660,7 +660,7 @@ const input =
 function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="text-right font-normal normal-case">{hint}</span>}
       </p>

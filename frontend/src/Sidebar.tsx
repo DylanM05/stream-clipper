@@ -47,13 +47,13 @@ export function Sidebar({ screen, summary }: { screen: string; summary?: Summary
       <div className="mt-auto space-y-5 px-4 pt-8">
         {pauses && (
           <section>
-            <h2 className="mb-2 px-1 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Work</h2>
+            <h2 className="mb-2 px-1 text-xs font-medium text-zinc-500">Work</h2>
             <PauseBar compact parts={["downloads", "processing", "renders", "uploads"]} pauses={pauses} onChange={setPauses} />
           </section>
         )}
         {storage && (
           <section className="px-1">
-            <h2 className="mb-2 text-[11px] font-semibold uppercase tracking-wide text-zinc-500">Disk</h2>
+            <h2 className="mb-2 text-xs font-medium text-zinc-500">Disk</h2>
             <DiskMeter storage={storage} />
           </section>
         )}
@@ -91,7 +91,7 @@ function SideLink(props: {
         <span
           className={cn(
             "min-w-5 rounded-full px-1.5 text-center text-[11px] font-bold leading-5 tabular-nums",
-            props.quiet ? "bg-zinc-800 text-zinc-300" : "bg-violet-500 text-white",
+            props.quiet ? "bg-zinc-800 text-zinc-300" : "bg-mark text-ink",
           )}
         >
           {props.badge}

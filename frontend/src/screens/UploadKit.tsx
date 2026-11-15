@@ -102,7 +102,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
         </div>
 
         <div>
-          <div className="mb-6 flex items-center gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+          <div className="mb-6 flex items-center gap-3 text-xs font-medium text-zinc-500">
             <span className="h-px flex-1 bg-white/10" /> Or upload by hand <span className="h-px flex-1 bg-white/10" />
           </div>
 
@@ -113,7 +113,7 @@ function Kit({ clip, destinations, onChange }: { clip: Clip; destinations?: Dest
                   <button
                     key={w}
                     onClick={() => setWhich(w)}
-                    className={cn("rounded-lg py-2 text-sm font-semibold", which === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
+                    className={cn("rounded-lg py-2 text-sm font-semibold", which === w ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
                   >
                     {w === "video" ? "Video (16:9)" : "Short (9:16)"}
                   </button>
@@ -293,7 +293,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
             <button
               key={w}
               onClick={() => setPicked(w)}
-              className={cn("rounded-lg py-2 text-sm font-semibold", where === w ? "bg-zinc-600 text-white" : "text-zinc-400")}
+              className={cn("rounded-lg py-2 text-sm font-semibold", where === w ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
             >
               {WHERE_LABEL[w]}
             </button>
@@ -305,7 +305,7 @@ function AutoUpload({ clip, destination }: { clip: Clip; destination?: Destinati
           <button
             key={v}
             onClick={() => setVisibility(v)}
-            className={cn("rounded-lg py-2 text-sm font-semibold", visibility === v ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            className={cn("rounded-lg py-2 text-sm font-semibold", visibility === v ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
           >
             {VISIBILITY_LABEL[v]}
           </button>
@@ -597,7 +597,7 @@ export function UploadBrowserStatus({ site = "youtube" }: { site?: "youtube" | "
       </div>
       <div className="flex gap-2">
         {!ok && (
-          <button onClick={open} className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700">
+          <button onClick={open} className="rounded-lg bg-mark px-3 py-1.5 text-xs font-semibold text-ink active:bg-violet-600">
             {studio.browser ? "Show the upload browser" : "Open the upload browser"}
           </button>
         )}
@@ -674,7 +674,7 @@ function CopyBox({ label, text, onCopy, long }: { label: string; text: string; o
   return (
     <div className="mb-3 rounded-xl bg-zinc-900 ring-1 ring-white/5">
       <div className="flex items-center justify-between px-3 pt-2.5">
-        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{label}</span>
+        <span className="text-xs font-medium text-zinc-500">{label}</span>
         <button onClick={onCopy} className="flex items-center gap-1 rounded-lg px-2 py-1 text-xs font-semibold text-violet-300 active:bg-white/5">
           <CopyIcon className="size-3.5" /> Copy
         </button>
@@ -690,7 +690,7 @@ function Step({ n, title, children }: { n: number; title: string; children: Reac
   return (
     <section className="mb-6">
       <h2 className="mb-2 flex items-center gap-2 text-sm font-bold">
-        <span className="grid size-6 place-items-center rounded-full bg-violet-600 text-xs">{n}</span>
+        <span className="grid size-6 place-items-center rounded-full bg-mark font-mono text-xs text-ink">{n}</span>
         {title}
       </h2>
       {children}

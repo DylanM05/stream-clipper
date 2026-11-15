@@ -28,7 +28,7 @@ export function Settings() {
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
     <section className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h2>
+      <h2 className="text-xs font-medium text-zinc-500">{title}</h2>
       <div className="-mb-3 mt-1 divide-y divide-white/5">{children}</div>
     </section>
   );
@@ -295,7 +295,7 @@ function AiEditor(props: {
             key={o.id || "main"}
             type="button"
             onClick={() => choose(o.id)}
-            className={cn("rounded-lg px-1 py-2 text-xs font-semibold", provider === o.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            className={cn("rounded-lg px-1 py-2 text-xs font-semibold", provider === o.id ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
           >
             {o.name}
           </button>

@@ -147,7 +147,7 @@ function KindTabs({ value, onChange, className }: { value: Kind; onChange: (k: K
           onClick={() => onChange(k)}
           className={cn(
             "shrink-0 rounded-lg px-2.5 py-1.5 text-xs font-semibold",
-            value === k ? "bg-zinc-600 text-white" : "text-zinc-400 hover:text-zinc-200",
+            value === k ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400 hover:text-zinc-200",
           )}
         >
           {KINDS[k]}
@@ -198,7 +198,7 @@ function KindBreakdown({ uploads }: { uploads: StatsUpload[] }) {
       ) : (
         <table className="mt-3 w-full text-sm tabular-nums">
           <thead>
-            <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500">
+            <tr className="text-left text-xs text-zinc-500">
               <th className="pb-1.5 font-semibold">Kind</th>
               <th className="pb-1.5 text-right font-semibold">Day 1</th>
               <th className="pb-1.5 text-right font-semibold">Week 1</th>
@@ -242,7 +242,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
         onClick={() => onOrder(key)}
         title={ORDER_LABEL[key]}
         className={cn(
-          "inline-flex items-center gap-1 whitespace-nowrap uppercase tracking-wide",
+          "inline-flex items-center gap-1 whitespace-nowrap",
           order === key ? "text-zinc-100" : "hover:text-zinc-300",
         )}
       >
@@ -263,7 +263,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
     <div className="overflow-x-auto rounded-2xl bg-zinc-900 ring-1 ring-white/5">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500">
+          <tr className="text-left text-xs text-zinc-500">
             <th className="px-4 py-3 font-semibold">Upload</th>
             <th className="px-3 py-3 font-semibold">Kind</th>
             {sortBy("score", "Score")}
@@ -316,7 +316,7 @@ function ScoreBands({ bands }: { bands: { label: string; count: number; day1: nu
       ) : (
         <table className="mt-3 w-full text-sm tabular-nums">
           <thead>
-            <tr className="text-left text-[11px] uppercase tracking-wide text-zinc-500">
+            <tr className="text-left text-xs text-zinc-500">
               <th className="pb-1.5 font-semibold">Score</th>
               <th className="pb-1.5 text-right font-semibold">Day 1</th>
               <th className="pb-1.5 text-right font-semibold">Week 1</th>

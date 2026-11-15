@@ -358,7 +358,7 @@ function DestinationRow(props: { destination: Destination; apiReady: boolean; on
             <button
               onClick={connect}
               disabled={!GOOGLE_OK}
-              className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700 disabled:opacity-40"
+              className="rounded-lg bg-mark px-3 py-1.5 text-xs font-semibold text-ink active:bg-violet-600 disabled:bg-panel-2 disabled:text-graphite"
             >
               {connected ? "Reconnect" : "Connect"}
             </button>
@@ -554,7 +554,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               key={mode}
               type="button"
               onClick={() => set({ mode })}
-              className={cn("rounded-lg py-2 text-xs font-semibold", fields.mode === mode ? "bg-zinc-600 text-white" : "text-zinc-400")}
+              className={cn("rounded-lg py-2 text-xs font-semibold", fields.mode === mode ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
             >
               {mode === "both" ? "Both" : MODE_LABEL[mode]}
             </button>
@@ -1919,7 +1919,7 @@ function ChannelVideos({ channelId, roughDates, files }: { channelId: number; ro
                 Open
               </button>
             ) : (
-              <button onClick={() => process(v)} className="shrink-0 rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700">
+              <button onClick={() => process(v)} className="shrink-0 rounded-lg bg-mark px-3 py-1.5 text-xs font-semibold text-ink active:bg-violet-600">
                 Process
               </button>
             )}
@@ -1936,7 +1936,7 @@ const input =
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <span className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="text-right font-normal normal-case">{hint}</span>}
       </span>
@@ -1949,7 +1949,7 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="text-right font-normal normal-case">{hint}</span>}
       </p>

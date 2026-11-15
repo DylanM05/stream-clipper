@@ -131,7 +131,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
                 <button
                   key={kind}
                   onClick={() => setDraft((d) => ({ ...d, kind, make_short: kind === "highlight" && d.make_short }))}
-                  className={cn("rounded-lg py-2 text-sm font-semibold", draft.kind === kind ? "bg-zinc-600 text-white" : "text-zinc-400")}
+                  className={cn("rounded-lg py-2 text-sm font-semibold", draft.kind === kind ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
                 >
                   {kind === "highlight" ? "Highlight" : "Clip"}
                 </button>
@@ -367,7 +367,7 @@ function StreamTranscript({ ed }: { ed: Editor }) {
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex justify-between text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <span className="mb-1.5 flex justify-between text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="font-normal normal-case tabular-nums">{hint}</span>}
       </span>
@@ -381,13 +381,13 @@ function CutPoint(props: { label: string; value: number; onNudge: (delta: number
   return (
     <div className="rounded-2xl bg-zinc-900 p-3 ring-1 ring-white/5">
       <div className="mb-2 flex items-baseline justify-between px-1">
-        <span className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{props.label}</span>
+        <span className="text-xs font-medium text-zinc-500">{props.label}</span>
         <span className="font-mono text-lg tabular-nums">{clock(props.value, true)}</span>
       </div>
       <div className="grid grid-cols-5 gap-1.5">
         <button className={nudge} onClick={() => props.onNudge(-1)}>−1s</button>
         <button className={nudge} onClick={() => props.onNudge(-0.2)}>−0.2</button>
-        <button className={cn(nudge, "bg-violet-600/80 active:bg-violet-700")} onClick={props.onHere}>
+        <button className={cn(nudge, "bg-mark text-ink active:bg-violet-600")} onClick={props.onHere}>
           Here
         </button>
         <button className={nudge} onClick={() => props.onNudge(0.2)}>+0.2</button>
@@ -505,7 +505,7 @@ function Transcript(props: {
   const playing = useClock(props.clock, (t) => startAt(props.lines, t));
   return (
     <section>
-      <h2 className="mb-2 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <h2 className="mb-2 text-xs font-medium text-zinc-500">
         Transcript <span className="font-normal normal-case">{`· ${props.heading ?? "tap a line to hear it"}`}</span>
       </h2>
       <ol className="divide-y divide-white/5 overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-white/5">

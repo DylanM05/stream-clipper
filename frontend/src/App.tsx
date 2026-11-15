@@ -110,7 +110,7 @@ function Tab(props: { to: string; label: string; icon: ComponentType<{ className
       <Icon className="size-6" />
       {props.label}
       {!!props.badge && (
-        <span className="absolute left-1/2 top-1 ml-2 min-w-5 rounded-full bg-violet-500 px-1.5 text-center text-[11px] font-bold leading-5 text-white">
+        <span className="absolute left-1/2 top-1 ml-2 min-w-5 rounded-full bg-mark px-1.5 text-center font-mono text-[11px] font-bold leading-5 text-ink">
           {props.badge}
         </span>
       )}

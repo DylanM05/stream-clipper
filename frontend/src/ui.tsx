@@ -31,7 +31,7 @@ export function Screen(props: {
           </button>
         )}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-2xl font-bold tracking-tight">{props.title}</h1>
+          <h1 className="truncate text-3xl leading-tight font-bold font-stretch-condensed lg:text-4xl">{props.title}</h1>
           {props.subtitle && <p className="truncate text-sm text-zinc-400">{props.subtitle}</p>}
         </div>
         {props.actions}
@@ -137,11 +137,12 @@ export function Button(props: {
   children: ReactNode;
 }) {
   // Hover only applies where there's a mouse (Tailwind puts it behind @media (hover: hover)), and not when disabled.
+  // A coloured button that can't be pressed yet goes grey rather than a faded colour.
   const tones = {
-    primary: "bg-violet-600 text-white enabled:hover:bg-violet-500 active:bg-violet-700",
-    approve: "bg-emerald-600 text-white enabled:hover:bg-emerald-500 active:bg-emerald-700",
-    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 enabled:hover:bg-red-500/15 active:bg-red-500/20",
-    plain: "bg-zinc-800 text-zinc-100 enabled:hover:bg-zinc-700/80 active:bg-zinc-700",
+    primary: "bg-mark text-ink enabled:hover:bg-violet-400 active:bg-violet-600 disabled:bg-panel-2 disabled:text-graphite",
+    approve: "bg-cue text-ink enabled:hover:bg-emerald-500 active:bg-emerald-700 disabled:bg-panel-2 disabled:text-graphite",
+    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 enabled:hover:bg-red-500/15 active:bg-red-500/20 disabled:opacity-40",
+    plain: "bg-zinc-800 text-zinc-100 enabled:hover:bg-zinc-700/80 active:bg-zinc-700 disabled:opacity-40",
   };
   return (
     <button
@@ -149,7 +150,7 @@ export function Button(props: {
       onClick={props.onClick}
       disabled={props.disabled}
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-sm font-semibold disabled:opacity-40",
+        "inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-sm font-semibold disabled:cursor-default",
         tones[props.tone ?? "plain"],
         props.className,
       )}
@@ -169,7 +170,7 @@ export function Segmented<T extends string>(props: { options: Record<T, string>;
           key={key}
           type="button"
           onClick={() => props.onChange(key)}
-          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
+          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
         >
           {props.options[key]}
         </button>
@@ -277,7 +278,7 @@ export function Fold(props: {
           className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-white/[0.03]"
         >
           <ChevronIcon className={cn("size-4 shrink-0 text-zinc-500 transition-transform", !open && "-rotate-90")} />
-          <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-zinc-400">{props.title}</span>
+          <span className="min-w-0 truncate text-xs font-medium text-zinc-400">{props.title}</span>
           {props.count !== undefined && (
             <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums", props.tone ?? "bg-zinc-800 text-zinc-300")}>
               {props.count}

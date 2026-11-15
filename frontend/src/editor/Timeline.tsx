@@ -301,7 +301,7 @@ export function Timeline(props: {
               data-hit="move"
               title={props.editable ? "Drag to move the whole clip" : undefined}
               className={cn(
-                "absolute flex items-center overflow-hidden whitespace-nowrap bg-violet-500/80 px-2 text-[10px] font-semibold text-white",
+                "absolute flex items-center overflow-hidden whitespace-nowrap bg-mark px-2 text-[10px] font-semibold text-ink",
                 props.editable && "cursor-grab active:cursor-grabbing",
               )}
               style={{ top: RULER_H, height: GRIP_H, left: clipLeft, width: Math.max(2, clipRight - clipLeft) }}

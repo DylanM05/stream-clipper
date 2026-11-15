@@ -277,7 +277,7 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
           ) : (
             <span className="text-zinc-500">
               {ed.editable
-                ? "Drag the purple edges to trim. Drag across the timeline to select a part, or double-click a word, then press X to cut it out."
+                ? "Drag the yellow edges to trim. Drag across the timeline to select a part, or double-click a word, then press X to cut it out."
                 : "A full episode goes up as the stream is. Select a part of it to make a clip of that."}
             </span>
           )}
@@ -569,7 +569,7 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
               <button
                 key={kind}
                 onClick={() => setDraft((d) => ({ ...d, kind, make_short: kind === "highlight" && d.make_short }))}
-                className={cn("rounded-lg py-1.5 text-sm font-semibold", draft.kind === kind ? "bg-zinc-600 text-white" : "text-zinc-400 hover:text-zinc-200")}
+                className={cn("rounded-lg py-1.5 text-sm font-semibold", draft.kind === kind ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400 hover:text-zinc-200")}
               >
                 {kind === "highlight" ? "Highlight" : "Clip"}
               </button>
@@ -668,7 +668,7 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
       {ed.editable && (
         <section>
           <div className="mb-1.5 flex items-center gap-2">
-            <h2 className="flex-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Cut out · {draft.cuts.length}</h2>
+            <h2 className="flex-1 text-xs font-medium text-zinc-500">Cut out · {draft.cuts.length}</h2>
             <Tighten ed={ed} />
           </div>
           {draft.cuts.length === 0 ? (
@@ -771,7 +771,7 @@ function TranscriptPanel({ ed }: { ed: Editor }) {
   return (
     <section>
       <div className="mb-1.5 flex items-center gap-2">
-        <h2 className="flex-1 text-xs font-semibold uppercase tracking-wide text-zinc-500">Transcript</h2>
+        <h2 className="flex-1 text-xs font-medium text-zinc-500">Transcript</h2>
         <label className="flex items-center gap-1.5 text-xs text-zinc-500">
           <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} className="accent-violet-500" />
           Follow the playhead
@@ -888,7 +888,7 @@ function Shortcuts({ onClose }: { onClose: () => void }) {
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex justify-between text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <span className="mb-1.5 flex justify-between text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="font-normal normal-case tabular-nums">{hint}</span>}
       </span>

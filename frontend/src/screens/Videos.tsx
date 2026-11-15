@@ -161,7 +161,7 @@ function AddVideo({ onAdded }: { onAdded: () => void }) {
               onClick={() => setMode(value)}
               className={cn(
                 "rounded-lg px-2 py-2 text-xs font-semibold",
-                mode === value ? "bg-zinc-600 text-white" : "text-zinc-400",
+                mode === value ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400",
               )}
             >
               {label}
@@ -444,7 +444,7 @@ function VodFacts({ vod }: { vod: Vod }) {
       {facts.map(([label, value]) => (
         // The clip counts run long: a row of their own, or two columns on a wide screen.
         <div key={label} className={cn("min-w-0", label === "Clips" && "col-span-5 xl:col-span-2")}>
-          <dt className="text-[11px] font-semibold uppercase tracking-wide text-zinc-500">{label}</dt>
+          <dt className="text-xs font-medium text-zinc-500">{label}</dt>
           <dd className="mt-0.5 break-words text-sm text-zinc-200">{value}</dd>
         </div>
       ))}
@@ -458,7 +458,7 @@ function Extras({ clips }: { clips: Clip[] }) {
   return (
     <section className="mt-6">
       <button onClick={() => setOpen((o) => !o)} className="group flex w-full items-baseline gap-2 px-1 pb-2 text-left">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">Extras · {clips.length}</h2>
+        <h2 className="text-xs font-medium text-zinc-500">Extras · {clips.length}</h2>
         <span className="flex-1 text-xs text-zinc-500">Lower-scored picks, not in your inbox.</span>
         <span className="text-xs font-semibold text-violet-300 group-hover:text-violet-200">{open ? "Hide" : "Show"}</span>
       </button>

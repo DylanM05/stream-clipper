@@ -1,17 +1,125 @@
 @import "tailwindcss";
+/* Bundled with the app, so it asks nothing of other sites. Both have width and weight axes. */
+@import "@fontsource-variable/archivo/wdth.css";
+@import "@fontsource-variable/martian-mono/wdth.css";
+
+/*
+ * The "edit bay" look: the neutral grey of an edit suite, so footage reads true, with colour only where it means
+ * something. Mark yellow is for in and out points, what's selected, the one main action on a screen, and keyboard
+ * focus. Tally red is for rejecting and failures, cue green for approving and what's done.
+ */
+@theme {
+  --font-sans: "Archivo Variable", ui-sans-serif, system-ui, sans-serif;
+  /* Timecodes, durations and counts only, never labels. */
+  --font-mono: "Martian Mono Variable", ui-monospace, monospace;
+
+  --color-bay: #1f2023; /* the page */
+  --color-panel: #2a2c30; /* raised surfaces */
+  --color-panel-2: #34373c; /* inputs, pressed */
+  --color-line: #3b3e44; /* hairlines */
+  --color-chalk: #ece9e2; /* text */
+  --color-graphite: #9a9ca3; /* secondary text: 5:1 on a panel */
+  --color-dim: #6e7177; /* icons and decoration, never text */
+  --color-mark: #f0b429;
+  --color-ink: #16171a; /* text on mark, tally and cue */
+  --color-tally: #e5484d;
+  --color-cue: #46a758;
+
+  /*
+   * The palettes the screens were written with, moved onto the edit bay's colours, so every screen takes the new
+   * look at once. Screens move to the names above as they're redesigned.
+   */
+  --color-zinc-50: #f5f3ee;
+  --color-zinc-100: #ece9e2;
+  --color-zinc-200: #dedcd6;
+  --color-zinc-300: #c9c8c4;
+  --color-zinc-400: #b0b1b5;
+  --color-zinc-500: #9a9ca3;
+  --color-zinc-600: #55585e;
+  --color-zinc-700: #42454b;
+  --color-zinc-800: #34373c;
+  --color-zinc-900: #2a2c30;
+  --color-zinc-950: #1f2023;
+
+  /* Violet was the accent: now mark yellow. */
+  --color-violet-50: #fef8e7;
+  --color-violet-100: #fdf0cc;
+  --color-violet-200: #fae29a;
+  --color-violet-300: #f6d063;
+  --color-violet-400: #f3c243;
+  --color-violet-500: #f0b429;
+  --color-violet-600: #d99e17;
+  --color-violet-700: #b07f10;
+  --color-violet-800: #7a590e;
+  --color-violet-900: #4d390b;
+  --color-violet-950: #2e230a;
+
+  /* Cue green. */
+  --color-emerald-50: #eef8f0;
+  --color-emerald-100: #d5eeda;
+  --color-emerald-200: #acddb5;
+  --color-emerald-300: #84cb91;
+  --color-emerald-400: #6cc07b;
+  --color-emerald-500: #57b568;
+  --color-emerald-600: #46a758;
+  --color-emerald-700: #3a8c49;
+  --color-emerald-800: #2e6f3a;
+  --color-emerald-900: #22522b;
+  --color-emerald-950: #15331b;
+
+  /* Tally red. */
+  --color-red-50: #fef0f0;
+  --color-red-100: #fcddde;
+  --color-red-200: #f8bdbf;
+  --color-red-300: #f49598;
+  --color-red-400: #f2777b;
+  --color-red-500: #e5484d;
+  --color-red-600: #ce3a3f;
+  --color-red-700: #a92f33;
+  --color-red-800: #7e2427;
+  --color-red-900: #541a1c;
+  --color-red-950: #321012;
+
+  /* Warnings: orange, so they're never mistaken for mark yellow. */
+  --color-amber-50: #fef3ea;
+  --color-amber-100: #fce3cf;
+  --color-amber-200: #f9c9a2;
+  --color-amber-300: #f5a66b;
+  --color-amber-400: #f28f45;
+  --color-amber-500: #e8772a;
+  --color-amber-600: #c9611c;
+  --color-amber-700: #a04c17;
+  --color-amber-800: #763913;
+  --color-amber-900: #4f270e;
+  --color-amber-950: #2f1708;
+}
 
 @layer base {
   html {
     color-scheme: dark;
   }
   body {
-    @apply bg-zinc-950 text-zinc-100 antialiased;
+    @apply bg-bay font-sans text-chalk antialiased;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: none;
   }
   button,
   [role="button"] {
     cursor: pointer;
+  }
+  /* Keyboard focus is always visible, in mark yellow. */
+  :focus-visible {
+    outline: 2px solid var(--color-mark);
+    outline-offset: 2px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
   }
 }
 
