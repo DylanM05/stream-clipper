@@ -220,14 +220,15 @@ export function StatTile(props: { label: string; value: ReactNode; note?: ReactN
   );
 }
 
-/** A titled box on the overview, with an optional link to the page it summarises. */
-export function Panel(props: { title: string; link?: { href: string; label: string }; children: ReactNode }) {
+/** A titled list on the overview, with an optional link to the page it summarises and a note beside its title. */
+export function Panel(props: { title: string; note?: ReactNode; link?: { href: string; label: string }; children: ReactNode }) {
   return (
-    <section className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
-      <header className="flex items-baseline gap-2 px-4 pb-2 pt-3.5">
-        <h2 className="flex-1 text-sm font-bold">{props.title}</h2>
+    <section>
+      <header className="flex items-baseline gap-2.5 border-b border-line pb-2">
+        <h2 className="text-xl font-semibold font-stretch-condensed">{props.title}</h2>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-graphite">{props.note}</span>
         {props.link && (
-          <a href={props.link.href} className="text-xs font-semibold text-violet-300 hover:text-violet-200">
+          <a href={props.link.href} className="shrink-0 text-[13px] font-semibold text-mark hover:text-violet-300">
             {props.link.label}
           </a>
         )}

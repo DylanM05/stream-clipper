@@ -69,10 +69,10 @@ export function LibraryPanel() {
   if (!backlogs?.length) return null;
   return (
     <Panel title="Library" link={{ href: "#/library", label: "All" }}>
-      <ul className="divide-y divide-white/5">
+      <ul className="divide-y divide-line">
         {backlogs.map((b) => (
           <li key={b.channel.id}>
-            <a href={`#/library/${b.channel.id}`} className="block px-4 py-3 hover:bg-white/[0.03]">
+            <a href={`#/library/${b.channel.id}`} className="-mx-2 block rounded-lg px-2 py-3 hover:bg-white/[0.03]">
               <p className="truncate text-sm font-medium">{b.name}</p>
               <Progress backlog={b} className="mt-2" />
             </a>

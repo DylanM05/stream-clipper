@@ -138,7 +138,8 @@ export function WorkStrip(props: { summary?: Summary; parts?: (keyof Pauses)[]; 
         return (
           <li key={part.stage} className="relative min-w-0 pr-3">
             {i < parts.length - 1 && <span className="absolute left-3 right-0 top-[11px] hidden h-px bg-line xl:block" />}
-            <div className="flex items-center gap-2">{lamp}{name}</div>
+            {/* The line to the next part runs behind; the name is cut out of it. */}
+            <div className="relative flex w-fit items-center gap-2 bg-bay pr-3">{lamp}{name}</div>
             <div className="mt-2 font-mono text-2xl leading-none">{part.count}</div>
             <p className="mt-1.5 line-clamp-2 min-h-[2.5em] text-[13px] leading-snug text-graphite">{doing(part, paused)}</p>
             <div className="mt-2.5">{button}</div>
