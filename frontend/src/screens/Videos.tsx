@@ -3,7 +3,7 @@ import { api, errorText, type Clip, type Mode, type Pauses, type Show, type Vod 
 import { ClipCard } from "../ClipCard";
 import { LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, titleDate, upcoming, useDesktop, usePoll } from "../lib";
-import { PauseBar, usePauses } from "../PauseBar";
+import { usePauses, WorkStrip } from "../Work";
 import { Button, ErrorNote, Fold, MODE_LABEL, ProgressBar, Screen, ShowMore, VodStatusChip, useToast } from "../ui";
 
 export const WITH_PROGRESS = ["downloading", "preparing", "transcribing"];
@@ -48,7 +48,7 @@ function groupVods(vods: Vod[]) {
 
 export function Videos() {
   const { data: vods, error, refresh } = usePoll(api.vods, 4000);
-  const { pauses, setPauses } = usePauses();
+  const { pauses } = usePauses();
   return (
     <Screen title="Videos" subtitle="Add a link and the clips land in your inbox." wide>
       {/* On a wide screen, adding a video and the pause switches sit beside the list instead of above it. */}
@@ -56,7 +56,7 @@ export function Videos() {
         <div>
           <AddVideo onAdded={refresh} />
           <div className="mt-3">
-            <PauseBar parts={["downloads", "processing", "renders", "uploads"]} pauses={pauses} onChange={setPauses} />
+            <WorkStrip stacked className="rounded-2xl bg-zinc-900 p-1.5 lg:hidden" />
           </div>
         </div>
         <div>

@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VideoType, VodStatus } from "./api";
-import { BackIcon, ChevronIcon, GearIcon } from "./icons";
+import { BackIcon, ChevronIcon } from "./icons";
 import { cn, loadSetting, saveSetting } from "./lib";
 
 /**
@@ -35,12 +35,6 @@ export function Screen(props: {
           {props.subtitle && <p className="truncate text-sm text-zinc-400">{props.subtitle}</p>}
         </div>
         {props.actions}
-        {/* A phone's way to Settings: the tab bar has no room for it, and a desktop has it in the sidebar. */}
-        {!props.onBack && (
-          <a href="#/settings" className="-mr-2 rounded-full p-2 text-zinc-400 hover:bg-white/5 active:bg-white/10 lg:hidden" aria-label="Settings">
-            <GearIcon className="size-6" />
-          </a>
-        )}
       </header>
       {props.children}
     </div>
@@ -323,7 +317,7 @@ export function DiskMeter({ storage }: { storage: Storage }) {
     ? ["bg-red-400", "bg-red-400/15"]
     : near
       ? ["bg-amber-400", "bg-amber-400/15"]
-      : ["bg-violet-500", "bg-violet-500/15"];
+      : ["bg-chalk", "bg-zinc-800"];
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2 text-xs">

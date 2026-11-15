@@ -3,7 +3,7 @@ import { api, errorText, type Clip, type UploadState } from "../api";
 import { ClipCard } from "../ClipCard";
 import { InboxIcon, LinkIcon, PauseIcon, PlayIcon, TrashIcon } from "../icons";
 import { cn, firstSentence, upcoming, usePoll } from "../lib";
-import { PauseBar, usePauses } from "../PauseBar";
+import { WorkStrip } from "../Work";
 import { ErrorNote, Fold, Screen, ShowMore, useToast } from "../ui";
 
 // Rendered clips whose upload has been started, in the order they go up; a failed one is back to ready.
@@ -22,7 +22,6 @@ export function Approved() {
     () => api.clips(["approved", "rendering", "failed", "rendered", "uploaded"]),
     5000,
   );
-  const { pauses, setPauses } = usePauses();
   const rendered = clips?.filter((c) => c.status === "rendered") ?? [];
   // Failed uploads and renders first, so they don't get lost among the rest.
   const attention = clips?.filter((c) => c.status === "failed" || (c.status === "rendered" && c.upload_state === "failed")) ?? [];
@@ -34,7 +33,7 @@ export function Approved() {
   return (
     <Screen title="Upload" subtitle="Approved clips, ready to post to YouTube." wide>
       <div className="lg:max-w-md">
-        <PauseBar parts={["renders", "uploads"]} pauses={pauses} onChange={setPauses} />
+        <WorkStrip stacked parts={["renders", "uploads"]} className="rounded-2xl bg-zinc-900 p-1.5 lg:hidden" />
       </div>
       {error && <ErrorNote>{error}</ErrorNote>}
       {clips?.length === 0 && <p className="mt-10 text-center text-sm text-zinc-500">Nothing approved yet.</p>}

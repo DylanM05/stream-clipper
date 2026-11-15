@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { api, media, type Clip, type Destination, type Pauses, type Stats, type StatsUpload, type Summary, type Vod } from "../api";
 import { AlertIcon, LinkIcon } from "../icons";
 import { ago, cn, compact, firstSentence, length, platformName, total, upcoming, usePoll } from "../lib";
-import { usePauses } from "../PauseBar";
+import { usePauses } from "../Work";
 import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, StatTile, VodStatusChip } from "../ui";
 import { GOING_UP, inUploadOrder } from "./Approved";
 import { LibraryPanel } from "./Library";
