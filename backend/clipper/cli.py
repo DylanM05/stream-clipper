@@ -149,7 +149,8 @@ class _Check(BaseModel):
 
 @app.command("llm-check")
 def llm_check() -> None:
-    """Check that each AI chosen in the app (Claude Code, Codex or OpenRouter) answers with structured output."""
+    """Check that each AI chosen in the app (Claude Code, Codex, OpenRouter or the CLI proxy) answers with structured
+    output."""
     from sqlmodel import Session
 
     from . import ai

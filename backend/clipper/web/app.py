@@ -407,7 +407,7 @@ APP_SETTING_KEYS = ("download_limit_mbps", "full_speed_from", "full_speed_until"
 
 
 class AiProvider(BaseModel):
-    id: str  # "claude", "codex" or "openrouter" (ai.PROVIDERS)
+    id: str  # "claude", "codex", "openrouter" or "cliproxy" (ai.PROVIDERS)
     name: str
     model: str  # the model it uses; for Codex, "" is its own default
     default_model: str  # what it uses until another is set in the app (CLIPPER_LLM_MODEL and the like)
@@ -438,7 +438,7 @@ class AiPatch(BaseModel):
     # With a task: that task's own AI ("" for the main one) and model ("" for that AI's). Without: the main AI, and
     # the model of the provider given, or else of the main one ("" for its default).
     task: str | None = None
-    provider: Literal["claude", "codex", "openrouter", ""] | None = None
+    provider: Literal["claude", "codex", "openrouter", "cliproxy", ""] | None = None
     model: str | None = Field(default=None, max_length=200)
 
 

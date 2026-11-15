@@ -195,6 +195,9 @@ const AI_HINT: Record<AiProviderId, string> = {
   openrouter:
     "Paid per use from your OpenRouter credit, with CLIPPER_OPENROUTER_API_KEY. Any model whose page lists " +
     "structured outputs works; anthropic/claude-opus-5.5 costs about $0.75 for an 8-hour stream.",
+  cliproxy:
+    "Through a CLIProxyAPI server signed in to your plans, at CLIPPER_CLIPROXY_URL with CLIPPER_CLIPROXY_API_KEY " +
+    "(README). The model is any it lists, such as claude-opus-5-5.",
 };
 
 /** The AI: the main one, and each task (picking clips, breakdowns, titles, thumbnails), which can have its own. */
@@ -261,6 +264,8 @@ function AiChoice() {
   );
 }
 
+const COLUMNS: Record<number, string> = { 3: "grid-cols-3", 4: "grid-cols-4", 5: "grid-cols-5" }; // one row of AIs
+
 /** Pick an AI ("" for the main one, when `withMain`) and its model. */
 function AiEditor(props: {
   setup: AiSetup;
@@ -284,7 +289,7 @@ function AiEditor(props: {
   };
   return (
     <div className="space-y-2">
-      <div className={cn("grid gap-1 rounded-xl bg-zinc-800 p-1", options.length === 4 ? "grid-cols-4" : "grid-cols-3")}>
+      <div className={cn("grid gap-1 rounded-xl bg-zinc-800 p-1", COLUMNS[options.length] ?? "grid-cols-3")}>
         {options.map((o) => (
           <button
             key={o.id || "main"}

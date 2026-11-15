@@ -384,7 +384,7 @@ export interface Storage {
 }
 
 /** The main AI, which picks the clips and writes preview titles and thumbnail ideas unless a task has its own. */
-export type AiProviderId = "claude" | "codex" | "openrouter";
+export type AiProviderId = "claude" | "codex" | "openrouter" | "cliproxy";
 
 export interface AiTask {
   id: string; // "clips", "breakdown", "titles", "thumbnails"

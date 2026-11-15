@@ -19,7 +19,7 @@ How it works:
    - which channel the clips and the full episodes go to
    - the Kick, Twitch or YouTube channels, X accounts, or folders of TV episodes on the server, to watch
 3. New streams are picked up from watched channels once they've ended, and videos posted on X as soon as they're seen. You can also paste any link in the app.
-4. The worker downloads the video. Then it transcribes the video, has the AI (Claude Code on your Claude plan, Codex on your ChatGPT plan, or a model on OpenRouter: see [The AI](#the-ai)) pick clips and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. While the AI works, it makes a small preview copy for the phone (`CLIPPER_PREVIEW_WITH_TRANSCRIPTION=true` starts that during transcription instead, which is sooner but heavier on the server). Titles follow the show's patterns, e.g. `NIGHT OWLS Oct 23, 2026 - <title the AI wrote>`. A full episode gets the AI's episode title and summary, plus YouTube chapter timestamps in its description.
+4. The worker downloads the video. Then it transcribes the video, has the AI (Claude Code on your Claude plan, Codex on your ChatGPT plan, a model on OpenRouter, or one through a CLI proxy: see [The AI](#the-ai)) pick clips and highlights the way the show's guidance asks, and snaps the cuts to sentence boundaries. While the AI works, it makes a small preview copy for the phone (`CLIPPER_PREVIEW_WITH_TRANSCRIPTION=true` starts that during transcription instead, which is sooner but heavier on the server). Titles follow the show's patterns, e.g. `NIGHT OWLS Oct 23, 2026 - <title the AI wrote>`. A full episode gets the AI's episode title and summary, plus YouTube chapter timestamps in its description.
 5. The show's best few clips and Shorts per stream, by the AI's score (5 of each unless you change it), land in your **Inbox**, along with the full episode. The AI's other picks wait on the video's page as extras. Swipe right to approve and left to reject, or tap one to trim it on the preview, fix the title, pick its channel, and choose whether it also becomes a vertical Short. A show can also let a kind of video skip review: rendered and left ready to upload, or rendered and uploaded.
 6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them. Once the worker uploads a clip, its file is deleted; once every clip of a stream is done, so is the stream's video.
 
@@ -48,7 +48,7 @@ A pre-show from X is usually posted whole, and the AI writes its short title fro
    ```
    To make clips from TV episodes on the server, also set `CLIPPER_HOST_MEDIA_DIR` to its media folder. It's mounted
    read-only at `/media`, and its folders can be added to the [Library](#the-library).
-4. **Sign in to the AI, once.** It starts out as Claude Code on your Claude plan; you can switch to Codex on your ChatGPT plan or a model on OpenRouter in the app (see [The AI](#the-ai)). The sign-in is kept in a Docker volume:
+4. **Sign in to the AI, once.** It starts out as Claude Code on your Claude plan; you can switch to Codex on your ChatGPT plan, a model on OpenRouter or one through a CLI proxy in the app (see [The AI](#the-ai)). The sign-in is kept in a Docker volume:
    ```bash
    docker compose run --rm --entrypoint claude worker
    # open the link it shows, sign in with your Claude account, paste the code back, then type /exit
@@ -346,11 +346,33 @@ The AI picks each stream's clips and highlights, and writes their titles, a whol
 | **Claude Code** (to start with) | your Claude plan | `docker compose run --rm --no-deps --entrypoint claude worker`, then open the link, sign in, paste the code back and type `/exit` |
 | **Codex** | your ChatGPT plan | `docker compose run --rm --no-deps --entrypoint codex worker login --device-auth`, then open the link on any device and enter the code |
 | **OpenRouter** | your credit on openrouter.ai, per use | its API key as `CLIPPER_OPENROUTER_API_KEY` in `.env`, the same one thumbnails are drawn with |
+| **CLI Proxy** | the plans [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) is signed in to | see [Through the CLI proxy](#through-the-cli-proxy) |
 
-- **Models:** each keeps its own, set with it in the app: for Claude Code `opus`, `sonnet` or a full model name (`CLIPPER_LLM_MODEL`); for Codex its own default unless you name one (`CLIPPER_CODEX_MODEL`); for OpenRouter any model whose page lists structured outputs, `anthropic/claude-opus-5.5` unless you change it (`CLIPPER_OPENROUTER_MODEL`). `CLIPPER_LLM_PROVIDER` (`claude`, `codex` or `openrouter`) is the one used until you choose in the app.
+- **Models:** each keeps its own, set with it in the app: for Claude Code `opus`, `sonnet` or a full model name (`CLIPPER_LLM_MODEL`); for Codex its own default unless you name one (`CLIPPER_CODEX_MODEL`); for OpenRouter any model whose page lists structured outputs, `anthropic/claude-opus-5.5` unless you change it (`CLIPPER_OPENROUTER_MODEL`); for the CLI proxy any model it lists, `claude-opus-5-5` unless you change it (`CLIPPER_CLIPROXY_MODEL`). `CLIPPER_LLM_PROVIDER` (`claude`, `codex`, `openrouter` or `cliproxy`) is the one used until you choose in the app.
 - **How much it uses:** picking clips sends the whole transcript in one request: about 100–130k tokens for an 8-hour stream. On a plan, that counts toward its usage limits; on Claude's Pro plan, a long VOD can use a large part of a 5-hour window. On OpenRouter it's paid by the token: about $0.75 for an 8-hour stream with Claude Opus 5.5, less with smaller models. If a plan's limit is reached or OpenRouter's credit runs out, the video waits, saying why on the Videos screen, and carries on by itself afterwards.
-- **What it's sent:** the transcript, the stream's details and the show's notes go to the one you choose: Anthropic, OpenAI, or OpenRouter and the model's provider.
-- **Your account:** the app only ever runs the official `claude` and `codex` programs with your own sign-in. Don't let other people use it through your account; if that ever changes, switch to OpenRouter.
+- **What it's sent:** the transcript, the stream's details and the show's notes go to the one you choose: Anthropic, OpenAI, or OpenRouter and the model's provider. Through the CLI proxy they go to the proxy, and from it to the plan behind the model.
+- **Your account:** Claude Code and Codex are the official `claude` and `codex` programs with your own sign-in. The CLI proxy isn't: it's a third-party program that uses your plans' sign-ins outside them, which Anthropic's and OpenAI's terms may not allow, so read them first and know your account is what's at stake. Either way, don't let other people use it through your account; if that ever changes, switch to OpenRouter.
+
+#### Through the CLI proxy
+
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) signs in to Claude and ChatGPT plans (more than one account each, if you like) and answers on an OpenAI-compatible API. The app asks it like OpenRouter, so any model it lists can do any task, e.g. Claude picking clips and a GPT model doing breakdowns, all from one place. It runs as the optional `cliproxy` service:
+
+1. Set it up, and give it a long key of your own:
+   ```bash
+   cp cliproxy/config.example.yaml cliproxy/config.yaml    # change the key under api-keys
+   # in .env: COMPOSE_PROFILES=cliproxy and CLIPPER_CLIPROXY_API_KEY=<that key>
+   docker compose up -d
+   ```
+2. Sign it in, once per account. Its sign-in sends your browser back to the server's `localhost`, so open the link through an SSH tunnel from your computer: `ssh -L 54545:127.0.0.1:54545 -L 1455:127.0.0.1:1455 <server>`, then on the server
+   ```bash
+   docker compose exec cliproxy /CLIProxyAPI/CLIProxyAPI -no-browser --claude-login   # or --codex-login for ChatGPT
+   ```
+   and open the link it shows in your computer's browser. The sign-ins are kept in the `cliproxy-auth` volume.
+3. In **Settings**, under **The AI**, choose **CLI Proxy** with one of its models, then run `docker compose run --rm --no-deps worker llm-check`. The app says there if the proxy can't be reached, turns down the key, isn't signed in yet or has no such model.
+
+- **Elsewhere:** a CLIProxyAPI running somewhere else works too: set `CLIPPER_CLIPROXY_URL` to its `/v1` address (e.g. `http://192.168.1.20:8317/v1`), and leave `COMPOSE_PROFILES` empty.
+- **How hard it thinks:** the effort goes on the end of the model's name, the proxy's way (`claude-opus-5-5(high)`). Put a level there yourself (`gpt-6.1-sol(low)`) to use that one instead. A model that can't think that hard is asked again at its own level.
+- **Usage limits:** when every account behind a model is at its limit, the video waits, as with the plans, and carries on afterwards. `clipper usage` and `breakdown --reserve` only read Claude Code's own plan, not the proxy's.
 
 ## Local development (Windows)
 
