@@ -562,6 +562,15 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
   const { draft, setDraft, clip, destinations } = ed;
   return (
     <div className="space-y-5 p-4">
+      {/* First, since it's what to judge the clip against. */}
+      {clip?.why && (
+        <div className="rounded-xl bg-panel p-3.5 text-sm leading-snug">
+          <p className="mb-1 flex items-center gap-1.5 text-[13px] font-medium text-graphite">
+            <SparkIcon className="size-3.5" /> Why the AI picked it
+          </p>
+          {clip.why}
+        </div>
+      )}
       {ed.source.mode === "new" && (
         <Field label="What it is">
           <div className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1">
@@ -647,15 +656,6 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
         />
       </Field>
 
-      {clip?.why && (
-        <p className="flex gap-2 rounded-xl bg-violet-500/10 p-3 text-sm text-violet-200 ring-1 ring-violet-500/20">
-          <SparkIcon className="mt-0.5 size-4 shrink-0" />
-          <span>
-            <span className="font-semibold">Why the AI picked it: </span>
-            {clip.why}
-          </span>
-        </p>
-      )}
       {clip?.manual && <p className="text-xs text-zinc-500">You made this clip, so it has no score from the AI.</p>}
       {clip?.status === "extra" && (
         <p className="rounded-xl bg-zinc-900 p-3 text-sm text-zinc-400 ring-1 ring-white/10">

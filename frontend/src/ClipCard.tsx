@@ -1,6 +1,6 @@
-import { useRef, useState, type PointerEvent, type ReactNode } from "react";
+import { forwardRef, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import { media, type Clip } from "./api";
-import { CheckIcon, PhoneIcon, XIcon } from "./icons";
+import { CheckIcon, PhoneIcon, ScissorsIcon, XIcon } from "./icons";
 import { keptLength } from "./editor/edit";
 import { clock, cn, go, length } from "./lib";
 import { ClipStatusChip, KIND_LABEL } from "./ui";
@@ -30,12 +30,7 @@ export function ClipCard(props: {
       <div className="flex h-full flex-col overflow-hidden rounded-2xl bg-zinc-900 ring-1 ring-white/5 transition hover:ring-white/15">
         <button onClick={open} className="group flex flex-1 flex-col text-left active:bg-white/[0.03]">
           <div className="relative aspect-video w-full overflow-hidden bg-zinc-800">
-            <img
-              src={media.thumb(clip)}
-              alt=""
-              loading="lazy"
-              className="size-full object-cover transition duration-300 group-hover:scale-[1.03]"
-            />
+            <Thumb clip={clip} className="transition duration-300 group-hover:scale-[1.03]" />
             <span className="absolute bottom-2 right-2 rounded-md bg-black/75 px-1.5 py-0.5 text-xs font-semibold tabular-nums">
               {duration}
             </span>
@@ -80,7 +75,7 @@ export function ClipCard(props: {
       >
         <button onClick={open} className="flex w-full gap-3 p-3 text-left hover:bg-white/[0.02] active:bg-white/[0.03]">
           <div className="relative aspect-video w-36 shrink-0 overflow-hidden rounded-lg bg-zinc-800">
-            <img src={media.thumb(clip)} alt="" loading="lazy" className="size-full object-cover" />
+            <Thumb clip={clip} />
             <span className="absolute bottom-1 right-1 rounded bg-black/75 px-1.5 py-0.5 text-[11px] font-semibold tabular-nums">
               {duration}
             </span>
@@ -120,6 +115,142 @@ export function ClipCard(props: {
     </div>
   );
 }
+
+/** A still from the clip, or a plain frame while there's none (it's made from the preview, which may not be ready). */
+function Thumb({ clip, className }: { clip: Clip; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  if (failed) return <div className="size-full bg-[linear-gradient(160deg,var(--color-panel-2),var(--color-bay))]" />;
+  return <img src={media.thumb(clip)} alt="" loading="lazy" onError={() => setFailed(true)} className={cn("size-full object-cover", className)} />;
+}
+
+/** The AI's score (0 to 1, the scale a show's automatic uploads go by), as a number and ten ticks. */
+export function Score({ clip }: { clip: Clip }) {
+  if (clip.manual) return <span className="text-[13px] text-graphite">Made by you</span>;
+  if (clip.kind === "whole") return null;
+  const filled = Math.round(clip.score * 10);
+  return (
+    <span className="inline-flex items-center gap-2 text-[13px] text-graphite" title={`The AI scored it ${clip.score.toFixed(2)}`}>
+      AI score <span className="font-mono text-chalk">{clip.score.toFixed(2)}</span>
+      <span className="flex gap-0.5" aria-hidden="true">
+        {Array.from({ length: 10 }, (_, i) => (
+          <i key={i} className={cn("h-3 w-1 rounded-[1px]", i < filled ? "bg-chalk" : "bg-panel-2")} />
+        ))}
+      </span>
+    </span>
+  );
+}
+
+/** The slate: where a clip goes in and out of its stream, how long it runs, and a bar showing where it falls. */
+export function Slate({ clip }: { clip: Clip }) {
+  const total = clip.vod_duration || clip.end;
+  const left = Math.min(100, (clip.start / total) * 100);
+  const width = Math.max(0.6, ((clip.end - clip.start) / total) * 100);
+  return (
+    <div>
+      <div className="flex items-baseline gap-2 text-[13px]">
+        <span className="font-mono">{clock(clip.start)}</span>
+        <span className="text-graphite">to</span>
+        <span className="font-mono">{clock(clip.end)}</span>
+        <span className="ml-auto font-mono text-graphite">{length(clip.cuts?.length ? keptLength(clip) : clip.end - clip.start)}</span>
+      </div>
+      <div className="relative mt-2 h-1 rounded-full bg-panel-2" title="Where it is in the stream">
+        <i className="absolute -top-0.5 h-2 rounded-sm bg-mark" style={{ left: `${left}%`, width: `${width}%` }} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A clip waiting in the inbox, with what's needed to decide on it there: the AI's reason and score, and the slate.
+ * Swipe it, or use its buttons, to approve or reject it; tap it to trim and edit. On a desktop it's a row, with the
+ * buttons down its right side, and `selected` outlines the one the keyboard is on.
+ */
+export const ReviewCard = forwardRef<HTMLElement, { clip: Clip; selected?: boolean; onApprove: () => void; onReject: () => void }>(
+  function ReviewCard({ clip, selected, onApprove, onReject }, ref) {
+    const swipe = useSwipe(onApprove, onReject);
+    const open = () => go(`clip/${clip.id}`);
+    const duration = length(clip.cuts?.length ? keptLength(clip) : clip.end - clip.start);
+    return (
+      <article ref={ref} className="relative overflow-hidden lg:rounded-xl" aria-current={selected || undefined}>
+        {swipe.dx !== 0 && (
+          <div
+            className={cn(
+              "absolute inset-0 flex items-center px-6 text-sm font-semibold",
+              swipe.dx > 0 ? "justify-start bg-cue/25 text-emerald-300" : "justify-end bg-tally/25 text-red-300",
+            )}
+          >
+            <span className="flex items-center gap-2" style={{ opacity: Math.min(1, Math.abs(swipe.dx) / SWIPE_DISTANCE) }}>
+              {swipe.dx > 0 ? <CheckIcon /> : <XIcon />}
+              {swipe.dx > 0 ? "Approve" : "Reject"}
+            </span>
+          </div>
+        )}
+        <div
+          {...swipe.handlers}
+          className={cn(
+            "relative touch-pan-y bg-bay py-4 lg:grid lg:grid-cols-[18rem_minmax(0,1fr)_10rem] lg:gap-6 lg:rounded-xl lg:p-4",
+            selected && "lg:bg-panel lg:shadow-[inset_0_0_0_2px_var(--color-mark)]",
+          )}
+          style={{ transform: `translateX(${swipe.dx}px)`, transition: swipe.dx === 0 ? "transform 0.2s" : "none" }}
+        >
+          <button onClick={open} className="relative block aspect-video w-full overflow-hidden rounded-lg bg-panel" aria-label={`Edit ${clip.title}`}>
+            <Thumb clip={clip} />
+            <span className="absolute bottom-2 left-2 rounded-md bg-ink/85 px-1.5 py-0.5 font-mono text-xs">{duration}</span>
+          </button>
+          <div className="min-w-0">
+            <button onClick={open} className="block w-full text-left">
+              <div className="mt-3 flex flex-wrap items-center gap-2 lg:mt-0.5">
+                <span
+                  className={cn(
+                    "rounded-full px-2.5 py-0.5 text-[13px] font-semibold",
+                    clip.kind === "highlight" ? "bg-mark/15 text-mark" : "bg-panel-2 text-chalk",
+                  )}
+                >
+                  {KIND_LABEL[clip.kind]}
+                </span>
+                {clip.make_short && (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-panel-2 px-2.5 py-0.5 text-[13px] font-semibold">
+                    <PhoneIcon className="size-3.5" /> Short
+                  </span>
+                )}
+                <span className="ml-auto">
+                  <Score clip={clip} />
+                </span>
+              </div>
+              <h3 className="mt-2 text-lg font-semibold leading-snug font-stretch-semi-condensed">{clip.title}</h3>
+              {clip.why && <p className="mt-1.5 line-clamp-3 max-w-[65ch] text-[15px] leading-snug text-graphite">{clip.why}</p>}
+            </button>
+            {clip.kind !== "whole" && (
+              <div className="mt-3 max-w-xl">
+                <Slate clip={clip} />
+              </div>
+            )}
+          </div>
+          <div className="mt-4 grid grid-cols-2 gap-2 lg:mt-0 lg:grid-cols-1 lg:content-start">
+            <button
+              onClick={onApprove}
+              className="order-2 flex items-center justify-center gap-2 rounded-xl bg-cue py-3 font-semibold text-ink active:bg-emerald-700 lg:order-1 lg:py-2.5 lg:text-sm"
+            >
+              <CheckIcon className="size-4" /> Approve
+            </button>
+            <button
+              onClick={open}
+              className="hidden items-center justify-center gap-2 rounded-xl bg-panel-2 py-2.5 text-sm font-semibold hover:bg-zinc-700 lg:order-2 lg:flex"
+            >
+              <ScissorsIcon className="size-4" /> Edit
+            </button>
+            <button
+              onClick={onReject}
+              className="order-1 flex items-center justify-center gap-2 rounded-xl bg-tally/15 py-3 font-semibold text-red-300 active:bg-tally/25 lg:order-3 lg:py-2.5 lg:text-sm"
+            >
+              <XIcon className="size-4" /> Reject
+            </button>
+          </div>
+        </div>
+      </article>
+    );
+  },
+);
 
 /** The line above a clip's title: what kind of clip, whether it makes a Short, and its score or who made it. */
 function ClipMeta({ clip }: { clip: Clip }) {

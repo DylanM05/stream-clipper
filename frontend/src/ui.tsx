@@ -263,18 +263,18 @@ export function Fold(props: {
     }
   };
   return (
-    <section className="pt-3">
-      <div className="flex items-center gap-2">
+    <section className="pt-5">
+      <div className="flex items-center gap-2 border-b border-line pb-2">
         <button
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-white/[0.03]"
+          className="-ml-1 flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left hover:bg-white/[0.03]"
         >
-          <ChevronIcon className={cn("size-4 shrink-0 text-zinc-500 transition-transform", !open && "-rotate-90")} />
-          <span className="min-w-0 truncate text-xs font-medium text-zinc-400">{props.title}</span>
+          <ChevronIcon className={cn("size-4 shrink-0 text-graphite transition-transform", !open && "-rotate-90")} />
+          <span className="min-w-0 truncate text-xl font-semibold font-stretch-condensed">{props.title}</span>
           {props.count !== undefined && (
-            <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums", props.tone ?? "bg-zinc-800 text-zinc-300")}>
+            <span className={cn("shrink-0 rounded-md px-1.5 font-mono text-xs leading-5", props.tone ?? "text-graphite")}>
               {props.count}
             </span>
           )}
