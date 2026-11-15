@@ -178,6 +178,9 @@ class Show(SQLModel, table=True):
     # Offered chapters and highlights Claude scores at least this (0-1) are uploaded without review, whatever
     # auto_chapters and auto_shorts say; 0 is off.
     auto_upload_score: float = 0
+    # What you approve yourself (from the inbox or the extras, or a clip you made) is uploaded once it's rendered, as
+    # if its kind were set to upload; off, it waits in Ready to upload for you to tap Upload.
+    upload_approved: bool = False
     auto_visibility: str = "public"
     # The show's chapters and highlights go up at least this many hours after the last clip upload to the same
     # channel (schedule.py); 0 uploads each as soon as it's ready. Full episodes never wait.
@@ -339,6 +342,8 @@ class ClipRecord(SQLModel, table=True):
     # seconds, inside start-end; "" for none. The video jumps over them.
     cuts: str = ""
     manual: bool = False  # made in the app rather than picked by the AI, so its score means nothing
+    # Approved by you in the app, rather than taken without review: what Show.upload_approved uploads.
+    approved_in_review: bool = False
     # The AI's pick as it was first offered, before any change in the app: where it started and ended, and the part of
     # the title it wrote (without the show's pattern). What the owner changed teaches the AI (learning.py). Unset for
     # clips made in the app, full episodes, and older clips whose pick couldn't be found.

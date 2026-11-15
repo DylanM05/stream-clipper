@@ -271,6 +271,7 @@ export interface Show {
   auto_chapters: Auto;
   auto_shorts: Auto;
   auto_upload_score: number; // offered clips and Shorts the AI scores at least this upload without review; 0 is off
+  upload_approved: boolean; // what you approve uploads once it's rendered, instead of waiting in Ready to upload
   auto_visibility: Visibility; // for automatic uploads
   upload_gap_hours: number; // clips go up at least this long after the channel's last one; 0 = right away
   chapter_thumbnails: boolean; // clips (kind "chapter") get a thumbnail once rendered

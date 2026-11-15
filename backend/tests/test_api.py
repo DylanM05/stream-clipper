@@ -60,6 +60,8 @@ def test_review_flow(client, settings):
     assert client.get("/api/summary").json()["to_review"] == 1
 
     assert client.post(f"/api/clips/{clip_id}/approve").json()["status"] == "approved"
+    with Session(get_engine(settings)) as s:
+        assert s.get(ClipRecord, clip_id).approved_in_review  # what a show that uploads what you approve goes by
     assert client.get("/api/clips").json() == []
     assert [c["id"] for c in client.get("/api/clips", params={"status": ["approved", "rendered"]}).json()] == [clip_id]
 

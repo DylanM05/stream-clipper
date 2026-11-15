@@ -211,6 +211,7 @@ class ShowIn(BaseModel):
     auto_chapters: Auto = "review"
     auto_shorts: Auto = "review"
     auto_upload_score: float = Field(default=0, ge=0, le=1)
+    upload_approved: bool = False
     auto_visibility: Visibility = "public"
     upload_gap_hours: float = Field(default=0, ge=0, le=168)
     chapter_thumbnails: bool = False
@@ -255,6 +256,7 @@ class ShowPatch(BaseModel):
     auto_chapters: Auto | None = None
     auto_shorts: Auto | None = None
     auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
+    upload_approved: bool | None = None
     auto_visibility: Visibility | None = None
     upload_gap_hours: float | None = Field(default=None, ge=0, le=168)  # 0 uploads clips as soon as they're ready
     chapter_thumbnails: bool | None = None
@@ -522,6 +524,7 @@ class ShowOut(BaseModel):
     auto_chapters: str
     auto_shorts: str
     auto_upload_score: float
+    upload_approved: bool
     auto_visibility: str
     upload_gap_hours: float
     chapter_thumbnails: bool
@@ -970,6 +973,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def set_status(s: Session, clip: ClipRecord, vod: Vod, status: str) -> ClipOut:
         clip.status = status
         clip.reviewed_at = clip.updated_at = utcnow()
+        clip.approved_in_review = status == "approved"
         if status == "approved":
             clip.error = ""
         s.add(clip)
@@ -2220,6 +2224,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             title=title, description=body.description.strip(), vertical_ok=body.kind == "highlight", make_short=make_short,
             destination_id=body.destination_id, playlist_id=body.playlist_id if body.destination_id else "",
             manual=True, status="approved" if body.approve else "proposed", reviewed_at=utcnow() if body.approve else None,
+            approved_in_review=body.approve,
         )
         s.add(clip)
         s.commit()

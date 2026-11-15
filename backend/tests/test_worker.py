@@ -665,6 +665,31 @@ def test_a_highlight_uploaded_without_review_goes_up_as_its_short(settings, fake
         ]
 
 
+def test_a_show_can_upload_what_you_approve_once_its_rendered(settings, fake_pipeline, fake_render):
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips")
+        s.add(dest)
+        s.commit()
+        dest_id = dest.id
+    add_show(settings, name="Kino", match="twitch.tv/videos", auto_chapters="render", upload_approved=True,
+             auto_visibility="unlisted", clip_destination_id=dest_id)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    with Session(get_engine(settings)) as s:
+        for clip in s.exec(select(ClipRecord).where(ClipRecord.kind == "highlight")):
+            if clip.title == "Vertical":  # approved in the app; "Landscape only" stays in the inbox
+                clip.status, clip.approved_in_review = "approved", True
+                s.add(clip)
+        s.commit()
+    while w.render_next_clip():
+        pass
+    with Session(get_engine(settings)) as s:
+        jobs = s.exec(select(UploadJob)).all()
+        # The chapter was rendered without review, so it waits for you to upload it.
+        assert [(s.get(ClipRecord, j.clip_id).title, j.which, j.visibility) for j in jobs] == [("Vertical", "short", "unlisted")]
+        assert {c.title: c.status for c in s.exec(select(ClipRecord))}["Landscape only"] == "proposed"
+
+
 def test_offered_clips_claude_scores_high_enough_upload_without_review(settings, fake_pipeline, fake_render, monkeypatch):
     monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: scored())
     with Session(get_engine(settings)) as s:
