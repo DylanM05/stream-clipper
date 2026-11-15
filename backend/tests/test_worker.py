@@ -125,6 +125,17 @@ def test_both_mode_gives_a_full_episode_with_chapters_plus_clips_each_headed_for
     assert fake_pipeline["preview_room"] is None  # Claude's episode title came with the segmentation
 
 
+def test_what_the_owner_noticed_goes_to_the_ai_that_picks_the_clips(settings, fake_pipeline):
+    # The show's track record (learning.py), the same text the Stats screen shows, goes with the stream to the AI.
+    add_show(settings, name="Kino Casino", match="twitch.tv/videos",
+             learning_notes="Openers that start right on the joke hold viewers best.")
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+
+    record = fake_pipeline["segment_kwargs"]["track_record"]
+    assert "# What the channel owner has noticed about what works" in record
+    assert "Openers that start right on the joke hold viewers best." in record
+
+
 def test_whole_videos_get_claudes_short_title_in_the_show_pattern(settings, fake_pipeline):
     add_show(settings, name="Pre-show", match="x.com/a", mode="whole",
              title_template="♥️♠️♦️♣️KINO CASINO PRE SHOW♣️♦️♠️♥️ {date} - {title}")
