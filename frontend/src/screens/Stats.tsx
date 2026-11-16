@@ -2,7 +2,7 @@ import { useState } from "react";
 import { api, type Clip, type Show, type StatsUpload } from "../api";
 import { LinkIcon } from "../icons";
 import { ago, cn, compact, loadSetting, median, pastDay, saveSetting, total, useDesktop, usePoll } from "../lib";
-import { ErrorNote, KIND_LABEL, Screen, StatTile } from "../ui";
+import { ErrorNote, KIND_LABEL, Screen } from "../ui";
 
 type Kind = "all" | Clip["kind"];
 const KINDS: Record<Kind, string> = { all: "All", chapter: "Clips", highlight: "Highlights", whole: "Full episodes" };
@@ -48,7 +48,7 @@ export function Stats() {
         {stats?.setup_needed && <p className="mb-4 rounded-xl bg-amber-500/10 p-3 text-sm text-amber-200">{stats.setup_needed}</p>}
         <div className="mb-4 flex flex-wrap items-center gap-3">
           <ShowPicker value={showId} shows={shows} onChange={pickShow} className="w-72" />
-          <KindTabs value={kind} onChange={setKind} className="flex gap-1 rounded-xl bg-zinc-800 p-1" />
+          <KindTabs value={kind} onChange={setKind} className="flex gap-1 rounded-xl bg-panel p-1" />
         </div>
         {stats && <Totals uploads={uploads} />}
         {stats && (
@@ -75,7 +75,7 @@ export function Stats() {
       <WhatTheAiLearns showId={showId} className="mt-6" />
 
       <div className="mb-3 mt-6 flex items-center gap-2">
-        <KindTabs value={kind} onChange={setKind} className="flex flex-1 gap-1 overflow-x-auto rounded-xl bg-zinc-800 p-1" />
+        <KindTabs value={kind} onChange={setKind} className="flex flex-1 gap-1 overflow-x-auto rounded-xl bg-panel p-1" />
         <button
           onClick={() => setOrder(order === "views" ? "newest" : "views")}
           className="shrink-0 rounded-xl bg-zinc-800 px-3 py-2 text-xs font-semibold text-zinc-300 active:bg-zinc-700"
@@ -165,22 +165,36 @@ function KindTabs({ value, onChange, className }: { value: Kind; onChange: (k: K
 const counted = (n: number | null) => (n === null ? "–" : compact(Math.round(n)));
 const uploadKind = (u: StatsUpload) => (u.which === "short" ? "Short" : KIND_LABEL[u.kind]);
 
-/** The desktop's headline numbers, for the show and kind picked. */
+/** The desktop's headline numbers, for the show and kind picked, in one ruled row. */
 function Totals({ uploads }: { uploads: StatsUpload[] }) {
   const shorts = uploads.filter((u) => u.which === "short").length;
+  const figures: [string, string | number, string][] = [
+    ["Uploads", uploads.length, shorts ? `${shorts} of them Shorts` : "On YouTube, by the app"],
+    ["Views", counted(total(uploads.map((u) => u.views))), "All of them, so far"],
+    ["Median views", counted(median(uploads.map((u) => u.views))), "Per upload, so far"],
+    ["Median on day 1", counted(median(uploads.map((u) => u.views_day1))), "Views in the first 24 hours"],
+    ["Median in week 1", counted(median(uploads.map((u) => u.views_week1))), "Views in the first 7 days"],
+    ["Likes", counted(total(uploads.map((u) => u.likes))), `${counted(total(uploads.map((u) => u.comments)))} comments`],
+  ];
   return (
-    <div className="grid grid-cols-3 gap-3 xl:grid-cols-6">
-      <StatTile label="Uploads" value={uploads.length} note={shorts ? `${shorts} of them Shorts` : "On YouTube, by the app"} />
-      <StatTile label="Views" value={counted(total(uploads.map((u) => u.views)))} note="All of them, so far" />
-      <StatTile label="Median views" value={counted(median(uploads.map((u) => u.views)))} note="Per upload, so far" />
-      <StatTile label="Median on day 1" value={counted(median(uploads.map((u) => u.views_day1)))} note="Views in the first 24 hours" />
-      <StatTile label="Median in week 1" value={counted(median(uploads.map((u) => u.views_week1)))} note="Views in the first 7 days" />
-      <StatTile
-        label="Likes"
-        value={counted(total(uploads.map((u) => u.likes)))}
-        note={`${counted(total(uploads.map((u) => u.comments)))} comments`}
-      />
-    </div>
+    <dl className="grid grid-cols-3 border-y border-line xl:grid-cols-6">
+      {figures.map(([label, value, note], i) => (
+        // Three to a row, or all six in one on a wide screen: a rule between each, and above the second row.
+        <div
+          key={label}
+          className={cn(
+            "min-w-0 border-line px-4 py-3.5",
+            i % 3 === 0 ? "pl-0" : "border-l",
+            i === 3 && "xl:border-l xl:pl-4",
+            i >= 3 && "border-t xl:border-t-0",
+          )}
+        >
+          <dt className="truncate text-[13px] text-graphite">{label}</dt>
+          <dd className="mt-1 font-mono text-2xl">{value}</dd>
+          <dd className="mt-0.5 truncate text-xs text-graphite">{note}</dd>
+        </div>
+      ))}
+    </dl>
   );
 }
 
@@ -195,15 +209,15 @@ const KIND_GROUPS: { label: string; match: (u: StatsUpload) => boolean }[] = [
 function KindBreakdown({ uploads }: { uploads: StatsUpload[] }) {
   const groups = KIND_GROUPS.map((g) => ({ label: g.label, uploads: uploads.filter(g.match) })).filter((g) => g.uploads.length);
   return (
-    <section className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <h2 className="text-sm font-bold">Which kind does best?</h2>
-      <p className="mt-1 text-xs text-zinc-500">Median views of each kind of upload, and all its views together.</p>
+    <section>
+      <h2 className="border-b border-line pb-2 text-xl font-semibold font-stretch-condensed">Which kind does best?</h2>
+      <p className="mt-2 text-[13px] text-graphite">Median views of each kind of upload, and all its views together.</p>
       {groups.length === 0 ? (
         <p className="mt-3 text-sm text-zinc-500">No uploads yet.</p>
       ) : (
-        <table className="mt-3 w-full text-sm tabular-nums">
+        <table className="mt-3 w-full font-mono text-sm">
           <thead>
-            <tr className="text-left text-xs text-zinc-500">
+            <tr className="text-left font-sans text-xs text-graphite">
               <th className="pb-1.5 font-semibold">Kind</th>
               <th className="pb-1.5 text-right font-semibold">Day 1</th>
               <th className="pb-1.5 text-right font-semibold">Week 1</th>
@@ -213,10 +227,10 @@ function KindBreakdown({ uploads }: { uploads: StatsUpload[] }) {
           </thead>
           <tbody>
             {groups.map((g) => (
-              <tr key={g.label} className="border-t border-white/5">
-                <td className="py-2">
+              <tr key={g.label} className="border-t border-line">
+                <td className="py-2 font-sans">
                   {g.label}
-                  <span className="ml-1.5 text-xs text-zinc-500">
+                  <span className="ml-1.5 font-sans text-xs text-graphite">
                     {g.uploads.length} video{g.uploads.length === 1 ? "" : "s"}
                   </span>
                 </td>
@@ -227,7 +241,7 @@ function KindBreakdown({ uploads }: { uploads: StatsUpload[] }) {
                   total(g.uploads.map((u) => u.views)),
                 ].map((v, i) => (
                   <td key={i} className="py-2 text-right">
-                    {v === null ? <span className="text-zinc-600">–</span> : compact(Math.round(v))}
+                    {v === null ? <span className="text-dim">–</span> : compact(Math.round(v))}
                   </td>
                 ))}
               </tr>
@@ -260,7 +274,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
   );
   const number = (v: number | null, strong = false) => (
     <td className={cn("whitespace-nowrap px-3 py-2.5 text-right tabular-nums", strong ? "font-bold" : "text-zinc-300")}>
-      {v === null ? <span className="text-zinc-600">–</span> : compact(v)}
+      {v === null ? <span className="text-dim">–</span> : compact(v)}
     </td>
   );
 
@@ -268,7 +282,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
     <div className="overflow-x-auto rounded-2xl bg-zinc-900 ring-1 ring-white/5">
       <table className="w-full text-sm">
         <thead>
-          <tr className="text-left text-xs text-zinc-500">
+          <tr className="text-left font-sans text-xs text-graphite">
             <th className="px-4 py-3 font-semibold">Upload</th>
             <th className="px-3 py-3 font-semibold">Kind</th>
             {sortBy("score", "Score")}
@@ -291,7 +305,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-zinc-400">{uploadKind(u)}</td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-zinc-300">
-                {u.kind === "whole" || u.manual ? <span className="text-zinc-600">–</span> : u.score.toFixed(2)}
+                {u.kind === "whole" || u.manual ? <span className="text-dim">–</span> : u.score.toFixed(2)}
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right text-zinc-400" title={u.finished_at ? ago(u.finished_at) : undefined}>
                 {u.finished_at ? pastDay(u.finished_at, false) : "–"}
@@ -313,15 +327,15 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
 function ScoreBands({ bands }: { bands: { label: string; count: number; day1: number | null; week1: number | null; views: number | null }[] }) {
   const counted = bands.filter((b) => b.count > 0);
   return (
-    <section className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <h2 className="text-sm font-bold">Does the AI's score predict views?</h2>
-      <p className="mt-1 text-xs text-zinc-500">Median views of clips and highlights, by the score the AI gave them.</p>
+    <section>
+      <h2 className="border-b border-line pb-2 text-xl font-semibold font-stretch-condensed">Does the AI's score predict views?</h2>
+      <p className="mt-2 text-[13px] text-graphite">Median views of clips and highlights, by the score the AI gave them.</p>
       {counted.length === 0 ? (
         <p className="mt-3 text-sm text-zinc-500">Not enough uploads with views yet.</p>
       ) : (
-        <table className="mt-3 w-full text-sm tabular-nums">
+        <table className="mt-3 w-full font-mono text-sm">
           <thead>
-            <tr className="text-left text-xs text-zinc-500">
+            <tr className="text-left font-sans text-xs text-graphite">
               <th className="pb-1.5 font-semibold">Score</th>
               <th className="pb-1.5 text-right font-semibold">Day 1</th>
               <th className="pb-1.5 text-right font-semibold">Week 1</th>
@@ -330,16 +344,16 @@ function ScoreBands({ bands }: { bands: { label: string; count: number; day1: nu
           </thead>
           <tbody>
             {bands.map((b) => (
-              <tr key={b.label} className="border-t border-white/5">
+              <tr key={b.label} className="border-t border-line">
                 <td className="py-2">
                   {b.label}
-                  <span className="ml-1.5 text-xs text-zinc-500">
+                  <span className="ml-1.5 font-sans text-xs text-graphite">
                     {b.count} video{b.count === 1 ? "" : "s"}
                   </span>
                 </td>
                 {[b.day1, b.week1, b.views].map((v, i) => (
                   <td key={i} className="py-2 text-right">
-                    {v === null ? <span className="text-zinc-600">–</span> : compact(v)}
+                    {v === null ? <span className="text-dim">–</span> : compact(v)}
                   </td>
                 ))}
               </tr>

@@ -14,7 +14,7 @@ import {
   type VideoType,
   type Visibility,
 } from "../api";
-import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
+import { ChevronIcon, CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, sitesOf, titleDate, usePoll, type Sites } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, Segmented, useToast, VIDEO_TYPE_LABEL } from "../ui";
@@ -57,15 +57,16 @@ export function Shows() {
       {error && <ErrorNote>{error}</ErrorNote>}
       <button
         onClick={() => go("shows/youtube")}
-        className="mb-4 flex w-full items-center gap-3 rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
+        className="mb-6 flex w-full items-center gap-3 rounded-2xl bg-panel p-4 text-left hover:bg-zinc-800 active:bg-zinc-800 lg:max-w-5xl"
       >
-        <UploadIcon className="size-5 text-zinc-400" />
-        <span className="flex-1">
-          <span className="block text-sm font-semibold">YouTube channels you upload to</span>
-          <span className="block text-xs text-zinc-500">
+        <UploadIcon className="size-5 text-graphite" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold">YouTube channels you upload to</span>
+          <span className="block truncate text-[13px] text-graphite">
             {destinations?.length ? destinations.map((d) => d.name).join(", ") : "None yet: add your clips channels here"}
           </span>
         </span>
+        <ChevronIcon className="size-4 -rotate-90 text-dim" />
       </button>
 
       {shows?.length === 0 && (
@@ -80,36 +81,48 @@ export function Shows() {
           </p>
         </div>
       )}
-      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
+      <ul className="divide-y divide-line border-t border-line lg:max-w-5xl">
         {shows?.map((show) => {
           const pattern = hasClips(show.mode) ? show.title_template : show.episode_template || show.title_template;
           const goesTo = [
-            hasEpisode(show.mode) && destinationName(show.episode_destination_id) && `episodes → ${destinationName(show.episode_destination_id)}`,
-            hasClips(show.mode) && destinationName(show.clip_destination_id) && `clips → ${destinationName(show.clip_destination_id)}`,
+            hasEpisode(show.mode) && destinationName(show.episode_destination_id) && `Episodes to ${destinationName(show.episode_destination_id)}`,
+            hasClips(show.mode) && destinationName(show.clip_destination_id) && `Clips to ${destinationName(show.clip_destination_id)}`,
           ].filter(Boolean);
           return (
-            <button
-              key={show.id}
-              onClick={() => go(`shows/${show.id}`)}
-              className="block w-full rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
-            >
-              <div className="flex items-center gap-2">
-                <h3 className="min-w-0 flex-1 truncate font-semibold">{show.name}</h3>
-                <span className="text-xs text-zinc-500">{MODE_LABEL[show.mode]}</span>
-              </div>
-              <p className="mt-1 line-clamp-2 text-sm text-zinc-400">{applyTitlePattern(pattern, SAMPLE_TITLE, titleDate())}</p>
-              {goesTo.length > 0 && <p className="mt-1 text-xs text-zinc-500">{goesTo.join(" · ")}</p>}
-              {show.channels.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {show.channels.map((c) => (
-                    <ChannelBadge key={c.id} channel={c} />
-                  ))}
-                </div>
-              )}
-            </button>
+            <li key={show.id}>
+              <button
+                onClick={() => go(`shows/${show.id}`)}
+                className="group -mx-2 grid w-[calc(100%+1rem)] grid-cols-[minmax(0,1fr)_1rem] gap-x-3 rounded-lg px-2 py-4 text-left hover:bg-white/[0.03]"
+              >
+                <span className="min-w-0">
+                  <span className="flex items-baseline gap-3">
+                    <span className="min-w-0 truncate text-lg font-semibold">{show.name}</span>
+                    <span className="shrink-0 text-[13px] text-graphite">{MODE_LABEL[show.mode]}</span>
+                  </span>
+                  <span className="mt-1 block truncate font-mono text-[13px] text-chalk">
+                    {applyTitlePattern(pattern, SAMPLE_TITLE, titleDate())}
+                  </span>
+                  {goesTo.length > 0 && (
+                    <span className="mt-1 flex flex-wrap gap-x-3 text-[13px] text-graphite">
+                      {goesTo.map((g) => (
+                        <span key={g as string}>{g}</span>
+                      ))}
+                    </span>
+                  )}
+                  {show.channels.length > 0 && (
+                    <span className="mt-3 flex flex-wrap gap-1.5">
+                      {show.channels.map((c) => (
+                        <ChannelBadge key={c.id} channel={c} />
+                      ))}
+                    </span>
+                  )}
+                </span>
+                <ChevronIcon className="mt-1.5 size-4 -rotate-90 text-dim group-hover:text-graphite" />
+              </button>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </Screen>
   );
 }
