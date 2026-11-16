@@ -2,7 +2,7 @@
 
 import { createContext, useCallback, useContext, useState, type ReactNode } from "react";
 import type { Clip, ClipStatus, Destination, Mode, Storage, UploadState, VideoType, VodStatus } from "./api";
-import { BackIcon, ChevronIcon, GearIcon } from "./icons";
+import { BackIcon, ChevronIcon } from "./icons";
 import { cn, loadSetting, saveSetting } from "./lib";
 
 /**
@@ -31,16 +31,10 @@ export function Screen(props: {
           </button>
         )}
         <div className="min-w-0 flex-1">
-          <h1 className="truncate text-2xl font-bold tracking-tight">{props.title}</h1>
+          <h1 className="truncate text-3xl leading-tight font-bold font-stretch-condensed lg:text-4xl">{props.title}</h1>
           {props.subtitle && <p className="truncate text-sm text-zinc-400">{props.subtitle}</p>}
         </div>
         {props.actions}
-        {/* A phone's way to Settings: the tab bar has no room for it, and a desktop has it in the sidebar. */}
-        {!props.onBack && (
-          <a href="#/settings" className="-mr-2 rounded-full p-2 text-zinc-400 hover:bg-white/5 active:bg-white/10 lg:hidden" aria-label="Settings">
-            <GearIcon className="size-6" />
-          </a>
-        )}
       </header>
       {props.children}
     </div>
@@ -137,11 +131,12 @@ export function Button(props: {
   children: ReactNode;
 }) {
   // Hover only applies where there's a mouse (Tailwind puts it behind @media (hover: hover)), and not when disabled.
+  // A coloured button that can't be pressed yet goes grey rather than a faded colour.
   const tones = {
-    primary: "bg-violet-600 text-white enabled:hover:bg-violet-500 active:bg-violet-700",
-    approve: "bg-emerald-600 text-white enabled:hover:bg-emerald-500 active:bg-emerald-700",
-    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 enabled:hover:bg-red-500/15 active:bg-red-500/20",
-    plain: "bg-zinc-800 text-zinc-100 enabled:hover:bg-zinc-700/80 active:bg-zinc-700",
+    primary: "bg-mark text-ink enabled:hover:bg-violet-400 active:bg-violet-600 disabled:bg-panel-2 disabled:text-graphite",
+    approve: "bg-cue text-ink enabled:hover:bg-emerald-500 active:bg-emerald-700 disabled:bg-panel-2 disabled:text-graphite",
+    danger: "bg-red-500/10 text-red-300 ring-1 ring-red-500/30 enabled:hover:bg-red-500/15 active:bg-red-500/20 disabled:opacity-40",
+    plain: "bg-zinc-800 text-zinc-100 enabled:hover:bg-zinc-700/80 active:bg-zinc-700 disabled:opacity-40",
   };
   return (
     <button
@@ -149,7 +144,7 @@ export function Button(props: {
       onClick={props.onClick}
       disabled={props.disabled}
       className={cn(
-        "inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-sm font-semibold disabled:opacity-40",
+        "inline-flex items-center justify-center gap-1.5 rounded-xl px-4 py-3 text-sm font-semibold disabled:cursor-default",
         tones[props.tone ?? "plain"],
         props.className,
       )}
@@ -169,7 +164,7 @@ export function Segmented<T extends string>(props: { options: Record<T, string>;
           key={key}
           type="button"
           onClick={() => props.onChange(key)}
-          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-600 text-white" : "text-zinc-400")}
+          className={cn("rounded-lg py-2 text-xs font-semibold", props.value === key ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
         >
           {props.options[key]}
         </button>
@@ -225,14 +220,15 @@ export function StatTile(props: { label: string; value: ReactNode; note?: ReactN
   );
 }
 
-/** A titled box on the overview, with an optional link to the page it summarises. */
-export function Panel(props: { title: string; link?: { href: string; label: string }; children: ReactNode }) {
+/** A titled list on the overview, with an optional link to the page it summarises and a note beside its title. */
+export function Panel(props: { title: string; note?: ReactNode; link?: { href: string; label: string }; children: ReactNode }) {
   return (
-    <section className="rounded-2xl bg-zinc-900 ring-1 ring-white/5">
-      <header className="flex items-baseline gap-2 px-4 pb-2 pt-3.5">
-        <h2 className="flex-1 text-sm font-bold">{props.title}</h2>
+    <section>
+      <header className="flex items-baseline gap-2.5 border-b border-line pb-2">
+        <h2 className="text-xl font-semibold font-stretch-condensed">{props.title}</h2>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-graphite">{props.note}</span>
         {props.link && (
-          <a href={props.link.href} className="text-xs font-semibold text-violet-300 hover:text-violet-200">
+          <a href={props.link.href} className="shrink-0 text-[13px] font-semibold text-mark hover:text-violet-300">
             {props.link.label}
           </a>
         )}
@@ -268,18 +264,18 @@ export function Fold(props: {
     }
   };
   return (
-    <section className="pt-3">
-      <div className="flex items-center gap-2">
+    <section className="pt-5">
+      <div className="flex items-center gap-2 border-b border-line pb-2">
         <button
           type="button"
           onClick={toggle}
           aria-expanded={open}
-          className="flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1.5 text-left hover:bg-white/[0.03]"
+          className="-ml-1 flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left hover:bg-white/[0.03]"
         >
-          <ChevronIcon className={cn("size-4 shrink-0 text-zinc-500 transition-transform", !open && "-rotate-90")} />
-          <span className="min-w-0 truncate text-xs font-semibold uppercase tracking-wide text-zinc-400">{props.title}</span>
+          <ChevronIcon className={cn("size-4 shrink-0 text-graphite transition-transform", !open && "-rotate-90")} />
+          <span className="min-w-0 truncate text-xl font-semibold font-stretch-condensed">{props.title}</span>
           {props.count !== undefined && (
-            <span className={cn("shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold tabular-nums", props.tone ?? "bg-zinc-800 text-zinc-300")}>
+            <span className={cn("shrink-0 rounded-md px-1.5 font-mono text-xs leading-5", props.tone ?? "text-graphite")}>
               {props.count}
             </span>
           )}
@@ -322,7 +318,7 @@ export function DiskMeter({ storage }: { storage: Storage }) {
     ? ["bg-red-400", "bg-red-400/15"]
     : near
       ? ["bg-amber-400", "bg-amber-400/15"]
-      : ["bg-violet-500", "bg-violet-500/15"];
+      : ["bg-chalk", "bg-zinc-800"];
   return (
     <div>
       <div className="flex items-baseline justify-between gap-2 text-xs">

@@ -374,6 +374,16 @@ export interface Summary {
   to_review: number;
   to_upload: number; // rendered clips, whether or not their upload has started
   videos_in_progress: number;
+  work: WorkPart[]; // downloads, processing, renders, uploads, in that order
+}
+
+/** A part of the work that can be paused, and what's in it. */
+export interface WorkPart {
+  stage: keyof Pauses;
+  count: number; // waiting or under way
+  now: string; // the title of the one under way; "" if none
+  step: string; // its status, e.g. "transcribing"
+  progress: number | null; // 0-1, where that's known
 }
 
 /** Space on the data disk, and how much the streams' files take. */
@@ -385,7 +395,7 @@ export interface Storage {
 }
 
 /** The main AI, which picks the clips and writes preview titles and thumbnail ideas unless a task has its own. */
-export type AiProviderId = "claude" | "codex" | "openrouter";
+export type AiProviderId = "claude" | "codex" | "openrouter" | "cliproxy";
 
 export interface AiTask {
   id: string; // "clips", "breakdown", "titles", "thumbnails"

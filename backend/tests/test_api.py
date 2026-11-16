@@ -54,6 +54,29 @@ def test_adding_videos_picks_the_mode_and_ignores_duplicates(client):
     assert [v["id"] for v in client.get("/api/vods").json()] == [twitch.json()["id"], x.json()["id"]]
 
 
+def test_the_summary_says_whats_under_way_in_each_part_of_the_work(client, settings):
+    with Session(get_engine(settings)) as s:
+        s.add(Vod(url="https://www.twitch.tv/videos/7", title="Night Owls", status="downloading", progress=0.42))
+        s.add(Vod(url="https://www.twitch.tv/videos/8", status="queued"))
+        s.add(Vod(url="https://www.twitch.tv/videos/10", status="queued", workspace="twitchvod-10"))  # downloaded
+        s.add(Vod(url="https://www.twitch.tv/videos/9", title="Overtime #212", status="segmenting", progress=0.9))
+        s.commit()
+    rendering = add_clip(settings, status="rendering")
+    queued = add_clip(settings, status="approved")
+    uploaded = add_clip(settings, status="rendered")
+    with Session(get_engine(settings)) as s:
+        s.add(UploadJob(clip_id=uploaded, status="uploading", progress=0.25))
+        s.add(UploadJob(clip_id=uploaded, which="short", status="queued"))
+        s.commit()
+
+    downloads, processing, renders, uploads = client.get("/api/summary").json()["work"]
+    assert downloads == {"stage": "downloads", "count": 2, "now": "Night Owls", "step": "downloading", "progress": 0.42}
+    # The AI's step doesn't say how far along it is.
+    assert processing == {"stage": "processing", "count": 2, "now": "Overtime #212", "step": "segmenting", "progress": None}
+    assert (renders["count"], renders["now"], renders["step"]) == (2, "Moment", "rendering") and rendering and queued
+    assert (uploads["count"], uploads["now"], uploads["progress"]) == (2, "Moment", 0.25)
+
+
 def test_review_flow(client, settings):
     clip_id = add_clip(settings)
     assert [c["id"] for c in client.get("/api/clips").json()] == [clip_id]

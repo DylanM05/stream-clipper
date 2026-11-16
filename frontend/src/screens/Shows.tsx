@@ -1,4 +1,4 @@
-import { useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactNode } from "react";
 import {
   api,
   errorText,
@@ -14,10 +14,11 @@ import {
   type VideoType,
   type Visibility,
 } from "../api";
-import { CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
+import { ChevronIcon, CopyIcon, LinkIcon, RefreshIcon, TvIcon, UploadIcon } from "../icons";
 import { ago, applyTitlePattern, clamp, cn, copyText, go, length, pastDay, sitesOf, titleDate, usePoll, type Sites } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, DestinationSelect, ErrorNote, MODE_LABEL, Screen, Segmented, useToast, VIDEO_TYPE_LABEL } from "../ui";
+import { WhatTheAiLearns } from "./Stats";
 import { UploadBrowserStatus } from "./UploadKit";
 
 const MAX_TITLE = 100;
@@ -56,15 +57,16 @@ export function Shows() {
       {error && <ErrorNote>{error}</ErrorNote>}
       <button
         onClick={() => go("shows/youtube")}
-        className="mb-4 flex w-full items-center gap-3 rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
+        className="mb-6 flex w-full items-center gap-3 rounded-2xl bg-panel p-4 text-left hover:bg-zinc-800 active:bg-zinc-800 lg:max-w-5xl"
       >
-        <UploadIcon className="size-5 text-zinc-400" />
-        <span className="flex-1">
-          <span className="block text-sm font-semibold">YouTube channels you upload to</span>
-          <span className="block text-xs text-zinc-500">
+        <UploadIcon className="size-5 text-graphite" />
+        <span className="min-w-0 flex-1">
+          <span className="block font-semibold">YouTube channels you upload to</span>
+          <span className="block truncate text-[13px] text-graphite">
             {destinations?.length ? destinations.map((d) => d.name).join(", ") : "None yet: add your clips channels here"}
           </span>
         </span>
+        <ChevronIcon className="size-4 -rotate-90 text-dim" />
       </button>
 
       {shows?.length === 0 && (
@@ -79,36 +81,48 @@ export function Shows() {
           </p>
         </div>
       )}
-      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
+      <ul className="divide-y divide-line border-t border-line lg:max-w-5xl">
         {shows?.map((show) => {
           const pattern = hasClips(show.mode) ? show.title_template : show.episode_template || show.title_template;
           const goesTo = [
-            hasEpisode(show.mode) && destinationName(show.episode_destination_id) && `episodes → ${destinationName(show.episode_destination_id)}`,
-            hasClips(show.mode) && destinationName(show.clip_destination_id) && `clips → ${destinationName(show.clip_destination_id)}`,
+            hasEpisode(show.mode) && destinationName(show.episode_destination_id) && `Episodes to ${destinationName(show.episode_destination_id)}`,
+            hasClips(show.mode) && destinationName(show.clip_destination_id) && `Clips to ${destinationName(show.clip_destination_id)}`,
           ].filter(Boolean);
           return (
-            <button
-              key={show.id}
-              onClick={() => go(`shows/${show.id}`)}
-              className="block w-full rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
-            >
-              <div className="flex items-center gap-2">
-                <h3 className="min-w-0 flex-1 truncate font-semibold">{show.name}</h3>
-                <span className="text-xs text-zinc-500">{MODE_LABEL[show.mode]}</span>
-              </div>
-              <p className="mt-1 line-clamp-2 text-sm text-zinc-400">{applyTitlePattern(pattern, SAMPLE_TITLE, titleDate())}</p>
-              {goesTo.length > 0 && <p className="mt-1 text-xs text-zinc-500">{goesTo.join(" · ")}</p>}
-              {show.channels.length > 0 && (
-                <div className="mt-3 flex flex-wrap gap-1.5">
-                  {show.channels.map((c) => (
-                    <ChannelBadge key={c.id} channel={c} />
-                  ))}
-                </div>
-              )}
-            </button>
+            <li key={show.id}>
+              <button
+                onClick={() => go(`shows/${show.id}`)}
+                className="group -mx-2 grid w-[calc(100%+1rem)] grid-cols-[minmax(0,1fr)_1rem] gap-x-3 rounded-lg px-2 py-4 text-left hover:bg-white/[0.03]"
+              >
+                <span className="min-w-0">
+                  <span className="flex items-baseline gap-3">
+                    <span className="min-w-0 truncate text-lg font-semibold">{show.name}</span>
+                    <span className="shrink-0 text-[13px] text-graphite">{MODE_LABEL[show.mode]}</span>
+                  </span>
+                  <span className="mt-1 block truncate font-mono text-[13px] text-chalk">
+                    {applyTitlePattern(pattern, SAMPLE_TITLE, titleDate())}
+                  </span>
+                  {goesTo.length > 0 && (
+                    <span className="mt-1 flex flex-wrap gap-x-3 text-[13px] text-graphite">
+                      {goesTo.map((g) => (
+                        <span key={g as string}>{g}</span>
+                      ))}
+                    </span>
+                  )}
+                  {show.channels.length > 0 && (
+                    <span className="mt-3 flex flex-wrap gap-1.5">
+                      {show.channels.map((c) => (
+                        <ChannelBadge key={c.id} channel={c} />
+                      ))}
+                    </span>
+                  )}
+                </span>
+                <ChevronIcon className="mt-1.5 size-4 -rotate-90 text-dim group-hover:text-graphite" />
+              </button>
+            </li>
           );
         })}
-      </div>
+      </ul>
     </Screen>
   );
 }
@@ -358,7 +372,7 @@ function DestinationRow(props: { destination: Destination; apiReady: boolean; on
             <button
               onClick={connect}
               disabled={!GOOGLE_OK}
-              className="rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700 disabled:opacity-40"
+              className="rounded-lg bg-mark px-3 py-1.5 text-xs font-semibold text-ink active:bg-violet-600 disabled:bg-panel-2 disabled:text-graphite"
             >
               {connected ? "Reconnect" : "Connect"}
             </button>
@@ -425,17 +439,92 @@ export function ShowEditor({ id }: { id: number | null }) {
   const { data: show, error, refresh } = usePoll(() => (id ? api.show(id) : Promise.resolve(null)), id ? 10000 : 0, id);
   const { data: destinations } = usePoll(api.destinations, 0);
   if (id && !show) return error ? <div className="p-6"><ErrorNote>{error}</ErrorNote></div> : null;
+  const parts = show ? PARTS : NEW_PARTS;
   return (
-    <Screen title={show ? show.name : "New show"} onBack={() => go("shows")}>
-      {/* Reloads when the links change on the server (adding a channel adds its link). */}
-      <ShowForm
-        key={show ? `${show.id}:${show.match}` : "new"}
-        show={show ?? null}
-        destinations={destinations}
-        onChanged={refresh}
-      />
-      {show && <Channels show={show} onChanged={refresh} />}
+    <Screen title={show ? show.name : "New show"} onBack={() => go("shows")} wide>
+      <div className="lg:grid lg:grid-cols-[11rem_minmax(0,44rem)] lg:gap-12">
+        <PartIndex parts={parts} />
+        <div className="min-w-0">
+          {/* Reloads when the links change on the server (adding a channel adds its link). */}
+          <ShowForm
+            key={show ? `${show.id}:${show.match}` : "new"}
+            show={show ?? null}
+            destinations={destinations}
+            onChanged={refresh}
+          />
+          {show && <Channels show={show} onChanged={refresh} />}
+        </div>
+      </div>
     </Screen>
+  );
+}
+
+/** The show's settings in sections, in the order they're on the page. */
+const PARTS: [string, string][] = [
+  ["basics", "Basics"],
+  ["uploads", "Uploads"],
+  ["thumbnails", "Thumbnails"],
+  ["look", "Look"],
+  ["guidance", "The AI's guidance"],
+  ["channels", "Channels to watch"],
+];
+const NEW_PARTS = PARTS.filter(([part]) => part !== "channels"); // channels are added once the show is
+
+/**
+ * The sections, to jump between: down the left on a desktop, and a row of chips that stays at the top on a phone.
+ * The one being read is marked as the page scrolls.
+ */
+function PartIndex({ parts }: { parts: [string, string][] }) {
+  const [current, setCurrent] = useState(parts[0][0]);
+  useEffect(() => {
+    const seen = new Map<string, boolean>();
+    // The first section in the band near the top of the screen; but the last section is too short to scroll up
+    // there, so it's the one once the page is at its end.
+    const update = () => {
+      const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 8;
+      const first = atEnd ? parts[parts.length - 1] : parts.find(([part]) => seen.get(part));
+      if (first) setCurrent(first[0]);
+    };
+    const observer = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) seen.set((e.target as HTMLElement).dataset.part!, e.isIntersecting);
+        update();
+      },
+      { rootMargin: "-15% 0px -60% 0px" },
+    );
+    document.querySelectorAll<HTMLElement>("[data-part]").forEach((el) => observer.observe(el));
+    const onScroll = () => update();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [parts]);
+  // The page's address is its route, so these scroll rather than link.
+  const jump = (part: string) => document.getElementById(`part-${part}`)?.scrollIntoView({ behavior: "smooth" });
+
+  return (
+    <nav aria-label="Sections" className="sticky top-0 z-20 -mx-4 mb-4 border-b border-line bg-bay/95 backdrop-blur lg:top-8 lg:mx-0 lg:mb-0 lg:self-start lg:border-0 lg:bg-transparent lg:backdrop-blur-none">
+      <ul className="flex gap-1.5 overflow-x-auto px-4 py-2.5 [scrollbar-width:none] lg:flex-col lg:gap-0.5 lg:overflow-visible lg:p-0">
+        {parts.map(([part, label]) => (
+          <li key={part} className="shrink-0">
+            <button
+              type="button"
+              onClick={() => jump(part)}
+              aria-current={current === part ? "location" : undefined}
+              className={cn(
+                "whitespace-nowrap rounded-full px-3 py-1.5 text-[13px] font-semibold lg:w-full lg:rounded-lg lg:py-2 lg:text-left lg:text-sm",
+                current === part
+                  ? "bg-panel-2 text-chalk lg:bg-panel lg:shadow-[inset_3px_0_0_var(--color-mark)]"
+                  : "text-graphite hover:text-chalk",
+              )}
+            >
+              {label}
+            </button>
+          </li>
+        ))}
+      </ul>
+    </nav>
   );
 }
 
@@ -484,18 +573,19 @@ export const BLANK_SHOW: ShowFields = {
   intro_shorts: false,
 };
 
+/** A show's settings that the form edits. The images are saved on their own, straight away, so they aren't part of it. */
+function formFields(show: Show): ShowFields {
+  const {
+    id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s,
+    intro: _n, intro_seconds: _l, ...rest
+  } = show;
+  return rest;
+}
+
 function ShowForm(props: { show: Show | null; destinations: Destination[] | undefined; onChanged: () => void }) {
   const { show, destinations } = props;
   const toast = useToast();
-  const [fields, setFields] = useState<ShowFields>(() => {
-    if (!show) return BLANK_SHOW;
-    // The images are saved on their own, straight away, so they aren't part of the form.
-    const {
-      id: _i, channels: _c, video_count: _v, short_background: _b, overlay: _o, overlay_box: _x, overlay_screen: _s,
-      intro: _n, intro_seconds: _l, ...rest
-    } = show;
-    return rest;
-  });
+  const [fields, setFields] = useState<ShowFields>(() => (show ? formFields(show) : BLANK_SHOW));
   const [busy, setBusy] = useState(false);
   const { data: thumbnailSetup } = usePoll(api.thumbnails, 0);
   const set = (patch: Partial<ShowFields>) => setFields((f) => ({ ...f, ...patch }));
@@ -506,14 +596,17 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const patternsOk =
     (!hasClips(fields.mode) || clipPattern.includes("{title}")) && (!hasEpisode(fields.mode) || episodePattern.includes("{title}"));
   const shortsOk = fields.short_layout !== "split" || fields.short_webcams.length > 0;
-  const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => fields[k] !== show[k]);
+  // By value: the webcam boxes are arrays, and each refresh of the show brings new ones.
+  const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => JSON.stringify(fields[k]) !== JSON.stringify(show[k]));
 
   const save = async () => {
     setBusy(true);
     try {
       const body = { ...fields, title_template: clipPattern };
       if (show) {
-        await api.updateShow(show.id, body);
+        // The form takes what was saved (the pattern filled in, the boxes rounded), so it matches the show from now on.
+        setFields(formFields(await api.updateShow(show.id, body)));
+        props.onChanged();
         toast({ text: "Saved. New videos use these settings." });
       } else {
         const created = await api.addShow(body);
@@ -537,387 +630,437 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
     }
   };
 
+  // What keeps Save from working, said beside it.
+  const blocked = !fields.name.trim()
+    ? "Give the show a name"
+    : !patternsOk
+      ? "A title pattern needs {title} in it"
+      : !shortsOk
+        ? "Mark at least one webcam for split Shorts"
+        : "";
+
   return (
-    <div className="space-y-5">
-      <Field label="Name">
-        <input value={fields.name} onChange={(e) => set({ name: e.target.value })} placeholder="Night Owls" className={input} />
-      </Field>
-
-      <Field label="What to make from each video">
-        <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
-          {(["segment", "whole", "both"] as const).map((mode) => (
-            <button
-              key={mode}
-              type="button"
-              onClick={() => set({ mode })}
-              className={cn("rounded-lg py-2 text-xs font-semibold", fields.mode === mode ? "bg-zinc-600 text-white" : "text-zinc-400")}
-            >
-              {mode === "both" ? "Both" : MODE_LABEL[mode]}
-            </button>
-          ))}
-        </div>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          {
-            {
-              segment: "The AI splits each stream into clips and highlights.",
-              whole: "Each video is posted in full, like a pre-show from X.",
-              both: "The full episode, with YouTube chapters in its description, plus the AI's clips and highlights.",
-            }[fields.mode]
-          }
-        </p>
-      </Field>
-
-      {hasClips(fields.mode) && (
-        <Field label="Its videos are">
-          <div className="flex">
-            <Segmented options={VIDEO_TYPE_LABEL} value={fields.video_type} onChange={(video_type) => set({ video_type })} />
-          </div>
-          <p className="mt-1.5 text-xs text-zinc-500">{VIDEO_TYPE_HINT[fields.video_type]}</p>
+    <div>
+      <Part id="basics" title="Basics">
+        <Field label="Name">
+          <input value={fields.name} onChange={(e) => set({ name: e.target.value })} placeholder="Night Owls" className={input} />
         </Field>
-      )}
 
-      {hasEpisode(fields.mode) && (
-        <PatternField
-          label="Full episode title"
-          value={fields.episode_template}
-          placeholder={fields.mode === "both" ? "Same as the clip pattern" : defaultPattern}
-          effective={episodePattern}
-          onChange={(v) => set({ episode_template: v })}
-        />
-      )}
-      {hasClips(fields.mode) && (
-        <PatternField
-          label="Clip title"
-          value={fields.title_template}
-          placeholder={defaultPattern}
-          effective={clipPattern}
-          onChange={(v) => set({ title_template: v })}
-        />
-      )}
-
-      <Field label="Description footer" hint="under every upload's description">
-        <textarea
-          value={fields.description_footer}
-          onChange={(e) => set({ description_footer: e.target.value })}
-          rows={3}
-          maxLength={2000}
-          placeholder={"e.g. Watch the whole show live: https://kick.com/yourshow\nFollow the hosts: https://x.com/yourshow"}
-          className={input}
-        />
-        <p className="mt-1.5 text-xs text-zinc-500">
-          Added under the description of every clip, Short and full episode the show uploads, including videos posted whole
-          from X, whose description is the post's text. Anything not uploaded yet gets it too. A long description is cut
-          short so the footer always fits within YouTube's limit.
-        </p>
-      </Field>
-
-      <div className="grid gap-4 sm:grid-cols-2">
-        {hasEpisode(fields.mode) && (
-          <Field label="Full episodes go to">
-            <DestinationSelect
-              value={fields.episode_destination_id}
-              destinations={destinations}
-              onChange={(v) => set({ episode_destination_id: v, episode_playlist_id: "" })}
-            />
-            <PlaylistSelect
-              destination={destinations?.find((d) => d.id === fields.episode_destination_id)}
-              value={fields.episode_playlist_id}
-              onChange={(episode_playlist_id) => set({ episode_playlist_id })}
-            />
-            <SitesChoice
-              channel={destinations?.find((d) => d.id === fields.episode_destination_id)}
-              value={fields.episode_sites}
-              onChange={(episode_sites) => set({ episode_sites })}
-              what="full episodes"
-            />
-          </Field>
-        )}
-        {hasClips(fields.mode) && (
-          <Field label="Clips go to">
-            <DestinationSelect
-              value={fields.clip_destination_id}
-              destinations={destinations}
-              onChange={(v) => set({ clip_destination_id: v, clip_playlist_id: "" })}
-            />
-            <PlaylistSelect
-              destination={destinations?.find((d) => d.id === fields.clip_destination_id)}
-              value={fields.clip_playlist_id}
-              onChange={(clip_playlist_id) => set({ clip_playlist_id })}
-            />
-            {fields.clip_playlist_id && <p className="mt-2 text-xs text-zinc-500">Shorts never go in a playlist.</p>}
-            <SitesChoice
-              channel={destinations?.find((d) => d.id === fields.clip_destination_id)}
-              value={fields.clip_sites}
-              onChange={(clip_sites) => set({ clip_sites })}
-              what="clips"
-            />
-          </Field>
-        )}
-      </div>
-      <button type="button" onClick={() => go("shows/youtube")} className="-mt-2 text-sm font-medium text-violet-300">
-        + Add or edit YouTube channels
-      </button>
-
-      {hasClips(fields.mode) && (
-        <Group label={`Offered per ${VIDEO_NOUN[fields.video_type]}`} hint="best first, by the AI's score">
-          <div className="grid grid-cols-2 gap-2">
-            <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
-            <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
+        <Field label="What to make from each video">
+          <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
+            {(["segment", "whole", "both"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                onClick={() => set({ mode })}
+                className={cn("rounded-lg py-2 text-xs font-semibold", fields.mode === mode ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
+              >
+                {mode === "both" ? "Both" : MODE_LABEL[mode]}
+              </button>
+            ))}
           </div>
           <p className="mt-1.5 text-xs text-zinc-500">
-            {fields.max_chapters + fields.max_shorts} videos from each stream
-            {hasEpisode(fields.mode) ? ", plus the full episode" : ""}. The AI's other picks wait on the video's page as
-            extras. Raise these as your YouTube upload limit grows.
+            {
+              {
+                segment: "The AI splits each stream into clips and highlights.",
+                whole: "Each video is posted in full, like a pre-show from X.",
+                both: "The full episode, with YouTube chapters in its description, plus the AI's clips and highlights.",
+              }[fields.mode]
+            }
           </p>
-        </Group>
-      )}
+        </Field>
 
-      <Group label="Without review">
-        <div className="space-y-2">
-          {hasEpisode(fields.mode) && (
-            <AutoChoice label="Full episode" value={fields.auto_episode} onChange={(auto_episode) => set({ auto_episode })} />
-          )}
-          {hasClips(fields.mode) && (
-            <>
-              <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
-              <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
-            </>
-          )}
-        </div>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          Review: waits in your inbox. Render: skips the inbox and waits in Ready to upload. Upload: goes straight to its
-          YouTube channel (a highlight as its Short, if it has one).
-        </p>
         {hasClips(fields.mode) && (
-          <>
-            <div className="mt-3 flex items-center gap-3">
-              <span className="w-24 shrink-0 text-sm text-zinc-300">Standouts</span>
-              <Segmented
-                options={SCORE_LABEL}
-                value={String(fields.auto_upload_score)}
-                onChange={(v) => set({ auto_upload_score: Number(v) })}
-              />
+          <Field label="Its videos are">
+            <div className="flex">
+              <Segmented options={VIDEO_TYPE_LABEL} value={fields.video_type} onChange={(video_type) => set({ video_type })} />
             </div>
-            <p className="mt-1.5 text-xs text-zinc-500">
-              {fields.auto_upload_score
-                ? `Clips and Shorts the AI scores ${fields.auto_upload_score} or more upload straight away, even if set to Review above. `
-                : "Upload clips and Shorts straight away when the AI scores them this high, even if set to Review above. "}
-              Only the ones offered per stream count. The AI keeps 0.9 and up for standout moments.
-            </p>
-          </>
+            <p className="mt-1.5 text-xs text-zinc-500">{VIDEO_TYPE_HINT[fields.video_type]}</p>
+          </Field>
         )}
-        <div className="mt-3 flex items-center gap-3">
-          <span className="w-24 shrink-0 text-sm text-zinc-300">Once approved</span>
-          <Segmented
-            options={APPROVED_LABEL}
-            value={fields.upload_approved ? "upload" : "wait"}
-            onChange={(v) => set({ upload_approved: v === "upload" })}
-          />
-        </div>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          {fields.upload_approved
-            ? "What you approve (from the inbox, the extras, or a clip you made) uploads by itself once it's rendered, to its channel."
-            : "What you approve waits in Ready to upload until you tap Upload."}
-        </p>
-        {autoUploads(fields) && (
-          <div className="mt-3 flex items-center gap-3">
-            <span className="w-24 shrink-0 text-sm text-zinc-300">Uploaded as</span>
-            <Segmented
-              options={VISIBILITY_LABEL}
-              value={fields.auto_visibility}
-              onChange={(auto_visibility) => set({ auto_visibility })}
-            />
-          </div>
-        )}
-      </Group>
 
-      {hasClips(fields.mode) && (
-        <Group label="Space clips out" hint="per YouTube channel">
-          <Segmented
-            options={GAP_LABEL}
-            value={String(fields.upload_gap_hours)}
-            onChange={(v) => set({ upload_gap_hours: Number(v) })}
+        {hasEpisode(fields.mode) && (
+          <PatternField
+            label="Full episode title"
+            value={fields.episode_template}
+            placeholder={fields.mode === "both" ? "Same as the clip pattern" : defaultPattern}
+            effective={episodePattern}
+            onChange={(v) => set({ episode_template: v })}
           />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            {fields.upload_gap_hours
-              ? `Each clip or Short goes up at least ${fields.upload_gap_hours} hour${fields.upload_gap_hours === 1 ? "" : "s"} after the last clip on its channel, whether it uploads by itself or you tap Upload. Full episodes go straight away.`
-              : "Clips upload as soon as they're ready. Space them out so a stream's clips don't all land at once."}
-          </p>
-        </Group>
-      )}
-
-      <Group label="Thumbnails" hint="drawn with AI">
-        <p className="mb-2 text-sm text-zinc-300">Make one for each, once it's rendered:</p>
-        <div className="space-y-2">
-          {hasClips(fields.mode) && (
-            <Tick
-              label="Clip"
-              checked={fields.chapter_thumbnails}
-              onChange={(chapter_thumbnails) => set({ chapter_thumbnails })}
-            />
-          )}
-          {hasEpisode(fields.mode) && (
-            <Tick
-              label="Full episode"
-              checked={fields.episode_thumbnails}
-              onChange={(episode_thumbnails) => set({ episode_thumbnails })}
-            />
-          )}
-        </div>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          The AI comes up with a funny idea about what happens in the video, starring the people in it and the people it's
-          about, and an image model on OpenRouter draws it from frames of the video and photos it looks up. Each costs a few
-          cents. You can also make one for any video on its Upload page. Say what the regulars look like under About the
-          show.
-        </p>
-        {thumbnailSetup && !thumbnailSetup.configured && (
-          <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>
         )}
-        <label className="mt-3 block">
-          <span className="mb-1 block text-xs text-zinc-500">What every thumbnail must have (the AI follows this over its defaults)</span>
+        {hasClips(fields.mode) && (
+          <PatternField
+            label="Clip title"
+            value={fields.title_template}
+            placeholder={defaultPattern}
+            effective={clipPattern}
+            onChange={(v) => set({ title_template: v })}
+          />
+        )}
+
+        <Field label="Links that belong to this show" hint="one per line">
           <textarea
-            value={fields.thumbnail_guidance}
-            onChange={(e) => set({ thumbnail_guidance: e.target.value })}
+            value={fields.match}
+            onChange={(e) => set({ match: e.target.value })}
             rows={3}
-            maxLength={2000}
-            placeholder={'e.g. Must have the words "Night Owls Live" in a banner along the bottom. Bold, neon colours.'}
+            placeholder={"x.com/yourshow\nkick.com/yourshow"}
             className={input}
           />
-        </label>
-        <p className="mt-1.5 text-xs text-zinc-500">
-          For thumbnails made from now on. One you draw again from its prompt keeps the prompt it had; Make another picks
-          this up.
-        </p>
-      </Group>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            A link you paste in Videos belongs to this show if it contains one of these, or comes from a channel with that
+            name. Watched channels are added here automatically.
+          </p>
+        </Field>
 
-      {hasClips(fields.mode) && (
-        <ShortsLayout
+      </Part>
+
+      <Part id="uploads" title="Uploads">
+        <Field label="Description footer" hint="under every upload's description">
+          <textarea
+            value={fields.description_footer}
+            onChange={(e) => set({ description_footer: e.target.value })}
+            rows={3}
+            maxLength={2000}
+            placeholder={"e.g. Watch the whole show live: https://kick.com/yourshow\nFollow the hosts: https://x.com/yourshow"}
+            className={input}
+          />
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Added under the description of every clip, Short and full episode the show uploads, including videos posted whole
+            from X, whose description is the post's text. Anything not uploaded yet gets it too. A long description is cut
+            short so the footer always fits within YouTube's limit.
+          </p>
+        </Field>
+
+        <div className="grid gap-4 sm:grid-cols-2">
+          {hasEpisode(fields.mode) && (
+            <Field label="Full episodes go to">
+              <DestinationSelect
+                value={fields.episode_destination_id}
+                destinations={destinations}
+                onChange={(v) => set({ episode_destination_id: v, episode_playlist_id: "" })}
+              />
+              <PlaylistSelect
+                destination={destinations?.find((d) => d.id === fields.episode_destination_id)}
+                value={fields.episode_playlist_id}
+                onChange={(episode_playlist_id) => set({ episode_playlist_id })}
+              />
+              <SitesChoice
+                channel={destinations?.find((d) => d.id === fields.episode_destination_id)}
+                value={fields.episode_sites}
+                onChange={(episode_sites) => set({ episode_sites })}
+                what="full episodes"
+              />
+            </Field>
+          )}
+          {hasClips(fields.mode) && (
+            <Field label="Clips go to">
+              <DestinationSelect
+                value={fields.clip_destination_id}
+                destinations={destinations}
+                onChange={(v) => set({ clip_destination_id: v, clip_playlist_id: "" })}
+              />
+              <PlaylistSelect
+                destination={destinations?.find((d) => d.id === fields.clip_destination_id)}
+                value={fields.clip_playlist_id}
+                onChange={(clip_playlist_id) => set({ clip_playlist_id })}
+              />
+              {fields.clip_playlist_id && <p className="mt-2 text-xs text-zinc-500">Shorts never go in a playlist.</p>}
+              <SitesChoice
+                channel={destinations?.find((d) => d.id === fields.clip_destination_id)}
+                value={fields.clip_sites}
+                onChange={(clip_sites) => set({ clip_sites })}
+                what="clips"
+              />
+            </Field>
+          )}
+        </div>
+        <button type="button" onClick={() => go("shows/youtube")} className="-mt-3 text-sm font-semibold text-mark">
+          + Add or edit YouTube channels
+        </button>
+
+        {hasClips(fields.mode) && (
+          <Group label={`Offered per ${VIDEO_NOUN[fields.video_type]}`} hint="best first, by the AI's score">
+            <div className="grid grid-cols-2 gap-2">
+              <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
+              <CountBox label="Shorts" value={fields.max_shorts} onChange={(max_shorts) => set({ max_shorts })} />
+            </div>
+            <p className="mt-1.5 text-xs text-zinc-500">
+              {fields.max_chapters + fields.max_shorts} videos from each stream
+              {hasEpisode(fields.mode) ? ", plus the full episode" : ""}. The AI's other picks wait on the video's page as
+              extras. Raise these as your YouTube upload limit grows.
+            </p>
+          </Group>
+        )}
+
+        <Group label="Without review">
+          <div className="space-y-2">
+            {hasEpisode(fields.mode) && (
+              <AutoChoice label="Full episode" value={fields.auto_episode} onChange={(auto_episode) => set({ auto_episode })} />
+            )}
+            {hasClips(fields.mode) && (
+              <>
+                <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
+                <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
+              </>
+            )}
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            Review: waits in your inbox. Render: skips the inbox and waits in Ready to upload. Upload: goes straight to its
+            YouTube channel (a highlight as its Short, if it has one).
+          </p>
+          {hasClips(fields.mode) && (
+            <>
+              <div className="mt-3 flex items-center gap-3">
+                <span className="w-24 shrink-0 text-sm text-zinc-300">Standouts</span>
+                <Segmented
+                  options={SCORE_LABEL}
+                  value={String(fields.auto_upload_score)}
+                  onChange={(v) => set({ auto_upload_score: Number(v) })}
+                />
+              </div>
+              <p className="mt-1.5 text-xs text-zinc-500">
+                {fields.auto_upload_score
+                  ? `Clips and Shorts the AI scores ${fields.auto_upload_score} or more upload straight away, even if set to Review above. `
+                  : "Upload clips and Shorts straight away when the AI scores them this high, even if set to Review above. "}
+                Only the ones offered per stream count. The AI keeps 0.9 and up for standout moments.
+              </p>
+            </>
+          )}
+          <div className="mt-3 flex items-center gap-3">
+            <span className="w-24 shrink-0 text-sm text-zinc-300">Once approved</span>
+            <Segmented
+              options={APPROVED_LABEL}
+              value={fields.upload_approved ? "upload" : "wait"}
+              onChange={(v) => set({ upload_approved: v === "upload" })}
+            />
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            {fields.upload_approved
+              ? "What you approve (from the inbox, the extras, or a clip you made) uploads by itself once it's rendered, to its channel."
+              : "What you approve waits in Ready to upload until you tap Upload."}
+          </p>
+          {autoUploads(fields) && (
+            <div className="mt-3 flex items-center gap-3">
+              <span className="w-24 shrink-0 text-sm text-zinc-300">Uploaded as</span>
+              <Segmented
+                options={VISIBILITY_LABEL}
+                value={fields.auto_visibility}
+                onChange={(auto_visibility) => set({ auto_visibility })}
+              />
+            </div>
+          )}
+        </Group>
+
+        {hasClips(fields.mode) && (
+          <Group label="Space clips out" hint="per YouTube channel">
+            <Segmented
+              options={GAP_LABEL}
+              value={String(fields.upload_gap_hours)}
+              onChange={(v) => set({ upload_gap_hours: Number(v) })}
+            />
+            <p className="mt-1.5 text-xs text-zinc-500">
+              {fields.upload_gap_hours
+                ? `Each clip or Short goes up at least ${fields.upload_gap_hours} hour${fields.upload_gap_hours === 1 ? "" : "s"} after the last clip on its channel, whether it uploads by itself or you tap Upload. Full episodes go straight away.`
+                : "Clips upload as soon as they're ready. Space them out so a stream's clips don't all land at once."}
+            </p>
+          </Group>
+        )}
+
+      </Part>
+
+      <Part id="thumbnails" title="Thumbnails">
+        <Group label="Which videos get one" hint="drawn with AI">
+          <p className="mb-2 text-sm text-zinc-300">Make one for each, once it's rendered:</p>
+          <div className="space-y-2">
+            {hasClips(fields.mode) && (
+              <Tick
+                label="Clip"
+                checked={fields.chapter_thumbnails}
+                onChange={(chapter_thumbnails) => set({ chapter_thumbnails })}
+              />
+            )}
+            {hasEpisode(fields.mode) && (
+              <Tick
+                label="Full episode"
+                checked={fields.episode_thumbnails}
+                onChange={(episode_thumbnails) => set({ episode_thumbnails })}
+              />
+            )}
+          </div>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            The AI comes up with a funny idea about what happens in the video, starring the people in it and the people it's
+            about, and an image model on OpenRouter draws it from frames of the video and photos it looks up. Each costs a few
+            cents. You can also make one for any video on its Upload page. Say what the regulars look like under About the
+            show.
+          </p>
+          {thumbnailSetup && !thumbnailSetup.configured && (
+            <p className="mt-1.5 text-xs text-amber-300">Needs CLIPPER_OPENROUTER_API_KEY in .env (see the README).</p>
+          )}
+          <label className="mt-3 block">
+            <span className="mb-1 block text-xs text-zinc-500">What every thumbnail must have (the AI follows this over its defaults)</span>
+            <textarea
+              value={fields.thumbnail_guidance}
+              onChange={(e) => set({ thumbnail_guidance: e.target.value })}
+              rows={3}
+              maxLength={2000}
+              placeholder={'e.g. Must have the words "Night Owls Live" in a banner along the bottom. Bold, neon colours.'}
+              className={input}
+            />
+          </label>
+          <p className="mt-1.5 text-xs text-zinc-500">
+            For thumbnails made from now on. One you draw again from its prompt keeps the prompt it had; Make another picks
+            this up.
+          </p>
+        </Group>
+
+      </Part>
+
+      <Part id="look" title="Look">
+        {hasClips(fields.mode) && (
+          <ShortsLayout
+            show={show}
+            layout={fields.short_layout || "blur"}
+            webcams={fields.short_webcams}
+            game={fields.short_game}
+            top={fields.short_video_top}
+            width={fields.short_video_width}
+            onChange={set}
+            onChanged={props.onChanged}
+          />
+        )}
+        <ClipOverlay
           show={show}
-          layout={fields.short_layout || "blur"}
-          webcams={fields.short_webcams}
-          game={fields.short_game}
-          top={fields.short_video_top}
-          width={fields.short_video_width}
+          episodes={hasEpisode(fields.mode) ? fields.overlay_episodes : null}
+          place={{ x: fields.overlay_x, y: fields.overlay_y, scale: fields.overlay_scale }}
           onChange={set}
           onChanged={props.onChanged}
         />
-      )}
-      <ClipOverlay
-        show={show}
-        episodes={hasEpisode(fields.mode) ? fields.overlay_episodes : null}
-        place={{ x: fields.overlay_x, y: fields.overlay_y, scale: fields.overlay_scale }}
-        onChange={set}
-        onChanged={props.onChanged}
-      />
-      <Intro show={show} fields={fields} onChange={set} onChanged={props.onChanged} />
+        <Intro show={show} fields={fields} onChange={set} onChanged={props.onChanged} />
 
-      <Field label="About the show" hint="context for the AI">
-        <textarea
-          value={fields.notes}
-          onChange={(e) => set({ notes: e.target.value })}
-          rows={5}
-          placeholder="Who hosts it and who the regulars are, how a typical episode runs, running jokes and nicknames, names the AI might mishear…"
-          className={input}
-        />
-      </Field>
+      </Part>
 
-      {hasClips(fields.mode) && (
-        <Field label="What the clips and highlights should be" hint="the AI follows this over its defaults">
+      <Part id="guidance" title="The AI's guidance" note="What the AI reads before it picks a video's clips.">
+        <Field label="About the show" hint="context for the AI">
           <textarea
-            value={fields.clip_guidance}
-            onChange={(e) => set({ clip_guidance: e.target.value })}
-            rows={6}
-            placeholder={
-              "e.g. Clips follow the segments the hosts announce and run 20–90 minutes; give each guest their own clip.\n" +
-              "Highlights: the biggest laughs and blow-ups, 30–90 seconds."
-            }
+            value={fields.notes}
+            onChange={(e) => set({ notes: e.target.value })}
+            rows={5}
+            placeholder="Who hosts it and who the regulars are, how a typical episode runs, running jokes and nicknames, names the AI might mishear…"
             className={input}
           />
         </Field>
-      )}
 
-      {hasClips(fields.mode) && (
-        <Field label="What to learn from past clips" hint="the AI follows this over the numbers">
-          <textarea
-            value={fields.learning_notes}
-            onChange={(e) => set({ learning_notes: e.target.value })}
-            rows={4}
-            maxLength={4000}
-            placeholder={
-              "e.g. Clips that start right on the topic do better than ones with a lead-in.\n" +
-              "Viewers stay for the long debates, so keep those whole."
-            }
-            className={input}
-          />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            With each new stream, the AI also gets how this show's past uploads did, and how you changed or turned down
-            its picks. Stats shows what it's given.
-          </p>
-        </Field>
-      )}
-
-      {hasClips(fields.mode) && (
-        <Group label="Transcripts" hint="for use outside the app">
-          <Tick
-            label="Save each stream's transcript as files"
-            checked={fields.save_transcripts}
-            onChange={(save_transcripts) => set({ save_transcripts })}
-          />
-          <p className="mt-1.5 text-xs text-zinc-500">
-            Once the AI has been through a stream, its transcript is saved in the data folder under transcripts/, in a
-            folder for the show: as .json with the stream's details and when each line was said, and as .txt to read. The
-            save-transcripts command saves past streams' too.
-          </p>
-          {fields.save_transcripts && (
-            <label className="mt-3 block">
-              <span className="mb-1 block text-xs text-zinc-500">
-                What each stream's time goes on (optional): one category per line, a name, a colon and what it covers
-              </span>
-              <textarea
-                value={fields.breakdown}
-                onChange={(e) => set({ breakdown: e.target.value })}
-                rows={4}
-                maxLength={4000}
-                placeholder={
-                  "e.g. Gameplay: playing a game\nNews: going through headlines and other people's stories\nSponsors: paid ad reads"
-                }
-                className={input}
-              />
-              <span className="mt-1.5 block text-xs text-zinc-500">
-                The AI splits each stream into these, with anything else as Other, in the same request as picking the clips,
-                so it costs little extra. The parts are saved in the .json, for working out what share of each stream goes
-                on what. For streams from now on.
-              </span>
-            </label>
-          )}
-        </Group>
-      )}
-
-      <Field label="Links that belong to this show" hint="one per line">
-        <textarea
-          value={fields.match}
-          onChange={(e) => set({ match: e.target.value })}
-          rows={3}
-          placeholder={"x.com/yourshow\nkick.com/yourshow"}
-          className={input}
-        />
-        <p className="mt-1.5 text-xs text-zinc-500">
-          A link you paste in Videos belongs to this show if it contains one of these, or comes from a channel with that
-          name. Watched channels are added here automatically.
-        </p>
-      </Field>
-
-      <div className="flex gap-2">
-        {show && (
-          <Button tone="danger" onClick={remove}>
-            Delete
-          </Button>
+        {hasClips(fields.mode) && (
+          <Field label="What the clips and highlights should be" hint="the AI follows this over its defaults">
+            <textarea
+              value={fields.clip_guidance}
+              onChange={(e) => set({ clip_guidance: e.target.value })}
+              rows={6}
+              placeholder={
+                "e.g. Clips follow the segments the hosts announce and run 20–90 minutes; give each guest their own clip.\n" +
+                "Highlights: the biggest laughs and blow-ups, 30–90 seconds."
+              }
+              className={input}
+            />
+          </Field>
         )}
-        <Button tone="primary" onClick={save} disabled={busy || !fields.name.trim() || !patternsOk || !shortsOk || !dirty} className="flex-1">
+
+        {hasClips(fields.mode) && (
+          <Field label="What to learn from past clips" hint="the AI follows this over the numbers">
+            <textarea
+              value={fields.learning_notes}
+              onChange={(e) => set({ learning_notes: e.target.value })}
+              rows={4}
+              maxLength={4000}
+              placeholder={
+                "e.g. Clips that start right on the topic do better than ones with a lead-in.\n" +
+                "Viewers stay for the long debates, so keep those whole."
+              }
+              className={input}
+            />
+            <p className="mt-1.5 text-xs text-zinc-500">
+              With each new stream, the AI also gets how this show's past uploads did, and how you changed or turned down
+              its picks. Below is what it's given now; Stats shows it too.
+            </p>
+          </Field>
+        )}
+        {hasClips(fields.mode) && show && (
+          <WhatTheAiLearns key={show.learning_notes} showId={show.id} unsaved={show.learning_notes !== fields.learning_notes} />
+        )}
+
+        {hasClips(fields.mode) && (
+          <Group label="Transcripts" hint="for use outside the app">
+            <Tick
+              label="Save each stream's transcript as files"
+              checked={fields.save_transcripts}
+              onChange={(save_transcripts) => set({ save_transcripts })}
+            />
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Once the AI has been through a stream, its transcript is saved in the data folder under transcripts/, in a
+              folder for the show: as .json with the stream's details and when each line was said, and as .txt to read. The
+              save-transcripts command saves past streams' too.
+            </p>
+            {fields.save_transcripts && (
+              <label className="mt-3 block">
+                <span className="mb-1 block text-xs text-zinc-500">
+                  What each stream's time goes on (optional): one category per line, a name, a colon and what it covers
+                </span>
+                <textarea
+                  value={fields.breakdown}
+                  onChange={(e) => set({ breakdown: e.target.value })}
+                  rows={4}
+                  maxLength={4000}
+                  placeholder={
+                    "e.g. Gameplay: playing a game\nNews: going through headlines and other people's stories\nSponsors: paid ad reads"
+                  }
+                  className={input}
+                />
+                <span className="mt-1.5 block text-xs text-zinc-500">
+                  The AI splits each stream into these, with anything else as Other, in the same request as picking the clips,
+                  so it costs little extra. The parts are saved in the .json, for working out what share of each stream goes
+                  on what. For streams from now on.
+                </span>
+              </label>
+            )}
+          </Group>
+        )}
+
+      </Part>
+
+      {show && (
+        <div className="mt-8">
+          <Button tone="danger" onClick={remove}>
+            Delete this show
+          </Button>
+        </div>
+      )}
+
+      {/* While there's something to save, it stays in view at the bottom as the form scrolls, above the phone's tab bar. */}
+      <div
+        className={cn(
+          "z-20 -mx-4 mt-6 flex items-center gap-3 border-t border-line bg-bay/95 px-4 py-3 backdrop-blur lg:mx-0 lg:rounded-xl lg:border lg:px-4",
+          dirty && "sticky bottom-[calc(env(safe-area-inset-bottom)+4.25rem)] lg:bottom-4",
+        )}
+      >
+        <p className={cn("min-w-0 flex-1 text-[13px]", blocked && dirty ? "text-amber-300" : "text-graphite")} aria-live="polite">
+          {busy ? "Saving…" : dirty ? blocked || (show ? "Unsaved changes" : "Not added yet") : "All changes saved"}
+        </p>
+        <Button tone="primary" onClick={save} disabled={busy || !!blocked || !dirty} className="shrink-0 px-6">
           {busy ? "Saving…" : show ? (dirty ? "Save show" : "Saved") : "Add show"}
         </Button>
       </div>
     </div>
+  );
+}
+
+/** A section of the show's settings, which the index beside it (or above it, on a phone) jumps to. */
+function Part({ id, title, note, children }: { id: string; title: string; note?: string; children: ReactNode }) {
+  return (
+    <section id={`part-${id}`} data-part={id} className="scroll-mt-20 pb-4 pt-8 first:pt-0 lg:scroll-mt-8">
+      <h2 className="border-b border-line pb-2 text-2xl font-semibold font-stretch-condensed">{title}</h2>
+      {note && <p className="mt-2 text-sm text-graphite">{note}</p>}
+      <div className="mt-4 space-y-6">{children}</div>
+    </section>
   );
 }
 
@@ -1648,9 +1791,9 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   };
 
   return (
-    <section className="mt-10">
-      <h2 className="text-lg font-bold tracking-tight">Channels to watch</h2>
-      <p className="mt-1 text-sm text-zinc-400">
+    <section id="part-channels" data-part="channels" className="scroll-mt-20 pt-10 lg:scroll-mt-8">
+      <h2 className="border-b border-line pb-2 text-2xl font-semibold font-stretch-condensed">Channels to watch</h2>
+      <p className="mt-2 text-sm text-graphite">
         Checked every 10 minutes. A new stream's VOD is picked up once the stream has ended, and a video posted on X as
         soon as it's seen. Videos already there are listed but not processed; tap one to process it, or add the channel
         to the <a href="#/library" className="font-medium text-violet-300">Library</a> to work through them a few a day.
@@ -1915,7 +2058,7 @@ function ChannelVideos({ channelId, roughDates, files }: { channelId: number; ro
                 Open
               </button>
             ) : (
-              <button onClick={() => process(v)} className="shrink-0 rounded-lg bg-violet-600/80 px-3 py-1.5 text-xs font-semibold active:bg-violet-700">
+              <button onClick={() => process(v)} className="shrink-0 rounded-lg bg-mark px-3 py-1.5 text-xs font-semibold text-ink active:bg-violet-600">
                 Process
               </button>
             )}
@@ -1932,9 +2075,9 @@ const input =
 function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <label className="block">
-      <span className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <span className="mb-1.5 flex items-baseline justify-between gap-3 text-sm font-medium text-chalk">
         {label}
-        {hint && <span className="text-right font-normal normal-case">{hint}</span>}
+        {hint && <span className="text-right text-xs font-normal text-graphite">{hint}</span>}
       </span>
       {children}
     </label>
@@ -1945,9 +2088,9 @@ function Field({ label, hint, children }: { label: string; hint?: string; childr
 function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-sm font-medium text-chalk">
         {label}
-        {hint && <span className="text-right font-normal normal-case">{hint}</span>}
+        {hint && <span className="text-right text-xs font-normal text-graphite">{hint}</span>}
       </p>
       {children}
     </div>

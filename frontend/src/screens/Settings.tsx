@@ -5,7 +5,7 @@ import { Button, DiskMeter, Screen, useToast } from "../ui";
 
 /**
  * The app's own settings: downloads, disk space, the AI and notifications. A desktop has it in the sidebar; a phone,
- * as the gear at the top of each tab.
+ * under More.
  */
 export function Settings() {
   const desktop = useDesktop();
@@ -13,9 +13,9 @@ export function Settings() {
     <Screen
       title="Settings"
       subtitle="Downloads, disk space, the AI and notifications."
-      onBack={desktop ? undefined : () => goBack("inbox")}
+      onBack={desktop ? undefined : () => goBack("more")}
     >
-      <div className="space-y-4">
+      <div className="space-y-8">
         <DownloadAndDisk />
         <AiChoice />
         <Notifications />
@@ -27,9 +27,9 @@ export function Settings() {
 /** A card of settings, one row each. */
 function Section({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
-      <h2 className="text-xs font-semibold uppercase tracking-wide text-zinc-500">{title}</h2>
-      <div className="-mb-3 mt-1 divide-y divide-white/5">{children}</div>
+    <section>
+      <h2 className="mb-3 text-2xl font-semibold font-stretch-condensed">{title}</h2>
+      <div className="divide-y divide-line rounded-2xl bg-panel px-4">{children}</div>
     </section>
   );
 }
@@ -46,19 +46,25 @@ function Row(props: {
   children?: ReactNode; // the editor
 }) {
   return (
-    <div className="py-3">
-      <div className="flex items-baseline justify-between gap-3">
-        <span className="text-sm font-semibold text-zinc-200">{props.name}</span>
+    <div className="py-3.5">
+      <div className="flex items-center gap-4">
+        <div className="min-w-0 flex-1">
+          <span className="block font-semibold">{props.name}</span>
+          {!props.editing && <div className="mt-0.5 text-sm text-chalk">{props.value}</div>}
+          {props.hint && <p className="mt-0.5 text-[13px] text-graphite">{props.hint}</p>}
+          {props.problem && !props.editing && <p className="mt-1 text-[13px] text-amber-300">{props.problem}</p>}
+        </div>
         {props.onAction && !props.editing && (
-          <button type="button" onClick={props.onAction} className="shrink-0 text-xs font-semibold text-violet-300">
+          <button
+            type="button"
+            onClick={props.onAction}
+            className="-mr-2 shrink-0 rounded-lg px-2 py-2 text-sm font-semibold text-mark hover:bg-white/5"
+          >
             {props.action ?? "Change"}
           </button>
         )}
       </div>
-      {!props.editing && <div className="text-sm text-zinc-300">{props.value}</div>}
-      {props.hint && <p className="text-xs text-zinc-500">{props.hint}</p>}
-      {props.problem && !props.editing && <p className="mt-1 text-xs text-amber-300">{props.problem}</p>}
-      {props.editing && <div className="mt-2">{props.children}</div>}
+      {props.editing && <div className="mt-3">{props.children}</div>}
     </div>
   );
 }
@@ -134,11 +140,11 @@ function FullSpeedHours({ settings, onChange }: { settings: AppSettings; onChang
 
   const select = (value: number, set: (v: number) => void, label: string) => (
     <label className="flex-1">
-      <span className="mb-1 block text-xs text-zinc-500">{label}</span>
+      <span className="mb-1 block text-[13px] text-graphite">{label}</span>
       <select
         value={value}
         onChange={(e) => set(Number(e.target.value))}
-        className="w-full appearance-none rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+        className="w-full appearance-none rounded-xl bg-bay px-3.5 py-3 text-base outline-none ring-1 ring-line focus:ring-2 focus:ring-mark"
       >
         {Array.from({ length: 24 }, (_, h) => (
           <option key={h} value={h}>
@@ -178,7 +184,7 @@ function FullSpeedHours({ settings, onChange }: { settings: AppSettings; onChang
             Save
           </Button>
         </div>
-        <p className="text-xs text-zinc-500">
+        <p className="text-[13px] text-graphite">
           Between these hours downloads ignore the limit and use your whole connection, such as right after overnight streams
           end. A download that's running speeds up or slows down within a few seconds when they start and end.
         </p>
@@ -195,6 +201,9 @@ const AI_HINT: Record<AiProviderId, string> = {
   openrouter:
     "Paid per use from your OpenRouter credit, with CLIPPER_OPENROUTER_API_KEY. Any model whose page lists " +
     "structured outputs works; anthropic/claude-opus-5.5 costs about $0.75 for an 8-hour stream.",
+  cliproxy:
+    "Through a CLIProxyAPI server signed in to your plans, at CLIPPER_CLIPROXY_URL with CLIPPER_CLIPROXY_API_KEY " +
+    "(README). The model is any it lists, such as claude-opus-5-5.",
 };
 
 /** The AI: the main one, and each task (picking clips, breakdowns, titles, thumbnails), which can have its own. */
@@ -261,6 +270,8 @@ function AiChoice() {
   );
 }
 
+const COLUMNS: Record<number, string> = { 3: "grid-cols-3", 4: "grid-cols-4", 5: "grid-cols-5" }; // one row of AIs
+
 /** Pick an AI ("" for the main one, when `withMain`) and its model. */
 function AiEditor(props: {
   setup: AiSetup;
@@ -284,13 +295,13 @@ function AiEditor(props: {
   };
   return (
     <div className="space-y-2">
-      <div className={cn("grid gap-1 rounded-xl bg-zinc-800 p-1", options.length === 4 ? "grid-cols-4" : "grid-cols-3")}>
+      <div className={cn("grid gap-1 rounded-xl bg-bay p-1", COLUMNS[options.length] ?? "grid-cols-3")}>
         {options.map((o) => (
           <button
             key={o.id || "main"}
             type="button"
             onClick={() => choose(o.id)}
-            className={cn("rounded-lg px-1 py-2 text-xs font-semibold", provider === o.id ? "bg-zinc-600 text-white" : "text-zinc-400")}
+            className={cn("rounded-lg px-1 py-2 text-xs font-semibold", provider === o.id ? "bg-zinc-700 text-chalk shadow-[inset_0_-2px_0_var(--color-mark)]" : "text-zinc-400")}
           >
             {o.name}
           </button>
@@ -303,7 +314,7 @@ function AiEditor(props: {
             onChange={(e) => setModel(e.target.value)}
             placeholder={(props.withMain ? ofIt.model : ofIt.default_model) || "Its default"}
             aria-label="Model"
-            className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+            className="min-w-0 flex-1 rounded-xl bg-bay px-3.5 py-3 text-base outline-none ring-1 ring-line focus:ring-2 focus:ring-mark"
           />
         )}
         <Button onClick={props.onCancel} className={ofIt ? "" : "flex-1"}>
@@ -314,12 +325,12 @@ function AiEditor(props: {
         </Button>
       </div>
       {ofIt ? (
-        <p className="text-xs text-zinc-500">
+        <p className="text-[13px] text-graphite">
           {props.withMain ? `Leave the model empty for the one ${ofIt.name} uses (${ofIt.model || "its default"}). ` : ""}
           {AI_HINT[ofIt.id]}
         </p>
       ) : (
-        <p className="text-xs text-zinc-500">The task follows the main AI, whatever it's set to.</p>
+        <p className="text-[13px] text-graphite">The task follows the main AI, whatever it's set to.</p>
       )}
     </div>
   );
@@ -396,14 +407,14 @@ function NumberRow(props: {
             value={value}
             onChange={(e) => setValue(e.target.value)}
             aria-label={props.name}
-            className="min-w-0 flex-1 rounded-xl bg-zinc-800 px-3.5 py-3 text-base outline-none focus:ring-2 focus:ring-violet-500"
+            className="min-w-0 flex-1 rounded-xl bg-bay px-3.5 py-3 text-base outline-none ring-1 ring-line focus:ring-2 focus:ring-mark"
           />
           <Button onClick={() => setEditing(false)}>Cancel</Button>
           <Button tone="primary" onClick={save}>
             Save
           </Button>
         </div>
-        <p className="text-xs text-zinc-500">{props.hint}</p>
+        <p className="text-[13px] text-graphite">{props.hint}</p>
       </div>
     </Row>
   );

@@ -1,5 +1,7 @@
 # docker compose up -d       starts the review app (port 8080), the worker and the upload browser (port 6080)
-# docker compose run --rm worker <command>     runs a one-off command, e.g. doctor or process "<url>"
+# docker compose run --rm --no-deps worker <command>     runs a one-off command, e.g. doctor or process "<url>".
+#   --no-deps leaves the upload browser alone: without it, Compose may make the browser's container again, which
+#   closes it and leaves the running worker (on the browser's network) with no network until `up -d`.
 
 x-clipper: &clipper
   build:
@@ -65,8 +67,23 @@ services:
     ports:
       - "${CLIPPER_BIND:-127.0.0.1}:6080:6080"
 
+  # Optional (README, "The AI"): CLIProxyAPI, signed in to your Claude or ChatGPT plans, which the AI can go through
+  # instead (CLIPPER_CLIPROXY_URL). It starts with the rest once .env has COMPOSE_PROFILES=cliproxy. The app reaches
+  # it at http://cliproxy:8317/v1; the ports below, on the server only, are for its sign-ins' callbacks.
+  cliproxy:
+    image: ${CLIPPER_CLIPROXY_IMAGE:-eceasy/cli-proxy-api:latest}
+    profiles: [cliproxy]
+    restart: unless-stopped
+    volumes:
+      - ./cliproxy/config.yaml:/CLIProxyAPI/config.yaml # from cliproxy/config.example.yaml
+      - cliproxy-auth:/root/.cli-proxy-api
+    ports:
+      - "127.0.0.1:54545:54545" # Claude sign-in
+      - "127.0.0.1:1455:1455" # ChatGPT (Codex) sign-in
+
 volumes:
   claude-config: # Claude Code login
   codex-config: # Codex login, if the AI work goes through your ChatGPT plan
   models: # Whisper model download (about 1.6 GB)
   browser-profile: # the upload browser's YouTube and X sign-ins
+  cliproxy-auth: # the CLI proxy's sign-ins, if it's used

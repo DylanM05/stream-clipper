@@ -46,15 +46,21 @@ class Settings(BaseSettings):
     day_starts_at: int = Field(default=6, ge=0, le=12)
 
     # The AI that picks the clips and writes preview titles and thumbnail ideas (ai.py), until it's changed in the
-    # app: "claude" (Claude Code, signed in with your Claude plan), "codex" (Codex, signed in with your ChatGPT plan)
-    # or "openrouter" (a model on OpenRouter, paid per use with openrouter_api_key). Each has its own model, also
-    # changeable in the app: llm_model is Claude's, and an empty codex_model is Codex's own default.
-    llm_provider: Literal["claude", "codex", "openrouter"] = "claude"
+    # app: "claude" (Claude Code, signed in with your Claude plan), "codex" (Codex, signed in with your ChatGPT plan),
+    # "openrouter" (a model on OpenRouter, paid per use with openrouter_api_key) or "cliproxy" (a CLIProxyAPI server
+    # signed in to your plans, at cliproxy_url with cliproxy_api_key). Each has its own model, also changeable in the
+    # app: llm_model is Claude's, and an empty codex_model is Codex's own default.
+    llm_provider: Literal["claude", "codex", "openrouter", "cliproxy"] = "claude"
     claude_bin: str = "claude"
     llm_model: str = "opus"
     codex_bin: str = "codex"
     codex_model: str = ""
     openrouter_model: str = "anthropic/claude-opus-5.5"
+    # CLIProxyAPI's OpenAI-compatible API (llm/cliproxy.py): the cliproxy service in docker-compose.yml, or one
+    # running elsewhere. The key is one of the api-keys in its config.yaml.
+    cliproxy_url: str = "http://cliproxy:8317/v1"
+    cliproxy_api_key: str = ""
+    cliproxy_model: str = "claude-opus-5-5"
     llm_effort: str | None = "high"
     llm_timeout_s: int = 3600
     highlights_per_hour: float = 3.0

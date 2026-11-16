@@ -11,9 +11,9 @@ from sqlmodel import Session
 
 from .config import Settings
 from .db import get_app_setting, get_engine
-from .llm import LLM, ClaudeCode, Codex, LLMError, OpenRouter
+from .llm import LLM, ClaudeCode, CliProxy, Codex, LLMError, OpenRouter
 
-PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "openrouter": "OpenRouter"}
+PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "openrouter": "OpenRouter", "cliproxy": "CLI Proxy"}
 PROVIDER_KEY = "llm_provider"  # in the app's settings, with each provider's model under "<provider>_model"
 
 # The work the AI does, each of which can have an AI of its own: in the app's settings, its provider under
@@ -39,7 +39,8 @@ class Choice:
 
 
 def default_model(settings: Settings, provider: str) -> str:
-    return {"claude": settings.llm_model, "codex": settings.codex_model, "openrouter": settings.openrouter_model}[provider]
+    return {"claude": settings.llm_model, "codex": settings.codex_model, "openrouter": settings.openrouter_model,
+            "cliproxy": settings.cliproxy_model}[provider]
 
 
 def provider_model(s: Session, settings: Settings, provider: str) -> str:
@@ -80,6 +81,11 @@ def backend(settings: Settings, choice: Choice, effort: str | None = None, timeo
         if not settings.openrouter_api_key:
             raise LLMError("A model on OpenRouter needs CLIPPER_OPENROUTER_API_KEY in .env (see the README)")
         return OpenRouter(api_key=settings.openrouter_api_key, model=choice.model, effort=effort, timeout_s=timeout_s)
+    if choice.provider == "cliproxy":
+        if not settings.cliproxy_api_key:
+            raise LLMError("The CLI proxy needs CLIPPER_CLIPROXY_API_KEY in .env (see the README)")
+        return CliProxy(url=settings.cliproxy_url, api_key=settings.cliproxy_api_key, model=choice.model, effort=effort,
+                        timeout_s=timeout_s)
     return ClaudeCode(bin=settings.claude_bin, model=choice.model, effort=effort, timeout_s=timeout_s)
 
 
@@ -87,10 +93,30 @@ def problem(settings: Settings, choice: Choice) -> str:
     """What stops the chosen AI from working, in a sentence for the app; empty if nothing does."""
     if choice.provider == "openrouter":
         return "" if settings.openrouter_api_key else "It needs CLIPPER_OPENROUTER_API_KEY in the server's .env."
+    if choice.provider == "cliproxy":
+        return cliproxy_problem(settings, choice)
     llm = backend(settings, choice)
     if isinstance(llm, Codex) and not llm.signed_in():
         return ("Codex isn't signed in on the server: run "
-                "docker compose run --rm --entrypoint codex worker login --device-auth there.")
+                "docker compose run --rm --no-deps --entrypoint codex worker login --device-auth there.")
     if isinstance(llm, ClaudeCode) and not llm.signed_in():
-        return "Claude Code isn't signed in on the server: run docker compose run --rm --entrypoint claude worker there."
+        return "Claude Code isn't signed in on the server: run docker compose run --rm --no-deps --entrypoint claude worker there."
+    return ""
+
+
+def cliproxy_problem(settings: Settings, choice: Choice) -> str:
+    """Whether the CLI proxy answers with the key, and offers the model: it lists the ones its sign-ins can use."""
+    if not settings.cliproxy_api_key:
+        return "It needs CLIPPER_CLIPROXY_API_KEY in the server's .env: one of the api-keys in the proxy's config.yaml."
+    try:
+        models = CliProxy(url=settings.cliproxy_url, api_key=settings.cliproxy_api_key).models()
+    except LLMError as e:
+        return f"{e}."
+    if models is None:  # it doesn't list them: llm-check tries the model
+        return ""
+    if not models:
+        return ("The CLI proxy isn't signed in to any plan yet: run docker compose exec cliproxy /CLIProxyAPI/CLIProxyAPI "
+                "-no-browser --claude-login (or --codex-login) on the server (README).")
+    if choice.model.split("(")[0] not in models:
+        return f"The CLI proxy has no model {choice.model!r}. It has: {', '.join(models[:12])}."
     return ""

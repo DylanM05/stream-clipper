@@ -408,8 +408,14 @@ class AppSettingsPatch(BaseModel):
 APP_SETTING_KEYS = ("download_limit_mbps", "full_speed_from", "full_speed_until", "cleanup_after_days")
 
 
+# The video statuses in each part of the work (Summary.work). A queued video waits for whichever part comes next for
+# it: downloading, or processing once it's downloaded.
+WORK_VOD_STATUSES = {"downloads": ("queued", "downloading"), "processing": ("queued", "preparing", "transcribing", "analysing", "segmenting")}
+WORK_WITH_PROGRESS = ("downloading", "preparing", "transcribing")  # the steps that say how far along they are
+
+
 class AiProvider(BaseModel):
-    id: str  # "claude", "codex" or "openrouter" (ai.PROVIDERS)
+    id: str  # "claude", "codex", "openrouter" or "cliproxy" (ai.PROVIDERS)
     name: str
     model: str  # the model it uses; for Codex, "" is its own default
     default_model: str  # what it uses until another is set in the app (CLIPPER_LLM_MODEL and the like)
@@ -440,7 +446,7 @@ class AiPatch(BaseModel):
     # With a task: that task's own AI ("" for the main one) and model ("" for that AI's). Without: the main AI, and
     # the model of the provider given, or else of the main one ("" for its default).
     task: str | None = None
-    provider: Literal["claude", "codex", "openrouter", ""] | None = None
+    provider: Literal["claude", "codex", "openrouter", "cliproxy", ""] | None = None
     model: str | None = Field(default=None, max_length=200)
 
 
@@ -1030,7 +1036,42 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         working = s.exec(
             select(func.count()).select_from(Vod).where(col(Vod.status).notin_(("ready", "failed")))
         ).one()
-        return {"to_review": to_review, "to_upload": to_upload, "videos_in_progress": working}
+        return {"to_review": to_review, "to_upload": to_upload, "videos_in_progress": working, "work": work_now(s)}
+
+    def work_now(s: Session) -> list[dict]:
+        """Each part of the work that can be paused (db.PAUSABLE), in the order a video goes through them: how many
+        are in it, waiting or under way, and the one under way (its title, its step, and how far along, 0-1, where
+        that's known)."""
+        vods = s.exec(select(Vod).where(col(Vod.status).in_(WORK_VOD_STATUSES["downloads"] + WORK_VOD_STATUSES["processing"]))
+                      .order_by(Vod.id)).all()
+
+        def stage_of(v: Vod) -> str:
+            if v.status == "queued":
+                return "processing" if v.workspace else "downloads"
+            return "downloads" if v.status == "downloading" else "processing"
+        rendering = s.exec(select(ClipRecord).where(col(ClipRecord.status).in_(("approved", "rendering")))
+                           .order_by(ClipRecord.id)).all()
+        uploading = s.exec(select(UploadJob, ClipRecord).join(ClipRecord)
+                           .where(col(UploadJob.status).in_(("queued", "uploading"))).order_by(UploadJob.id)).all()
+
+        def part(stage: str, count: int, now: tuple[str, str, float | None] | None) -> dict:
+            title, step, progress = now or ("", "", None)
+            return {"stage": stage, "count": count, "now": title, "step": step, "progress": progress}
+
+        def vod_part(stage: str) -> dict:
+            mine = [v for v in vods if stage_of(v) == stage]
+            busy = next((v for v in mine if v.status != "queued" and not v.paused), None)
+            return part(stage, len(mine), busy and (busy.title or busy.url, busy.status,
+                                                    busy.progress if busy.status in WORK_WITH_PROGRESS else None))
+
+        render = next((c for c in rendering if c.status == "rendering"), None)
+        upload = next(((j, c) for j, c in uploading if j.status == "uploading"), None)
+        return [
+            vod_part("downloads"),
+            vod_part("processing"),
+            part("renders", len(rendering), render and (render.title, "rendering", None)),
+            part("uploads", len(uploading), upload and (upload[1].title, "uploading", upload[0].progress)),
+        ]
 
     # --- Settings changed from the app ---
 

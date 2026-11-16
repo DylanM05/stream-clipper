@@ -1,5 +1,5 @@
-"""The AI that picks clips and writes titles and thumbnail ideas: Codex and models on OpenRouter as well as Claude
-Code, and choosing between them in the app."""
+"""The AI that picks clips and writes titles and thumbnail ideas: Codex, models on OpenRouter and models through a CLI
+proxy as well as Claude Code, and choosing between them in the app."""
 
 import json
 import subprocess
@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from clipper import ai
 from clipper.config import Settings
-from clipper.llm import ClaudeCode, Codex, LLMError, OpenRouter, UsageLimitError, codex, openrouter
+from clipper.llm import ClaudeCode, CliProxy, Codex, LLMError, OpenRouter, UsageLimitError, cliproxy, codex, openrouter
 from clipper.llm.base import llm_schema
 from clipper.web import app as web_app
 
@@ -98,6 +98,18 @@ def test_codex_usage_limit_says_when_to_try_again(monkeypatch):
     assert abs((err.value.resets_at - soon).total_seconds()) < 60
 
 
+def test_codex_usage_limit_says_when_to_try_again_as_it_words_it_now():
+    now = datetime(2026, 11, 11, 9, 0).astimezone()
+    today = codex._reset_time("You’ve hit your usage limit. Try again at 3:45 PM.", now)
+    assert today == datetime(2026, 11, 11, 15, 45).astimezone()
+    another_day = codex._reset_time(
+        "You’ve hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit "
+        "https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 13th, 2026 12:05 AM.", now)
+    assert another_day == datetime(2026, 11, 13, 0, 5).astimezone()
+    assert codex._reset_time("You’ve hit your usage limit. Try again at 8:15 AM.", now) is None  # gone: try again soon
+    assert codex._reset_time("You’ve hit your usage limit. Try again later.", now) is None
+
+
 def test_codex_not_signed_in_or_failing_says_so(monkeypatch):
     signed_out = events({"type": "error", "message": "Not logged in. Run codex login."})
     with pytest.raises(LLMError, match="codex login --device-auth"):
@@ -178,6 +190,87 @@ def test_openrouter_asks_again_once_when_the_models_provider_is_down(monkeypatch
     assert len(sent) == 2 and sent[0]["reasoning"] == {"effort": "xhigh"}  # Claude Code's top effort
 
 
+# --- The CLI proxy -----------------------------------------------------------------------------
+
+
+def proxy_answers(*answers):
+    """A fake CLIProxyAPI: each request gets the next (status, json body), and is kept with where it went."""
+    sent = []
+    queue = list(answers)
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        sent.append((request.method, str(request.url), request.headers.get("authorization"),
+                     json.loads(request.content) if request.content else None))
+        status, body = queue.pop(0)
+        return httpx.Response(status, json=body, headers=body.pop("_headers", {}) if isinstance(body, dict) else {})
+
+    return sent, httpx.MockTransport(handle)
+
+
+def ask_proxy(transport, effort="high"):
+    return CliProxy(url="http://cliproxy:8317/v1/", api_key="proxy-key", model="claude-opus-5-5", effort=effort,
+                    transport=transport).structured(
+        system_prompt="Pick clips.", task="Pick the best one.", stdin_text="# Transcript", schema=Answer,
+    )
+
+
+def test_cli_proxy_is_asked_for_the_schema_on_its_openai_api():
+    sent, transport = proxy_answers((200, message(json.dumps(GOOD))))
+    assert ask_proxy(transport) == Answer(**GOOD)
+    [(method, url, auth, body)] = sent
+    assert (method, url, auth) == ("POST", "http://cliproxy:8317/v1/chat/completions", "Bearer proxy-key")
+    assert body["model"] == "claude-opus-5-5(high)"  # how hard it thinks, the proxy's way
+    # The schema is in the instructions too, for plans the proxy can't pass response_format on to.
+    assert body["messages"][0]["content"].startswith("Pick clips.")
+    assert json.dumps(llm_schema(Answer)) in body["messages"][0]["content"]
+    assert body["messages"][1]["content"] == "Pick the best one.\n\n# Transcript"
+    assert body["response_format"]["json_schema"] == {"name": "Answer", "strict": True, "schema": llm_schema(Answer)}
+    assert "provider" not in body and "reasoning" not in body
+
+
+def test_cli_proxy_takes_an_answer_in_a_code_block_without_the_schema_or_the_effort_it_cant_take():
+    sent, transport = proxy_answers(
+        (400, {"error": {"message": "response_format json_schema is not supported"}}),
+        (400, {"error": {"message": "unsupported thinking level xhigh"}}),
+        (200, message("```json\n" + json.dumps(GOOD) + "\n```")),
+    )
+    assert ask_proxy(transport, effort="max").title == "Chicken wins"
+    assert sent[0][3]["model"] == "claude-opus-5-5(xhigh)" and "response_format" in sent[0][3]
+    assert "response_format" not in sent[1][3] and sent[2][3]["model"] == "claude-opus-5-5"
+
+
+def test_cli_proxy_keeps_an_effort_in_the_models_name_and_none_when_theres_none():
+    sent, transport = proxy_answers((200, message(json.dumps(GOOD))), (200, message(json.dumps(GOOD))))
+    for model, effort in (("gpt-6.1-sol(low)", "high"), ("gpt-6.1-sol", None)):
+        CliProxy(api_key="k", model=model, effort=effort, transport=transport).structured(
+            system_prompt="S.", task="T.", stdin_text="", schema=Answer)
+    assert [body["model"] for *_, body in sent] == ["gpt-6.1-sol(low)", "gpt-6.1-sol"]
+
+
+@pytest.mark.parametrize("status, body, error, match", [
+    (429, {"error": {"message": "All credentials are cooling down"}, "_headers": {"retry-after": "120"}},
+     UsageLimitError, "cooling down"),
+    (403, {"error": {"message": "Quota exceeded for this account"}}, UsageLimitError, "Quota"),
+    (401, {"error": {"message": "Invalid API key"}}, LLMError, "CLIPPER_CLIPROXY_API_KEY"),
+    (500, {"error": {"message": "auth_unavailable: no auth available"}}, LLMError, "answered 500"),
+    (200, message('{"title": "cut', finish="length"), LLMError, "cut off"),
+])
+def test_cli_proxy_problems_say_what_happened(status, body, error, match):
+    _, transport = proxy_answers((status, body), (status, dict(body)))
+    with pytest.raises(error, match=match) as err:
+        ask_proxy(transport)
+    if status == 429:
+        assert "CLI proxy" in err.value.note
+        assert err.value.resets_at > datetime.now(timezone.utc) + timedelta(seconds=100)
+
+
+def test_cli_proxy_asks_again_once_when_its_down(monkeypatch):
+    monkeypatch.setattr(cliproxy, "RETRY_AFTER_S", 0)
+    sent, transport = proxy_answers((502, {"error": {"message": "Bad gateway"}}), (200, message(json.dumps(GOOD))))
+    assert ask_proxy(transport).score == 0.9
+    assert len(sent) == 2
+
+
 # --- Choosing one in the app --------------------------------------------------------------------
 
 
@@ -200,7 +293,7 @@ def test_claude_code_until_another_is_chosen_with_each_ones_model(settings):
     setup = client.patch("/api/ai", json={"provider": "codex", "model": "gpt-6.1-sol"}).json()
     assert setup["provider"] == "codex"
     assert {p["id"]: p["model"] for p in setup["providers"]} == {
-        "claude": "opus", "codex": "gpt-6.1-sol", "openrouter": "anthropic/claude-opus-5.5",
+        "claude": "opus", "codex": "gpt-6.1-sol", "openrouter": "anthropic/claude-opus-5.5", "cliproxy": "claude-opus-5-5",
     }
     llm = ai.model(settings, effort="high", timeout_s=3600)
     assert isinstance(llm, Codex) and llm.model == "gpt-6.1-sol"
@@ -266,3 +359,48 @@ def test_a_task_uses_the_main_ai_until_it_gets_one_of_its_own(settings):
     assert isinstance(ai.model(settings, "low", 60, task="breakdown"), ClaudeCode)
     assert client.patch("/api/ai", json={"task": "dancing", "provider": "codex"}).status_code == 422
     assert client.patch("/api/ai", json={"provider": ""}).status_code == 422
+
+
+def test_the_cli_proxy_needs_its_key_its_sign_ins_and_the_model(settings, monkeypatch):
+    client = TestClient(web_app.create_app(settings))
+    setup = client.patch("/api/ai", json={"provider": "cliproxy"}).json()
+    assert setup["provider"] == "cliproxy" and "CLIPPER_CLIPROXY_API_KEY" in setup["problem"]
+    with pytest.raises(LLMError, match="CLIPPER_CLIPROXY_API_KEY"):
+        ai.model(settings, effort="high", timeout_s=60)
+
+    settings.cliproxy_api_key = "proxy-key"
+    offered: list = []
+    monkeypatch.setattr(CliProxy, "models", lambda self: offered)
+    assert "isn't signed in to any plan" in client.get("/api/ai").json()["problem"]
+    offered[:] = ["gpt-6.1-sol", "claude-sonnet-5-5"]
+    assert "no model 'claude-opus-5-5'" in client.get("/api/ai").json()["problem"]
+    offered.append("claude-opus-5-5")
+    assert client.get("/api/ai").json()["problem"] == ""
+    offered = None  # a proxy that doesn't list its models: llm-check tries it
+    assert client.get("/api/ai").json()["problem"] == ""
+    llm = ai.model(settings, effort="high", timeout_s=60)
+    assert isinstance(llm, CliProxy) and (llm.url, llm.api_key, llm.model) == ("http://cliproxy:8317/v1", "proxy-key",
+                                                                                "claude-opus-5-5")
+
+    # A task of its own on another of the proxy's models.
+    tasks = {t["id"]: t for t in client.patch(
+        "/api/ai", json={"task": "breakdown", "provider": "cliproxy", "model": "gpt-6.1-sol"}).json()["tasks"]}
+    assert tasks["breakdown"]["uses"] == "CLI Proxy (gpt-6.1-sol)" and tasks["breakdown"]["problem"] == ""
+
+
+def test_the_cli_proxy_lists_its_models_or_says_why_it_cant():
+    sent, transport = proxy_answers((200, {"object": "list", "data": [{"id": "claude-opus-5-5"}, {"id": "gpt-6.1-sol"}]}))
+    proxy = CliProxy(url="http://cliproxy:8317/v1", api_key="proxy-key", transport=transport)
+    assert proxy.models() == ["claude-opus-5-5", "gpt-6.1-sol"]
+    assert sent[0][:3] == ("GET", "http://cliproxy:8317/v1/models", "Bearer proxy-key")
+
+    _, transport = proxy_answers((401, {"error": {"message": "Invalid API key"}}))
+    with pytest.raises(LLMError, match="turned down the API key"):
+        CliProxy(api_key="wrong", transport=transport).models()
+    _, transport = proxy_answers((404, {"error": {"message": "not found"}}))
+    assert CliProxy(transport=transport).models() is None  # one that doesn't list them
+
+    def unreachable(request):
+        raise httpx.ConnectError("Connection refused")
+
+    assert "Couldn't reach the CLI proxy" in CliProxy(transport=httpx.MockTransport(unreachable)).auth_status()

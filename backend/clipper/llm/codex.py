@@ -12,7 +12,7 @@ import re
 import subprocess
 import tempfile
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -24,7 +24,11 @@ log = logging.getLogger(__name__)
 
 _LIMIT = re.compile(r"usage limit|limit reached|rate.?limit|too many requests", re.IGNORECASE)
 _SIGNED_OUT = re.compile(r"not logged in|codex login|unauthori[sz]ed|\b401\b", re.IGNORECASE)
-# "…or try again in 2 days 3 hours 15 minutes."
+# "…or try again at 3:45 PM." later today, or "…at Nov 13th, 2026 3:45 PM.", in the time zone Codex runs in (ours).
+_TRY_AGAIN_AT = re.compile(
+    r"try again at (?:([a-z]{3}) (\d{1,2})(?:st|nd|rd|th)?, (\d{4}) )?(\d{1,2}):(\d{2}) ([ap]m)", re.IGNORECASE
+)
+# "…or try again in 2 days 3 hours 15 minutes.", as older versions put it.
 _TRY_AGAIN = re.compile(r"try again in ((?:\d+\s*[a-z]+[\s,]*(?:and\s+)?)+)", re.IGNORECASE)
 _SPAN = re.compile(r"(\d+)\s*(d|h|m|s)[a-z]*", re.IGNORECASE)
 _UNIT_S = {"d": 86400, "h": 3600, "m": 60, "s": 1}
@@ -142,9 +146,20 @@ def _failure(events: list[dict[str, Any]]) -> str:
     return ""
 
 
-def _reset_time(message: str) -> datetime | None:
+def _reset_time(message: str, now: datetime | None = None) -> datetime | None:
+    """When the usage limit resets, from what Codex said; None if it didn't say, or said a time that's gone."""
+    now = now or datetime.now().astimezone()
+    if m := _TRY_AGAIN_AT.search(message):
+        month, day, year, hour, minute, half = m.groups()
+        try:
+            date = datetime.strptime(f"{month} {day} {year}", "%b %d %Y").date() if month else now.date()
+        except ValueError:
+            return None
+        hour_24 = int(hour) % 12 + (12 if half.lower() == "pm" else 0)
+        at = datetime.combine(date, time(hour_24, int(minute))).astimezone()  # this computer's time zone
+        return at.astimezone(timezone.utc) if at > now else None
     m = _TRY_AGAIN.search(message)
     if not m:
         return None
     seconds = sum(int(n) * _UNIT_S[unit.lower()] for n, unit in _SPAN.findall(m[1]))
-    return datetime.now(timezone.utc) + timedelta(seconds=seconds) if seconds else None
+    return now.astimezone(timezone.utc) + timedelta(seconds=seconds) if seconds else None

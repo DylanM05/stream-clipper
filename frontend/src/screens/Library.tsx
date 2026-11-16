@@ -28,11 +28,11 @@ export function Library() {
       {error && <ErrorNote>{error}</ErrorNote>}
       {backlogs?.length === 0 && (
         <div className="mt-10 flex flex-col items-center text-center">
-          <div className="rounded-full bg-zinc-900 p-5 ring-1 ring-white/5">
-            <LibraryIcon className="size-8 text-zinc-500" />
+          <div className="rounded-full bg-panel p-5">
+            <LibraryIcon className="size-8 text-graphite" />
           </div>
-          <h2 className="mt-4 text-lg font-semibold">Nothing in the Library yet</h2>
-          <p className="mt-1 max-w-sm text-sm text-zinc-400">
+          <h2 className="mt-4 text-2xl font-semibold font-stretch-condensed">Nothing in the Library yet</h2>
+          <p className="mt-1 max-w-sm text-sm text-graphite">
             Add a folder of videos on the server, such as a TV show's seasons, or a channel's past streams. They're worked
             through a few a day, in order, and each one's clips come to the inbox like a new stream's.
           </p>
@@ -41,24 +41,31 @@ export function Library() {
           </Button>
         </div>
       )}
-      <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
-        {backlogs?.map((b) => (
-          <button
-            key={b.channel.id}
-            onClick={() => go(`library/${b.channel.id}`)}
-            className="block w-full rounded-2xl bg-zinc-900 p-4 text-left ring-1 ring-white/5 hover:bg-zinc-800/40 active:bg-zinc-800/70"
-          >
-            <div className="flex items-center gap-2">
-              <h3 className="min-w-0 flex-1 truncate font-semibold">{b.name}</h3>
-              <span className="text-xs text-zinc-500">{PLATFORM_NAME[b.channel.platform]}</span>
-            </div>
-            <p className="mt-0.5 truncate text-sm text-zinc-400">
-              {b.show_name} · {VIDEO_TYPE_LABEL[b.video_type]}
-            </p>
-            <Progress backlog={b} className="mt-3" />
-          </button>
-        ))}
-      </div>
+      <ul className="divide-y divide-line border-t border-line lg:max-w-5xl">
+        {backlogs?.map((b) => {
+          const Icon = b.channel.platform === "folder" ? FolderIcon : LinkIcon;
+          return (
+            <li key={b.channel.id}>
+              <button
+                onClick={() => go(`library/${b.channel.id}`)}
+                className="group -mx-2 grid w-[calc(100%+1rem)] grid-cols-[1.5rem_minmax(0,1fr)_1rem] gap-x-3 rounded-lg px-2 py-4 text-left hover:bg-white/[0.03]"
+              >
+                <Icon className="mt-0.5 size-5 text-dim" />
+                <span className="min-w-0">
+                  <span className="block truncate font-semibold">{b.name}</span>
+                  <span className="mt-0.5 flex flex-wrap gap-x-3 text-[13px] text-graphite">
+                    <span>{b.show_name}</span>
+                    <span>{VIDEO_TYPE_LABEL[b.video_type]}</span>
+                    <span>{PLATFORM_NAME[b.channel.platform]}</span>
+                  </span>
+                  <Progress backlog={b} className="mt-3 max-w-xl" />
+                </span>
+                <ChevronIcon className="mt-1 size-4 -rotate-90 text-dim group-hover:text-graphite" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </Screen>
   );
 }
@@ -69,10 +76,10 @@ export function LibraryPanel() {
   if (!backlogs?.length) return null;
   return (
     <Panel title="Library" link={{ href: "#/library", label: "All" }}>
-      <ul className="divide-y divide-white/5">
+      <ul className="divide-y divide-line">
         {backlogs.map((b) => (
           <li key={b.channel.id}>
-            <a href={`#/library/${b.channel.id}`} className="block px-4 py-3 hover:bg-white/[0.03]">
+            <a href={`#/library/${b.channel.id}`} className="-mx-2 block rounded-lg px-2 py-3 hover:bg-white/[0.03]">
               <p className="truncate text-sm font-medium">{b.name}</p>
               <Progress backlog={b} className="mt-2" />
             </a>
@@ -390,7 +397,7 @@ const SMALL = "rounded-lg bg-zinc-800 px-3 py-1.5 text-xs font-semibold text-zin
 
 function Small({ onClick, tone, children }: { onClick: () => void; tone?: "primary"; children: ReactNode }) {
   return (
-    <button onClick={onClick} className={cn(SMALL, tone === "primary" && "bg-violet-600/80 text-white hover:bg-violet-600 active:bg-violet-700")}>
+    <button onClick={onClick} className={cn(SMALL, tone === "primary" && "bg-mark text-ink hover:bg-violet-400 active:bg-violet-600")}>
       {children}
     </button>
   );
@@ -660,7 +667,7 @@ const input =
 function Group({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
   return (
     <div>
-      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-semibold uppercase tracking-wide text-zinc-500">
+      <p className="mb-1.5 flex items-baseline justify-between gap-3 text-xs font-medium text-zinc-500">
         {label}
         {hint && <span className="text-right font-normal normal-case">{hint}</span>}
       </p>

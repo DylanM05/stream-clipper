@@ -1,108 +1,52 @@
 import type { ReactNode } from "react";
-import { api, media, type Clip, type Destination, type Pauses, type Stats, type StatsUpload, type Summary, type Vod } from "../api";
-import { AlertIcon, LinkIcon } from "../icons";
-import { ago, cn, compact, firstSentence, length, platformName, timeOfDay, total, upcoming, usePoll } from "../lib";
-import { usePauses } from "../PauseBar";
-import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, StatTile, VodStatusChip } from "../ui";
+import { api, type Clip, type Destination, type Pauses, type Stats, type StatsUpload, type Storage, type Summary, type Vod } from "../api";
+import { Thumb } from "../ClipCard";
+import { LinkIcon } from "../icons";
+import { ago, cn, compact, firstSentence, length, platformName, total, upcoming, usePoll } from "../lib";
+import { usePauses, WorkStrip } from "../Work";
+import { ErrorNote, KIND_LABEL, Panel, ProgressBar, Screen, VodStatusChip } from "../ui";
 import { GOING_UP, inUploadOrder } from "./Approved";
 import { LibraryPanel } from "./Library";
 import { UploadBrowserStatus } from "./UploadKit";
-import { ACTIVE, WITH_PROGRESS } from "./Videos";
+import { ACTIVE, WITH_PROGRESS, waitingText } from "./Videos";
 
 const DAY_MS = 86400000;
 const LIST_MAX = 8; // rows a panel shows before "and N more"
 
 /**
- * Everything at a glance, for a desktop's big screen: what's waiting for you, what goes up next and when, what's
- * being worked on, what needs a look, how recent uploads are doing, and how each channel uploads.
+ * Everything at a glance: the work, a part at a time, then what needs you (clips to review, ones ready to upload,
+ * failures, videos held up, a full disk), what goes up next and when, what's being worked on, how recent uploads
+ * are doing, and how each channel uploads.
  */
 export function Overview({ summary }: { summary?: Summary }) {
   const { data: clips, error } = usePoll(() => api.clips(["approved", "rendering", "failed", "rendered", "uploaded"]), 10000);
   const { data: vods } = usePoll(api.vods, 10000);
   const { data: stats } = usePoll(() => api.stats(null), 60000);
   const { data: destinations } = usePoll(api.destinations, 60000);
+  const { data: storage } = usePoll(api.storage, 120000);
   const { pauses } = usePauses();
 
   const all = clips ?? [];
-  const rendering = all.filter((c) => c.status === "approved" || c.status === "rendering");
-  const renderFailed = all.filter((c) => c.status === "failed");
-  const ready = all.filter((c) => c.status === "rendered" && !GOING_UP.includes(c.upload_state));
+  const ready = all.filter((c) => c.status === "rendered" && !GOING_UP.includes(c.upload_state) && c.upload_state !== "failed");
   const queue = all
     .filter((c) => (c.status === "rendered" || c.status === "uploaded") && GOING_UP.includes(c.upload_state))
     .sort(inUploadOrder);
-  const uploadFailed = all.filter((c) => c.upload_state === "failed");
   const working = (vods ?? []).filter((v) => v.status !== "ready" && v.status !== "failed");
-  const waitingTurn = working.filter((v) => v.status === "queued").length;
-  const since = Date.now() - 7 * DAY_MS;
-  const week = (stats?.uploads ?? []).filter((u) => u.finished_at && Date.parse(u.finished_at) >= since);
-  const weekViews = total(week.map((u) => u.views));
-  const scheduledNext = queue.find((c) => c.upload_state === "scheduled" && c.next_upload);
-  const videoPauses = pauseWords(pauses, ["downloads", "processing"]);
 
   return (
-    <Screen title="Overview" subtitle="What's waiting, what's going up, and how it's doing." wide>
+    <Screen title="Overview" subtitle="What's running and what needs you." wide>
       {error && <ErrorNote>{error}</ErrorNote>}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
-        <StatTile label="To review" value={summary?.to_review ?? "–"} note="Clips in the inbox" href="#/inbox" />
-        <StatTile
-          label="Rendering"
-          value={clips ? rendering.length : "–"}
-          note={
-            pauses?.renders ? (
-              <Warn>Rendering is paused</Warn>
-            ) : renderFailed.length ? (
-              <Bad>{renderFailed.length} failed</Bad>
-            ) : (
-              "Approved clips"
-            )
-          }
-          href="#/approved"
-        />
-        <StatTile
-          label="Ready to upload"
-          value={clips ? ready.length : "–"}
-          note={uploadFailed.length ? <Bad>{uploadFailed.length} failed to upload</Bad> : "Upload not started"}
-          href="#/approved"
-        />
-        <StatTile
-          label="Upload queue"
-          value={clips ? queue.length : "–"}
-          note={
-            pauses?.uploads ? (
-              <Warn>Uploads are paused</Warn>
-            ) : queue.some((c) => c.upload_state === "uploading") ? (
-              "Uploading now"
-            ) : scheduledNext ? (
-              `Next ${upcoming(scheduledNext.next_upload!)}`
-            ) : queue.length ? (
-              "Next goes up soon"
-            ) : (
-              "Nothing queued"
-            )
-          }
-          href="#/approved"
-        />
-        <StatTile
-          label="Videos in progress"
-          value={summary?.videos_in_progress ?? "–"}
-          note={videoPauses ? <Warn>{videoPauses} paused</Warn> : waitingTurn ? `${waitingTurn} waiting their turn` : "Downloading to picking clips"}
-          href="#/videos"
-        />
-        <StatTile
-          label="On YouTube this week"
-          value={stats ? week.length : "–"}
-          note={weekViews !== null ? `${compact(weekViews)} views so far` : "Uploads in the last 7 days"}
-          href="#/stats"
-        />
-      </div>
+      {/* Across the page on a desktop; one above the other, the compact way, on a phone. */}
+      <WorkStrip summary={summary} className="mb-8 hidden lg:grid" />
+      <WorkStrip summary={summary} stacked className="mb-8 rounded-2xl bg-panel p-1.5 lg:hidden" />
 
-      <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_24rem]">
-        <div className="min-w-0 space-y-6">
-          <Attention clips={all} vods={vods ?? []} />
+      <div className="grid gap-8 xl:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="min-w-0 space-y-8">
+          <NeedsYou summary={summary} clips={all} ready={ready.length} vods={vods ?? []} storage={storage} loaded={!!clips && !!vods} />
           <UploadQueue queue={queue} ready={ready.length} loaded={!!clips} />
           <InProgress vods={working} pauses={pauses} loaded={!!vods} />
         </div>
-        <div className="min-w-0 space-y-6">
+        <div className="min-w-0 space-y-8">
           <RecentUploads stats={stats} />
           <LibraryPanel />
           <Channels destinations={destinations} />
@@ -112,76 +56,98 @@ export function Overview({ summary }: { summary?: Summary }) {
   );
 }
 
-const Warn = ({ children }: { children: ReactNode }) => <span className="text-amber-300">{children}</span>;
-const Bad = ({ children }: { children: ReactNode }) => <span className="text-red-300">{children}</span>;
-
-/** "Downloads and processing", for whichever of those parts are paused; "" if none. */
-function pauseWords(pauses: Pauses | undefined, parts: (keyof Pauses)[]): string {
-  const names = parts.filter((p) => pauses?.[p]).map((p) => p[0].toUpperCase() + p.slice(1));
-  return names.map((n, i) => (i ? n.toLowerCase() : n)).join(" and ");
-}
-
 function More({ count, href, label }: { count: number; href: string; label?: string }) {
   if (count <= 0) return null;
   return (
-    <a href={href} className="block border-t border-white/5 px-4 py-2.5 text-xs font-semibold text-zinc-400 hover:text-zinc-200">
+    <a href={href} className="block py-2.5 text-[13px] font-semibold text-graphite hover:text-chalk">
       and {count} more{label && ` ${label}`}
     </a>
   );
 }
 
-const Empty = ({ children }: { children: ReactNode }) => <p className="px-4 pb-4 pt-1 text-sm text-zinc-500">{children}</p>;
+const Empty = ({ children }: { children: ReactNode }) => <p className="py-3 text-sm text-graphite">{children}</p>;
 
-type Problem = { key: string; tone: "bad" | "warn"; title: string; detail: string; href: string };
+/** A row in one of the overview's lists: it opens what it's about. */
+const ROW = "-mx-2 flex items-center gap-3 rounded-lg px-2 py-3 hover:bg-white/[0.03]";
 
-/** Failures to deal with, and videos held up until something changes. Only there when there's something. */
-function Attention({ clips, vods }: { clips: Clip[]; vods: Vod[] }) {
-  const problems: Problem[] = [
+type Need = { key: string; tone: "todo" | "bad" | "warn"; title: string; detail: string; href: string; action: string };
+
+const DOT: Record<Need["tone"], string> = { todo: "bg-mark", bad: "bg-tally", warn: "bg-amber-400" };
+
+/**
+ * What's waiting on you, most pressing first: failures, then what's held up, then clips to review and to upload.
+ * Each says what's wrong or waiting and has a button to the page that deals with it.
+ */
+function NeedsYou(props: { summary?: Summary; clips: Clip[]; ready: number; vods: Vod[]; storage?: Storage; loaded: boolean }) {
+  const { summary, clips, ready, vods, storage } = props;
+  const toReview = summary?.to_review ?? 0;
+  const needs: Need[] = [
     ...clips
       .filter((c) => c.upload_state === "failed")
-      .map((c): Problem => ({
+      .map((c): Need => ({
         key: `u${c.id}`,
         tone: "bad",
         title: c.title,
-        detail: `Upload failed${c.destination_name ? ` to ${c.destination_name}` : ""}. Open it to see why and try again.`,
+        detail: `Upload failed${c.destination_name ? ` to ${c.destination_name}` : ""}${c.upload_error ? `: ${firstSentence(c.upload_error)}` : "."}`,
         href: `#/upload/${c.id}`,
+        action: "Try again",
       })),
     ...clips
       .filter((c) => c.status === "failed")
-      .map((c): Problem => ({ key: `r${c.id}`, tone: "bad", title: c.title, detail: `Render failed: ${c.error}`, href: `#/clip/${c.id}` })),
+      .map((c): Need => ({ key: `r${c.id}`, tone: "bad", title: c.title, detail: `Render failed: ${c.error}`, href: `#/clip/${c.id}`, action: "Open" })),
     ...vods
       .filter((v) => v.status === "failed")
-      .map((v): Problem => ({ key: `v${v.id}`, tone: "bad", title: v.title || v.url, detail: `Failed: ${v.error}`, href: `#/videos/${v.id}` })),
+      .map((v): Need => ({ key: `v${v.id}`, tone: "bad", title: v.title || v.url, detail: `Failed: ${v.error}`, href: `#/videos/${v.id}`, action: "Open" })),
+    ...(storage?.free_gb != null && storage.free_gb < storage.min_free_gb
+      ? [{
+          key: "disk",
+          tone: "bad" as const,
+          title: "Disk nearly full",
+          detail: `${storage.free_gb} GB free. New downloads wait until ${storage.min_free_gb} GB is free.`,
+          href: "#/videos",
+          action: "Free up space",
+        }]
+      : []),
     ...vods
       .filter((v) => v.status === "waiting")
-      .map((v): Problem => ({
-        key: `w${v.id}`,
-        tone: "warn",
-        title: v.title || v.url,
-        detail: `${v.error || "Waiting."} It tries again ${v.retry_at ? `at ${timeOfDay(v.retry_at)}` : "soon"}.`,
-        href: `#/videos/${v.id}`,
-      })),
+      .map((v): Need => ({ key: `w${v.id}`, tone: "warn", title: v.title || v.url, detail: waitingText(v), href: `#/videos/${v.id}`, action: "Open" })),
+    ...(toReview
+      ? [{ key: "review", tone: "todo" as const, title: `${toReview} clip${toReview === 1 ? "" : "s"} to review`, detail: "Waiting in the inbox", href: "#/inbox", action: "Review" }]
+      : []),
+    ...(ready
+      ? [{
+          key: "ready",
+          tone: "todo" as const,
+          title: `${ready} clip${ready === 1 ? "" : "s"} ready to upload`,
+          detail: "Rendered, with the upload not started",
+          href: "#/approved",
+          action: "Upload",
+        }]
+      : []),
   ];
-  if (!problems.length) return null;
 
   return (
-    <Panel title={`Needs a look · ${problems.length}`}>
-      <ul className="divide-y divide-white/5 border-t border-white/5">
-        {problems.slice(0, LIST_MAX).map((p) => (
-          <li key={p.key}>
-            <a href={p.href} className="flex items-start gap-3 px-4 py-2.5 hover:bg-white/[0.03]">
-              <AlertIcon className={cn("mt-0.5 size-4 shrink-0", p.tone === "bad" ? "text-red-300" : "text-amber-300")} />
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-sm font-semibold">{p.title}</span>
-                <span className={cn("line-clamp-2 break-words text-xs", p.tone === "bad" ? "text-red-300" : "text-amber-300")}>
-                  {p.detail}
+    <Panel title="Needs you" note={needs.length ? String(needs.length) : undefined}>
+      {props.loaded && needs.length === 0 && <Empty>Nothing needs you right now.</Empty>}
+      {needs.length > 0 && (
+        <ul className="divide-y divide-line">
+          {needs.slice(0, LIST_MAX).map((n) => (
+            <li key={n.key}>
+              <a href={n.href} className={ROW}>
+                <span className={cn("size-2 shrink-0 rounded-full", DOT[n.tone])} />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate font-semibold">{n.title}</span>
+                  <span className={cn("line-clamp-2 break-words text-[13px]", n.tone === "warn" ? "text-amber-300" : "text-graphite")}>
+                    {n.detail}
+                  </span>
                 </span>
-              </span>
-            </a>
-          </li>
-        ))}
-      </ul>
-      <More count={problems.length - LIST_MAX} href="#/approved" />
+                <span className="shrink-0 rounded-lg bg-panel-2 px-3 py-1.5 text-[13px] font-semibold">{n.action}</span>
+              </a>
+            </li>
+          ))}
+        </ul>
+      )}
+      <More count={needs.length - LIST_MAX} href="#/approved" />
     </Panel>
   );
 }
@@ -189,15 +155,15 @@ function Attention({ clips, vods }: { clips: Clip[]; vods: Vod[] }) {
 /** When each started upload goes, in order. */
 function queueTime(c: Clip): [string, string] {
   const at = c.next_upload ? upcoming(c.next_upload) : "";
-  if (c.upload_state === "uploading") return ["Uploading now", "text-sky-300"];
-  if (c.upload_state === "queued") return ["Up next", "text-indigo-300"];
+  if (c.upload_state === "uploading") return ["Uploading now", "text-mark"];
+  if (c.upload_state === "queued") return ["Up next", "text-chalk"];
   if (c.upload_state === "retrying") return [at ? `Retries ${at}` : "Retries later", "text-amber-300"];
-  return [at || "Scheduled", "text-zinc-300"];
+  return [at || "Scheduled", "text-chalk"];
 }
 
 function UploadQueue({ queue, ready, loaded }: { queue: Clip[]; ready: number; loaded: boolean }) {
   return (
-    <Panel title="Upload queue" link={{ href: "#/approved", label: "Open Upload" }}>
+    <Panel title="Upload queue" note={queue.length ? String(queue.length) : undefined} link={{ href: "#/approved", label: "Open Upload" }}>
       {loaded && queue.length === 0 && (
         <Empty>
           Nothing is queued to upload.
@@ -205,24 +171,26 @@ function UploadQueue({ queue, ready, loaded }: { queue: Clip[]; ready: number; l
         </Empty>
       )}
       {queue.length > 0 && (
-        <ol className="divide-y divide-white/5 border-t border-white/5">
+        <ol className="divide-y divide-line">
           {queue.slice(0, LIST_MAX).map((c) => {
             const [when, tone] = queueTime(c);
             return (
               <li key={c.id}>
-                <a href={`#/upload/${c.id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.03]">
-                  <img src={media.thumb(c)} alt="" loading="lazy" className="aspect-video w-20 shrink-0 rounded-md bg-zinc-800 object-cover" />
+                <a href={`#/upload/${c.id}`} className={ROW}>
+                  <span className="block aspect-video w-20 shrink-0 overflow-hidden rounded-md bg-panel">
+                    <Thumb clip={c} />
+                  </span>
                   <span className="min-w-0 flex-1">
                     <span className="block truncate text-sm font-semibold">{c.title}</span>
-                    <span className="block truncate text-xs text-zinc-500">
+                    <span className="block truncate text-[13px] text-graphite">
                       {KIND_LABEL[c.kind]}
-                      {c.has_short && " + Short"} · {c.destination_name || "No channel chosen"}
+                      {c.has_short && " + Short"} to {c.destination_name || "no channel yet"}
                     </span>
                     {c.upload_state === "retrying" && c.upload_error && (
                       <span className="block truncate text-xs text-amber-300/80">{firstSentence(c.upload_error)}</span>
                     )}
                   </span>
-                  <span className={cn("shrink-0 text-right text-xs font-semibold", tone)}>{when}</span>
+                  <span className={cn("shrink-0 text-right text-[13px] font-semibold", tone)}>{when}</span>
                 </a>
               </li>
             );
@@ -236,27 +204,30 @@ function UploadQueue({ queue, ready, loaded }: { queue: Clip[]; ready: number; l
 
 function InProgress({ vods, pauses, loaded }: { vods: Vod[]; pauses?: Pauses; loaded: boolean }) {
   return (
-    <Panel title="Videos in progress" link={{ href: "#/videos", label: "Open Videos" }}>
+    <Panel title="Videos in progress" note={vods.length ? String(vods.length) : undefined} link={{ href: "#/videos", label: "Open Videos" }}>
       {loaded && vods.length === 0 && <Empty>No videos being worked on. Add one on Videos.</Empty>}
       {vods.length > 0 && (
-        <ul className="divide-y divide-white/5 border-t border-white/5">
+        <ul className="divide-y divide-line">
           {vods.slice(0, LIST_MAX).map((v) => {
             const held = v.status === "queued" && !!pauses && (v.downloaded ? pauses.processing : pauses.downloads);
-            const details = [v.show_name, v.platform && platformName(v.platform), v.duration ? length(v.duration) : null, ago(v.created_at)]
-              .filter(Boolean)
-              .join(" · ");
+            const details = [v.show_name, v.platform && platformName(v.platform), v.duration ? `${length(v.duration)} long` : null, `Added ${ago(v.created_at)}`]
+              .filter(Boolean);
             return (
               <li key={v.id}>
-                <a href={`#/videos/${v.id}`} className="block px-4 py-2.5 hover:bg-white/[0.03]">
+                <a href={`#/videos/${v.id}`} className="-mx-2 block rounded-lg px-2 py-3 hover:bg-white/[0.03]">
                   <span className="flex items-center gap-3">
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-sm font-semibold">{v.title || v.url}</span>
-                      <span className="block truncate text-xs text-zinc-500">{details}</span>
+                      <span className="flex flex-wrap gap-x-3 text-[13px] text-graphite">
+                        {details.map((d) => (
+                          <span key={d as string}>{d}</span>
+                        ))}
+                      </span>
                     </span>
                     <VodStatusChip status={v.status} paused={v.paused || held} />
                   </span>
                   {ACTIVE.includes(v.status) && !v.paused && !held && (
-                    <span className="mt-2 block">
+                    <span className="mt-2 block max-w-md">
                       <ProgressBar value={WITH_PROGRESS.includes(v.status) ? v.progress : null} />
                     </span>
                   )}
@@ -273,23 +244,26 @@ function InProgress({ vods, pauses, loaded }: { vods: Vod[]; pauses?: Pauses; lo
 
 const uploadKind = (u: StatsUpload) => (u.which === "short" ? "Short" : KIND_LABEL[u.kind]);
 
-/** The latest uploads' views, and the month's most viewed. */
+/** The latest uploads' views, with the week's count beside the title, and the month's most viewed. */
 function RecentUploads({ stats }: { stats?: Stats }) {
-  const since = Date.now() - 30 * DAY_MS;
+  const now = Date.now();
   const top = (stats?.uploads ?? [])
-    .filter((u) => u.views !== null && u.finished_at && Date.parse(u.finished_at) >= since)
+    .filter((u) => u.views !== null && u.finished_at && Date.parse(u.finished_at) >= now - 30 * DAY_MS)
     .sort((a, b) => b.views! - a.views!)
     .slice(0, 3);
+  const week = (stats?.uploads ?? []).filter((u) => u.finished_at && Date.parse(u.finished_at) >= now - 7 * DAY_MS);
+  const weekViews = total(week.map((u) => u.views));
+  const note = stats && `${week.length} this week${weekViews !== null ? `, ${compact(weekViews)} views` : ""}`;
   return (
     <>
-      <Panel title="Latest uploads" link={{ href: "#/stats", label: "Open Stats" }}>
-        {stats?.setup_needed && <p className="mx-4 mb-3 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-200">{stats.setup_needed}</p>}
+      <Panel title="Latest uploads" note={note} link={{ href: "#/stats", label: "Stats" }}>
+        {stats?.setup_needed && <p className="mt-3 rounded-xl bg-amber-500/10 p-3 text-xs text-amber-200">{stats.setup_needed}</p>}
         {stats && stats.uploads.length === 0 && <Empty>No uploads by the app yet.</Empty>}
         <UploadList uploads={stats?.uploads.slice(0, 6) ?? []} />
-        {stats?.checked_at && <p className="border-t border-white/5 px-4 py-2.5 text-xs text-zinc-500">Views as of {ago(stats.checked_at)}</p>}
+        {stats?.checked_at && <p className="pt-2.5 text-xs text-graphite">Views as of {ago(stats.checked_at)}</p>}
       </Panel>
       {top.length > 0 && (
-        <Panel title="Most viewed, last 30 days">
+        <Panel title="Most viewed" note="Last 30 days">
           <UploadList uploads={top} />
         </Panel>
       )}
@@ -300,21 +274,21 @@ function RecentUploads({ stats }: { stats?: Stats }) {
 function UploadList({ uploads }: { uploads: StatsUpload[] }) {
   if (!uploads.length) return null;
   return (
-    <ul className="divide-y divide-white/5 border-t border-white/5">
+    <ul className="divide-y divide-line border-b border-line">
       {uploads.map((u) => (
         <li key={u.job_id}>
-          <a href={u.youtube_url} target="_blank" rel="noreferrer" className="flex items-center gap-3 px-4 py-2.5 hover:bg-white/[0.03]">
+          <a href={u.youtube_url} target="_blank" rel="noreferrer" className={ROW}>
             <span className="min-w-0 flex-1">
               <span className="block truncate text-sm font-semibold">{u.title}</span>
-              <span className="flex items-center gap-1 text-xs text-zinc-500">
+              <span className="flex items-center gap-1.5 text-[13px] text-graphite">
                 <LinkIcon className="size-3 shrink-0" />
                 {uploadKind(u)}
-                {u.finished_at && ` · ${ago(u.finished_at)}`}
+                {u.finished_at && <span className="ml-1.5">{ago(u.finished_at)}</span>}
               </span>
             </span>
             <span className="shrink-0 text-right">
-              <span className="block text-sm font-bold tabular-nums">{u.views === null ? "–" : compact(u.views)}</span>
-              <span className="block text-[11px] text-zinc-500">views</span>
+              <span className="block font-mono text-sm">{u.views === null ? "–" : compact(u.views)}</span>
+              <span className="block text-[11px] text-graphite">views</span>
             </span>
           </a>
         </li>
@@ -328,18 +302,18 @@ function Channels({ destinations }: { destinations?: Destination[] }) {
   if (!destinations) return null;
   const usesBrowser = destinations.some((d) => (d.youtube && !d.api_connected) || d.rumble);
   return (
-    <Panel title="Channels you upload to" link={{ href: "#/shows/youtube", label: "Manage" }}>
+    <Panel title="Channels" link={{ href: "#/shows/youtube", label: "Manage" }}>
       {destinations.length === 0 && <Empty>None yet. Add your clips channels under Shows.</Empty>}
       {destinations.length > 0 && (
-        <ul className="divide-y divide-white/5 border-t border-white/5">
+        <ul className="divide-y divide-line">
           {destinations.map((d) => {
             const how = [d.youtube && (d.api_connected ? "YouTube API" : "YouTube Studio"), d.rumble && "Rumble"].filter(Boolean).join(" and ");
             return (
-              <li key={d.id} className="flex items-start gap-2.5 px-4 py-2.5">
-                <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", d.api_error ? "bg-red-400" : "bg-emerald-400")} />
+              <li key={d.id} className="flex items-start gap-2.5 py-3">
+                <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", d.api_error ? "bg-tally" : "bg-cue")} />
                 <span className="min-w-0 flex-1">
                   <span className="block truncate text-sm font-semibold">{d.name}</span>
-                  <span className="block text-xs text-zinc-500">Through {how}</span>
+                  <span className="block text-[13px] text-graphite">Through {how}</span>
                   {d.api_error && <span className="block break-words text-xs text-red-300">{d.api_error}</span>}
                 </span>
               </li>
@@ -348,7 +322,7 @@ function Channels({ destinations }: { destinations?: Destination[] }) {
         </ul>
       )}
       {usesBrowser && (
-        <div className="border-t border-white/5 px-4 py-3">
+        <div className="border-t border-line pt-3">
           <UploadBrowserStatus />
         </div>
       )}

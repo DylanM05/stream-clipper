@@ -36,6 +36,7 @@ export const XIcon = outline(<path d="M6 6l12 12M18 6L6 18" />);
 export const BackIcon = outline(<path d="M15 18l-6-6 6-6" />);
 export const PlayIcon = filled(<path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5z" />);
 export const PauseIcon = filled(<path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" />);
+export const MoreIcon = filled(<path d="M5 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM12 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zM19 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z" />);
 export const InboxIcon = outline(
   <>
     <path d="M3 13h5l1.5 3h5l1.5-3h5" />

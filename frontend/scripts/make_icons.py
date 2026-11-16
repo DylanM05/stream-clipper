@@ -11,10 +11,10 @@ from pathlib import Path
 import numpy as np
 
 PUBLIC = Path(__file__).resolve().parent.parent / "public"
-BACKGROUND = (9, 9, 11)  # zinc-950
-CLIP = (124, 58, 237)  # violet-600
-HANDLES = (196, 181, 253)  # violet-300
-PLAY = (255, 255, 255)
+BACKGROUND = (31, 32, 35)  # bay
+CLIP = (66, 69, 75)  # a raised panel
+HANDLES = (240, 180, 41)  # mark: the in and out points
+PLAY = (236, 233, 226)  # chalk
 
 
 def draw(size: int, supersample: int = 4) -> np.ndarray:
