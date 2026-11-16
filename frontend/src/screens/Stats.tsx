@@ -95,22 +95,27 @@ export function Stats() {
 }
 
 /** What the show's past clips teach the AI, exactly as it's given with the show's next stream (learning.py). */
-function WhatTheAiLearns({ showId, className }: { showId: number | null; className: string }) {
+/**
+ * What the AI is given about a show's past clips with each new stream: how the uploads did, how you changed or turned
+ * down its picks, and your notes from the show's settings. `unsaved`: the notes have been changed and not saved yet.
+ */
+export function WhatTheAiLearns({ showId, className, unsaved }: { showId: number | null; className?: string; unsaved?: boolean }) {
   const { data } = usePoll(() => (showId === null ? Promise.resolve(null) : api.trackRecord(showId)), 0, showId);
   if (showId === null || data === undefined) return null;
   return (
-    <section className={cn("rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5", className)}>
-      <h2 className="text-sm font-bold">What the AI learns from this show's past clips</h2>
-      <p className="mt-1 text-xs text-zinc-500">
+    <section className={cn("rounded-2xl bg-panel p-4 shadow-[inset_3px_0_0_var(--color-mark)]", className)}>
+      <h2 className="font-semibold">What the AI learns from this show's past clips</h2>
+      <p className="mt-1 text-[13px] text-graphite">
         What it's given with each new stream of the show: how the uploads did, how you changed or turned down its picks,
         and your notes from the show's settings.
+        {unsaved && " Your changed notes go into it once you save."}
       </p>
       {data?.text ? (
-        <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-sans text-xs leading-relaxed text-zinc-300">
+        <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap break-words font-sans text-[13px] leading-relaxed text-chalk">
           {data.text}
         </pre>
       ) : (
-        <p className="mt-3 text-sm text-zinc-500">
+        <p className="mt-3 text-sm text-graphite">
           Nothing yet. It needs a few uploads with views, or picks you've changed or turned down.
         </p>
       )}
