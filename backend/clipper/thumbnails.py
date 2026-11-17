@@ -192,7 +192,7 @@ def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str
         "chapter": "chapter of a stream", "highlight": "short clip", "whole": "full episode",
         "compilation": "compilation of a stream's best moments, one after the other",
     }[clip.kind]
-    lines = ["# The video", f"Title: {clip.title}", f"What it is: {kind}, {to_timecode(clip.end - clip.start)} long"]
+    lines = ["# The video", f"Title: {clip.title}", f"What it is: {kind}, {to_timecode(cuts.kept_length(clip.start, clip.end, cuts.parse(clip.cuts)))} long"]
     if clip.description.strip():
         lines += ["", "# Its description", clip.description.strip()[:3000]]
     if notes.strip():

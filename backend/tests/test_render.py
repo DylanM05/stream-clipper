@@ -92,12 +92,14 @@ def test_a_compilation_renders_each_part_on_its_own_and_joins_them_without_re_en
         Path(args[-1]).write_bytes(b"video")
 
     monkeypatch.setattr(ffmpeg, "run", fake_run)
-    clip = CLIP.model_copy(update={"kind": "compilation", "start": 100, "end": 1030, "cuts": [(130, 1000)]})
+    monkeypatch.setattr(ffmpeg, "has_audio", lambda path: True)
+    clip = CLIP.model_copy(update={"kind": "compilation", "start": 100, "end": 1030, "cuts": [(110, 112), (130, 1000)]})
     render.render_compilation(tmp_path / "source.mp4", clip, tmp_path / "comp.mp4", Settings(hwaccel=None),
                               on_progress=progress.append)
 
     seeks = [(c[c.index("-ss") + 1], c[c.index("-t") + 1]) for c in calls if "-ss" in c]
     assert seeks == [("100.000", "30.000"), ("1000.000", "30.000")]  # the 14 minutes between are never read
+    assert "trim=start=12.000:end=30.000" in calls[0][calls[0].index("-filter_complex") + 1]  # a pause, cut as in any clip
     assert calls[-1][calls[-1].index("-c") + 1] == "copy"
-    assert progress == [0.5, 1.0]
+    assert progress == [28 / 58, 1.0]
     assert [p.name for p in tmp_path.iterdir()] == ["comp.mp4"]  # the parts are gone
