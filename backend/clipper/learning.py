@@ -18,7 +18,7 @@ from sqlmodel import Session, col, select
 
 from . import cuts, titles
 from .config import Settings
-from .db import ClipRecord, Show, UploadJob, Vod
+from .db import PICKED_KINDS, ClipRecord, Show, UploadJob, Vod
 from .models import Transcript, Word
 from .stats import compact
 from .workspace import Workspace, read_json
@@ -49,7 +49,7 @@ def track_record(s: Session, settings: Settings, show: Show) -> str:
     """The show's lessons for the AI, as sections of its input; empty when there's nothing to go on yet."""
     rows = s.exec(
         select(UploadJob, ClipRecord).join(ClipRecord).join(Vod, ClipRecord.vod_id == Vod.id)
-        .where(Vod.show_id == show.id, UploadJob.status == "done", ClipRecord.kind != "whole",
+        .where(Vod.show_id == show.id, UploadJob.status == "done", col(ClipRecord.kind).in_(PICKED_KINDS),
                col(UploadJob.views).is_not(None))
     ).all()
     transcripts = _Transcripts(settings)
@@ -225,7 +225,7 @@ def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
     where they disagreed about a highlight working as a Short, and which picks they turned down."""
     picks = s.exec(
         select(ClipRecord, Vod).join(Vod)
-        .where(Vod.show_id == show.id, ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
+        .where(Vod.show_id == show.id, col(ClipRecord.kind).in_(PICKED_KINDS), col(ClipRecord.manual).is_not(True),
                col(ClipRecord.reviewed_at).is_not(None))
         .order_by(col(ClipRecord.reviewed_at).desc()).limit(LATEST)
     ).all()
@@ -345,7 +345,7 @@ def _own_clips(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]
         return []
     ai_picks = s.exec(select(ClipRecord).where(
         col(ClipRecord.vod_id).in_({v.id for _, v in mine}), col(ClipRecord.manual).is_not(True),
-        ClipRecord.kind != "whole",
+        col(ClipRecord.kind).in_(PICKED_KINDS),
     )).all()
     lines = ["# Moments the channel owner clipped themselves, newest first"]
     for clip, vod in mine:
@@ -384,7 +384,7 @@ def backfill(s: Session, settings: Settings) -> int:
     same amount, gets none: that's the timing fix (timing.py) moving it, not the owner. Returns how many it changed."""
     rows = s.exec(
         select(ClipRecord, Vod).join(Vod)
-        .where(col(ClipRecord.picked_start).is_(None), ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
+        .where(col(ClipRecord.picked_start).is_(None), col(ClipRecord.kind).in_(PICKED_KINDS), col(ClipRecord.manual).is_not(True),
                col(Vod.workspace).is_not(None))
     ).all()
     picks: dict[int, dict[str, dict]] = {}
@@ -403,7 +403,7 @@ def backfill(s: Session, settings: Settings) -> int:
         changed += 1
 
     unranked = set(s.exec(select(ClipRecord.vod_id).where(
-        col(ClipRecord.was_extra).is_(None), ClipRecord.kind != "whole", col(ClipRecord.manual).is_not(True),
+        col(ClipRecord.was_extra).is_(None), col(ClipRecord.kind).in_(PICKED_KINDS), col(ClipRecord.manual).is_not(True),
     )))
     for vod_id in unranked:
         vod = s.get(Vod, vod_id)

@@ -57,6 +57,15 @@ def kept(start: float, end: float, cuts: list[Cut]) -> list[Cut]:
     return parts
 
 
+def stream_time(parts: list[Cut], t: float) -> float:
+    """Where `t` seconds into the finished video is in the stream, for the `parts` that stay (kept)."""
+    for a, b in parts:
+        if t < b - a:
+            return a + t
+        t -= b - a
+    return parts[-1][1] if parts else 0.0
+
+
 def kept_length(start: float, end: float, cuts: list[Cut]) -> float:
     """How long the clip comes out."""
     return sum(b - a for a, b in kept(start, end, cuts))

@@ -75,6 +75,46 @@ def render_landscape(
     tmp.replace(out)
 
 
+def render_compilation(
+    source: Path,
+    clip: Clip,
+    out: Path,
+    settings: Settings,
+    on_progress: Callable[[float], None] | None = None,
+    overlay: Overlay | None = None,
+) -> None:
+    """A clip whose parts are far apart in the stream, such as a compilation (compilation.py): each part rendered as
+    render_landscape does, so the time between them is never decoded, then joined without re-encoding. Each part's
+    sound fades in and out, so the joins don't click."""
+    parts = cuts_.kept(clip.start, clip.end, clip.cuts)
+    files = [out.with_name(f"{out.stem}.tmp.part{i:03d}.mp4") for i in range(len(parts))]
+    listing = out.with_name(out.stem + ".tmp.parts.txt")
+    joined = out.with_name(out.stem + ".tmp.mp4")
+    total = max(clip.duration, 0.001)
+    done = 0.0
+    try:
+        for (a, b), file in zip(parts, files):
+            part = clip.model_copy(update={"start": a, "end": b, "cuts": []})
+            report = None
+            if on_progress:
+                def report(f: float, before: float = done, length: float = b - a) -> None:
+                    on_progress((before + f * length) / total)
+            render_landscape(source, part, file, settings, on_progress=report, overlay=overlay)
+            done += b - a
+        listing.write_text("".join(f"file '{_quoted(f.resolve())}'\n" for f in files), encoding="utf-8")
+        ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                    "-movflags", "+faststart", str(joined)])
+        joined.replace(out)
+    finally:
+        for temporary in (*files, listing, joined):
+            temporary.unlink(missing_ok=True)
+
+
+def _quoted(path: Path) -> str:
+    """A path for a concat list between single quotes, which can't hold one itself."""
+    return str(path).replace("'", "'\\''")
+
+
 SHORT_W, SHORT_H = 1080, 1920
 MAX_SHORT_S = 180  # YouTube's limit for Shorts
 CAPTION_GAP = 136  # from the bottom of the video to the bottom of the captions under it

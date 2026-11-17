@@ -29,6 +29,12 @@ CLIP_STATUSES = ("proposed", "extra", "approved", "rejected", "rendering", "rend
 # A stream whose clips all have one of these needs its video files no more (see Worker.clean_up_next).
 CLIP_DONE = ("uploaded", "rejected", "extra")
 
+# Clip kinds: "chapter" (a clip, in the app) and "highlight" are the AI's picks; "whole" is the full episode;
+# "compilation" is a stream's approved picks joined into one video (compilation.py). Only the picks teach the AI
+# (learning.py) or have a score of its.
+CLIP_KINDS = ("chapter", "highlight", "whole", "compilation")
+PICKED_KINDS = ("chapter", "highlight")
+
 # What a video becomes: "segment" is chapters and highlights, "whole" is the full episode as one
 # video, "both" is the full episode plus the chapters and highlights.
 MODES = ("segment", "whole", "both")
@@ -175,6 +181,11 @@ class Show(SQLModel, table=True):
     auto_episode: str = "review"
     auto_chapters: str = "review"
     auto_shorts: str = "review"
+    # Each stream's chapters and highlights that are approved, in or without review, are also joined into one video, a
+    # compilation, once none is left to review (Worker.compile_next). It goes where the clips go, and auto_compilation
+    # is what happens to it (see AUTO_MODES).
+    compilation: bool = False
+    auto_compilation: str = "review"
     # Offered chapters and highlights Claude scores at least this (0-1) are uploaded without review, whatever
     # auto_chapters and auto_shorts say; 0 is off.
     auto_upload_score: float = 0
@@ -235,11 +246,14 @@ class Show(SQLModel, table=True):
         return self.episode_template or self.title_template
 
     def auto_for(self, kind: str) -> str:
-        return {"whole": self.auto_episode, "chapter": self.auto_chapters, "highlight": self.auto_shorts}[kind]
+        return {
+            "whole": self.auto_episode, "chapter": self.auto_chapters, "highlight": self.auto_shorts,
+            "compilation": self.auto_compilation,
+        }[kind]
 
     def auto_for_clip(self, kind: str, score: float) -> str:
         """auto_for, except a chapter or highlight scored at least auto_upload_score is uploaded."""
-        if kind != "whole" and self.auto_upload_score and score >= self.auto_upload_score:
+        if kind in PICKED_KINDS and self.auto_upload_score and score >= self.auto_upload_score:
             return "upload"
         return self.auto_for(kind)
 
@@ -291,6 +305,8 @@ class Vod(SQLModel, table=True):
     error: str = ""  # why it failed, or why it's waiting
     retry_at: datetime | None = None
     paused: bool = False  # held in the app; carries on from its last finished step when resumed
+    # Its show makes compilations, and this one's is still to be made, once its clips are reviewed (Worker.compile_next).
+    compilation_due: bool = False
     cleaned_at: datetime | None = None  # when its big files were deleted (see Worker.clean_up)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

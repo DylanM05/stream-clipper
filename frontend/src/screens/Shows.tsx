@@ -548,6 +548,8 @@ export const BLANK_SHOW: ShowFields = {
   auto_episode: "review",
   auto_chapters: "review",
   auto_shorts: "review",
+  compilation: false,
+  auto_compilation: "review",
   auto_upload_score: 0,
   upload_approved: false,
   auto_visibility: "public",
@@ -792,6 +794,21 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           </Group>
         )}
 
+        {hasClips(fields.mode) && (
+          <Group label="Compilation" hint={`one per ${VIDEO_NOUN[fields.video_type]}`}>
+            <Tick
+              label={`Also join each ${VIDEO_NOUN[fields.video_type]}'s approved clips and Shorts into one video`}
+              checked={fields.compilation}
+              onChange={(compilation) => set({ compilation })}
+            />
+            <p className="mt-1.5 text-xs text-zinc-500">
+              Once none is left to review, the approved ones are joined in the order they happened, with a chapter for each in
+              the description, and it goes where the clips go. One with fewer than two approved gets none. Only{" "}
+              {VIDEO_NOUN[fields.video_type]}s processed after you turn this on get one.
+            </p>
+          </Group>
+        )}
+
         <Group label="Without review">
           <div className="space-y-2">
             {hasEpisode(fields.mode) && (
@@ -801,6 +818,13 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               <>
                 <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
                 <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
+                {fields.compilation && (
+                  <AutoChoice
+                    label="Compilation"
+                    value={fields.auto_compilation}
+                    onChange={(auto_compilation) => set({ auto_compilation })}
+                  />
+                )}
               </>
             )}
           </div>
@@ -1076,7 +1100,9 @@ const GAP_LABEL: Record<string, string> = { "0": "Off", "1": "1h", "2": "2h", "3
 const autoUploads = (f: ShowFields) =>
   f.upload_approved ||
   (hasEpisode(f.mode) && f.auto_episode === "upload") ||
-  (hasClips(f.mode) && (f.auto_chapters === "upload" || f.auto_shorts === "upload" || f.auto_upload_score > 0));
+  (hasClips(f.mode) &&
+    (f.auto_chapters === "upload" || f.auto_shorts === "upload" || f.auto_upload_score > 0 ||
+      (f.compilation && f.auto_compilation === "upload")));
 
 /**
  * After a show's channel: whether its uploads there go to YouTube, Rumble or both. Until it's picked for the show,

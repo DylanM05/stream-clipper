@@ -24,7 +24,7 @@ from pathlib import Path
 import httpx
 from pydantic import BaseModel, Field
 
-from . import ffmpeg
+from . import cuts, ffmpeg
 from .config import Settings
 from .db import ClipRecord
 from . import ai
@@ -96,7 +96,8 @@ def make(settings: Settings, clip: ClipRecord, ws: Workspace, notes: str = "", h
     with tempfile.TemporaryDirectory(prefix="clipper-thumb-") as tmp:
         outside = [p for p in idea.people if not p.in_video][:MAX_LOOKUPS]
         photos = [photo for i, p in enumerate(outside) if (photo := find_photo(p, Path(tmp) / f"person-{i}.jpg", http, channel_picture))]
-        refs = frames(ws.source, clip.start, clip.end, Path(tmp), count=max(MIN_FRAMES, FRAMES - len(photos)))
+        parts = cuts.kept(clip.start, clip.end, cuts.parse(clip.cuts))
+        refs = frames(ws.source, parts, Path(tmp), count=max(MIN_FRAMES, FRAMES - len(photos)))
         prompt = idea.prompt + "\n\n" + reference_guide(idea, len(refs), photos)
         image = draw(settings, prompt, refs + [p.path for p in photos], http)
         out = ws.clips_dir / f"{clip.key}-thumbnail.jpg"
@@ -187,7 +188,10 @@ def _download_image(url: str, out: Path, http: httpx.Client) -> bool:
 
 
 def write_idea(settings: Settings, clip: ClipRecord, transcript: str, notes: str = "", rules: str = "") -> Idea:
-    kind = {"chapter": "chapter of a stream", "highlight": "short clip", "whole": "full episode"}[clip.kind]
+    kind = {
+        "chapter": "chapter of a stream", "highlight": "short clip", "whole": "full episode",
+        "compilation": "compilation of a stream's best moments, one after the other",
+    }[clip.kind]
     lines = ["# The video", f"Title: {clip.title}", f"What it is: {kind}, {to_timecode(clip.end - clip.start)} long"]
     if clip.description.strip():
         lines += ["", "# Its description", clip.description.strip()[:3000]]
@@ -215,8 +219,9 @@ def excerpt(ws: Workspace, clip: ClipRecord) -> str:
     if clip.kind == "whole" or not ws.transcript_json.exists():
         return ""
     transcript = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8"))
+    parts = cuts.kept(clip.start, clip.end, cuts.parse(clip.cuts))
     lines = [f"[{to_timecode(seg.start - clip.start)}] {seg.text.strip()}"
-             for seg in transcript.segments if seg.text.strip() and clip.start <= seg.start < clip.end]
+             for seg in transcript.segments if seg.text.strip() and any(a <= seg.start < b for a, b in parts)]
     total = sum(len(line) + 1 for line in lines)
     if total > MAX_TRANSCRIPT_CHARS:
         step = total / MAX_TRANSCRIPT_CHARS
@@ -224,11 +229,12 @@ def excerpt(ws: Workspace, clip: ClipRecord) -> str:
     return "\n".join(lines)
 
 
-def frames(source: Path, start: float, end: float, out_dir: Path, count: int = FRAMES) -> list[Path]:
-    """Stills spread through the clip, staying clear of its first and last moments."""
+def frames(source: Path, parts: list[cuts.Cut], out_dir: Path, count: int = FRAMES) -> list[Path]:
+    """Stills spread through the parts of the clip that stay (cuts.kept), staying clear of its first and last moments."""
     paths = []
+    total = sum(b - a for a, b in parts)
     for i in range(count):
-        t = start + (end - start) * (i + 0.5) / count
+        t = cuts.stream_time(parts, total * (i + 0.5) / count)
         path = out_dir / f"frame-{i}.jpg"
         ffmpeg.run(["-ss", f"{t:.3f}", "-i", str(source), "-frames:v", "1", "-vf", "scale=1024:-2", "-q:v", "3", str(path)])
         paths.append(path)

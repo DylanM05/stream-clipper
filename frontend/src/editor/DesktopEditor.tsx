@@ -10,7 +10,7 @@ import {
 } from "../icons";
 import { cn, go, goBack, loadSetting, saveSetting } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
-import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, useToast } from "../ui";
+import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, isPick, useToast } from "../ui";
 import { indexAt, startAt, useClock, useSettled, type Clock } from "./clock";
 import { FRAME, MAX_SHORT_S, parseTimecode, round2, timecode, type Range } from "./edit";
 import { Timeline } from "./Timeline";
@@ -566,7 +566,7 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
       {clip?.why && (
         <div className="rounded-xl bg-panel p-3.5 text-sm leading-snug">
           <p className="mb-1 flex items-center gap-1.5 text-[13px] font-medium text-graphite">
-            <SparkIcon className="size-3.5" /> Why the AI picked it
+            <SparkIcon className="size-3.5" /> {isPick(clip) ? "Why the AI picked it" : "What it is"}
           </p>
           {clip.why}
         </div>

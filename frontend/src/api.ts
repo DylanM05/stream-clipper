@@ -54,7 +54,7 @@ export interface Clip {
   vod_title: string;
   vod_duration: number;
   key: string;
-  kind: "chapter" | "highlight" | "whole";
+  kind: "chapter" | "highlight" | "whole" | "compilation"; // "compilation": a stream's approved clips joined
   start: number;
   end: number;
   title: string;
@@ -270,6 +270,8 @@ export interface Show {
   auto_episode: Auto;
   auto_chapters: Auto;
   auto_shorts: Auto;
+  compilation: boolean; // each stream's approved clips also joined into one video, once they're reviewed
+  auto_compilation: Auto;
   auto_upload_score: number; // offered clips and Shorts the AI scores at least this upload without review; 0 is off
   upload_approved: boolean; // what you approve uploads once it's rendered, instead of waiting in Ready to upload
   auto_visibility: Visibility; // for automatic uploads

@@ -134,7 +134,8 @@ class Breakdown(BaseModel):
 
 class Clip(BaseModel):
     id: str  # ch01, hl03, my01, ... or "full"
-    kind: Literal["chapter", "highlight", "whole"]  # "whole": the entire video, posted as it is
+    # "whole": the entire video, posted as it is; "compilation": a stream's approved clips joined (compilation.py)
+    kind: Literal["chapter", "highlight", "whole", "compilation"]
     start: float
     end: float
     title: str

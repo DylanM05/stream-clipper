@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from statistics import median
 
-from .db import ClipRecord, UploadJob
+from .db import PICKED_KINDS, ClipRecord, UploadJob
 from .youtube import Stats
 
 REFRESH = timedelta(hours=6)
@@ -63,7 +63,7 @@ def score_bands(rows: list[tuple[UploadJob, ClipRecord]]) -> list[Band]:
     bands = []
     upper = 2.0
     for low, label in BANDS:
-        jobs = [j for j, c in rows if c.kind != "whole" and not c.manual and low <= c.score < upper and j.views is not None]
+        jobs = [j for j, c in rows if c.kind in PICKED_KINDS and not c.manual and low <= c.score < upper and j.views is not None]
         upper = low
         bands.append(Band(
             label, len(jobs),

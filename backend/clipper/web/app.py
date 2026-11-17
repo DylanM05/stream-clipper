@@ -210,6 +210,8 @@ class ShowIn(BaseModel):
     auto_episode: Auto = "review"
     auto_chapters: Auto = "review"
     auto_shorts: Auto = "review"
+    compilation: bool = False
+    auto_compilation: Auto = "review"
     auto_upload_score: float = Field(default=0, ge=0, le=1)
     upload_approved: bool = False
     auto_visibility: Visibility = "public"
@@ -255,6 +257,8 @@ class ShowPatch(BaseModel):
     auto_episode: Auto | None = None
     auto_chapters: Auto | None = None
     auto_shorts: Auto | None = None
+    compilation: bool | None = None  # each stream's approved clips also joined into one video
+    auto_compilation: Auto | None = None
     auto_upload_score: float | None = Field(default=None, ge=0, le=1)  # 0 is off
     upload_approved: bool | None = None
     auto_visibility: Visibility | None = None
@@ -529,6 +533,8 @@ class ShowOut(BaseModel):
     auto_episode: str
     auto_chapters: str
     auto_shorts: str
+    compilation: bool
+    auto_compilation: str
     auto_upload_score: float
     upload_approved: bool
     auto_visibility: str
@@ -972,6 +978,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         length = cuts.kept_length(start, end, cut_list)
         if start < 0 or end - start < 1 or length < 1 or (vod.duration and end > vod.duration + 0.5):
             raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
+        if make_short and kind not in ("chapter", "highlight"):
+            raise HTTPException(422, "Only a clip or a highlight can also be a Short")
         if make_short and length > MAX_SHORT_S:
             raise HTTPException(422, "Shorts can be at most 3 minutes long")
         return start, end, cut_list
