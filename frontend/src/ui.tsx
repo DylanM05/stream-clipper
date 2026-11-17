@@ -105,7 +105,11 @@ export const KIND_LABEL: Record<Clip["kind"], string> = {
   chapter: "Clip",
   highlight: "Highlight",
   whole: "Full episode",
+  compilation: "Compilation",
 };
+
+/** Whether the clip is one of the AI's picks, with a score from it: not a full episode or a compilation. */
+export const isPick = (clip: Pick<Clip, "kind">) => clip.kind === "chapter" || clip.kind === "highlight";
 
 export function ProgressBar({ value }: { value: number | null }) {
   return (

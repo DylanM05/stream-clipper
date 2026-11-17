@@ -85,7 +85,7 @@ def test_frames_come_from_through_the_clip_and_the_picture_fills_youtubes_size(t
 
     video = tmp_path / "video.mp4"
     ffmpeg.run(["-f", "lavfi", "-i", "testsrc=size=640x360:rate=10", "-t", "4", "-pix_fmt", "yuv420p", str(video)])
-    refs = thumbnails.frames(video, 1, 3, tmp_path, count=2)
+    refs = thumbnails.frames(video, [(1, 3)], tmp_path, count=2)
     assert [p.name for p in refs] == ["frame-0.jpg", "frame-1.jpg"] and all(p.stat().st_size for p in refs)
 
     square = tmp_path / "square.png"

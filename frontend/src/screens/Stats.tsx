@@ -2,10 +2,12 @@ import { useState } from "react";
 import { api, type Clip, type Show, type StatsUpload } from "../api";
 import { LinkIcon } from "../icons";
 import { ago, cn, compact, loadSetting, median, pastDay, saveSetting, total, useDesktop, usePoll } from "../lib";
-import { ErrorNote, KIND_LABEL, Screen } from "../ui";
+import { ErrorNote, KIND_LABEL, Screen, isPick } from "../ui";
 
 type Kind = "all" | Clip["kind"];
-const KINDS: Record<Kind, string> = { all: "All", chapter: "Clips", highlight: "Highlights", whole: "Full episodes" };
+const KINDS: Record<Kind, string> = { all: "All", chapter: "Clips", highlight: "Highlights", whole: "Full episodes",
+  compilation: "Compilations",
+};
 
 /** How the list is sorted. A phone switches between the first two; a desktop's table sorts by any of its numbers. */
 type Order = "views" | "newest" | "score" | "views_day1" | "views_week1" | "likes" | "comments";
@@ -203,6 +205,7 @@ const KIND_GROUPS: { label: string; match: (u: StatsUpload) => boolean }[] = [
   { label: "Highlights", match: (u) => u.kind === "highlight" && u.which === "video" },
   { label: "Shorts", match: (u) => u.which === "short" },
   { label: "Full episodes", match: (u) => u.kind === "whole" && u.which === "video" },
+  { label: "Compilations", match: (u) => u.kind === "compilation" },
 ];
 
 /** Which kinds of upload do best: median views of each, the same way the score bands are read, and their total. */
@@ -305,7 +308,7 @@ function UploadTable({ uploads, order, onOrder }: { uploads: StatsUpload[]; orde
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-zinc-400">{uploadKind(u)}</td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right tabular-nums text-zinc-300">
-                {u.kind === "whole" || u.manual ? <span className="text-dim">–</span> : u.score.toFixed(2)}
+                {!isPick(u) || u.manual ? <span className="text-dim">–</span> : u.score.toFixed(2)}
               </td>
               <td className="whitespace-nowrap px-3 py-2.5 text-right text-zinc-400" title={u.finished_at ? ago(u.finished_at) : undefined}>
                 {u.finished_at ? pastDay(u.finished_at, false) : "–"}
@@ -374,7 +377,7 @@ function UploadRow({ upload: u }: { upload: StatsUpload }) {
           <p className="mt-1 flex items-center gap-1 text-xs text-zinc-500">
             <LinkIcon className="size-3.5 shrink-0" />
             {uploadKind(u)}
-            {u.kind !== "whole" && !u.manual && ` · score ${u.score.toFixed(2)}`}
+            {isPick(u) && !u.manual && ` · score ${u.score.toFixed(2)}`}
             {u.finished_at && ` · ${ago(u.finished_at)}`}
           </p>
         </a>

@@ -3,7 +3,7 @@ import { media, type Clip } from "./api";
 import { CheckIcon, PhoneIcon, ScissorsIcon, XIcon } from "./icons";
 import { keptLength } from "./editor/edit";
 import { clock, cn, go, length } from "./lib";
-import { ClipStatusChip, KIND_LABEL } from "./ui";
+import { ClipStatusChip, KIND_LABEL, isPick } from "./ui";
 
 const SWIPE_DISTANCE = 96; // px to approve (right) or reject (left)
 
@@ -23,7 +23,7 @@ export function ClipCard({ clip, showStatus }: { clip: Clip; showStatus?: boolea
         <ClipMeta clip={clip} />
         <h3 className="mt-1 line-clamp-2 text-[15px] font-semibold leading-snug">{clip.title}</h3>
         <p className="mt-1 truncate text-xs text-graphite">
-          {clip.kind === "whole" ? clip.vod_title : <><span className="font-mono">{clock(clip.start)}</span> in {clip.vod_title}</>}
+          {!isPick(clip) ? clip.vod_title : <><span className="font-mono">{clock(clip.start)}</span> in {clip.vod_title}</>}
         </p>
         {showStatus && (
           <div className="mt-2">
@@ -45,7 +45,7 @@ export function Thumb({ clip, className }: { clip: Clip; className?: string }) {
 /** The AI's score (0 to 1, the scale a show's automatic uploads go by), as a number and ten ticks. */
 export function Score({ clip }: { clip: Clip }) {
   if (clip.manual) return <span className="text-[13px] text-graphite">Made by you</span>;
-  if (clip.kind === "whole") return null;
+  if (!isPick(clip)) return null;
   const filled = Math.round(clip.score * 10);
   return (
     <span className="inline-flex items-center gap-2 text-[13px] text-graphite" title={`The AI scored it ${clip.score.toFixed(2)}`}>
@@ -184,7 +184,7 @@ function ClipMeta({ clip }: { clip: Clip }) {
       {clip.manual ? (
         <span className="ml-auto">Made by you</span>
       ) : (
-        clip.kind !== "whole" && <span className="ml-auto">AI score <span className="font-mono">{clip.score.toFixed(2)}</span></span>
+        isPick(clip) && <span className="ml-auto">AI score <span className="font-mono">{clip.score.toFixed(2)}</span></span>
       )}
     </div>
   );

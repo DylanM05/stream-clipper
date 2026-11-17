@@ -25,11 +25,11 @@ from zoneinfo import ZoneInfo
 
 from sqlmodel import Session, col, or_, and_, select
 
-from . import cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles, transcripts
+from . import compilation, cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles, transcripts
 from .config import Settings
 from .db import (
-    CLIP_DONE, VOD_ACTIVE, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held, find_show,
-    get_app_setting, get_engine, is_paused, set_app_setting, upload_sites, utcnow,
+    CLIP_DONE, PICKED_KINDS, VOD_ACTIVE, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod, deploy_held,
+    find_show, get_app_setting, get_engine, is_paused, set_app_setting, upload_sites, utcnow,
 )
 from .ffmpeg import probe_duration
 from .llm import LLMError, UsageLimitError
@@ -124,6 +124,7 @@ class Worker:
         threads = [
             threading.Thread(target=self._loop, args=(self.process_next_vod,), name="videos", daemon=True),
             threading.Thread(target=self._loop, args=(self.render_next_clip,), name="renders", daemon=True),
+            threading.Thread(target=self._loop, args=(self.compile_next, 30), name="compilations", daemon=True),
             threading.Thread(target=self._loop, args=(self.monitor.check_next, 15), name="channels", daemon=True),
             threading.Thread(target=self._loop, args=(self.upload_next, 10), name="uploads", daemon=True),
             threading.Thread(target=self._loop, args=(self.make_next_thumbnail, 10), name="thumbnails", daemon=True),
@@ -296,7 +297,9 @@ class Worker:
                     summary += "\nThe preview to watch them in the app is still being made."
                 self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
             self._wait_for_preview(vod_id, preview)
-            self._update_vod(vod_id, status="ready", progress=1)
+            # Its compilation is made once its clips are reviewed (compile_next).
+            due = bool(show and show.compilation and any(c.kind in PICKED_KINDS for c in clips))
+            self._update_vod(vod_id, status="ready", progress=1, compilation_due=due)
             log.info("Video %d ready with %d clips", vod_id, len(clips))
         except Paused:
             log.info("Video %d paused", vod_id)
@@ -540,7 +543,8 @@ class Worker:
                     cuts=cuts.parse(clip.cuts),
                 )
                 video = ws.clips_dir / f"{stem}.mp4"
-                render.render_landscape(source, pipeline_clip, video, settings, on_progress=check, overlay=overlay)
+                draw = render.render_compilation if clip.kind == "compilation" else render.render_landscape
+                draw(source, pipeline_clip, video, settings, on_progress=check, overlay=overlay)
                 short = None
                 if clip.make_short:
                     words = Transcript.model_validate_json(ws.transcript_json.read_text(encoding="utf-8")).words()
@@ -651,7 +655,7 @@ class Worker:
             return True
 
     def _auto_thumbnail(self, clip_id: int) -> None:
-        """Queue a thumbnail for a freshly rendered chapter or full episode whose show makes them for its kind,
+        """Queue a thumbnail for a freshly rendered chapter, compilation or full episode whose show makes them for its kind,
         unless it has one."""
         if not self.settings.openrouter_api_key:
             return
@@ -659,7 +663,9 @@ class Worker:
             clip = s.get(ClipRecord, clip_id)
             vod = s.get(Vod, clip.vod_id)
             show = s.get(Show, vod.show_id) if vod.show_id else None
-            wanted = show and {"chapter": show.chapter_thumbnails, "whole": show.episode_thumbnails}.get(clip.kind)
+            wanted = show and {
+                "chapter": show.chapter_thumbnails, "compilation": show.chapter_thumbnails, "whole": show.episode_thumbnails,
+            }.get(clip.kind)
             if wanted and not clip.thumbnail_status:
                 clip.thumbnail_status = "queued"
                 s.add(clip)
@@ -692,6 +698,64 @@ class Worker:
             f"{show_name} uploads these without review, but there's no YouTube channel set for them. Pick one on the clip.",
             link=f"upload/{clip_id}", tone="bad",
         ))
+
+    # --- Compilations ----------------------------------------------------------------
+
+    def compile_next(self) -> bool:
+        """Add the compilation of one stream that's due one (Vod.compilation_due), once none of its chapters and
+        highlights is left to review: the approved ones joined into one clip (compilation.py), which goes where the
+        show's clips go, and to the inbox unless the show takes it without review. A stream with fewer than two approved
+        gets none. True if one was dealt with."""
+        with Session(self.engine) as s:
+            for vod in s.exec(select(Vod).where(col(Vod.compilation_due).is_(True), Vod.status == "ready")):
+                clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
+                if any(c.kind in PICKED_KINDS and c.status == "proposed" for c in clips):
+                    continue
+                show = s.get(Show, vod.show_id) if vod.show_id else None
+                made = any(c.kind == "compilation" for c in clips)
+                plan = None if made or not show or vod.cleaned_at else compilation.plan(clips, show.title_template)
+                vod.compilation_due = False
+                s.add(vod)
+                if not plan:
+                    s.commit()
+                    return True
+                ws = Workspace(self.settings.vods_dir / vod.workspace)
+                try:
+                    meta = ws.meta()
+                except (OSError, ValueError):
+                    meta = {"upload_date": vod.upload_date}
+                day = titles.format_date(titles.stream_date(
+                    meta, vod.created_at.date(), self.settings.timezone, self.settings.day_starts_at,
+                ))
+                status = "proposed" if show.auto_for("compilation") == "review" else "approved"
+                title = titles.build(show.title_template, f"Best of {self._episode_name(ws, vod)}", day)
+                clip = ClipRecord(
+                    vod_id=vod.id, key=compilation.KEY, kind="compilation", start=plan.start, end=plan.end,
+                    cuts=cuts.dump(plan.cuts), title=title,
+                    description=plan.description, why=f"The {len(plan.picks)} approved clips of this stream, in order.",
+                    destination_id=show.clip_destination_id, playlist_id=show.clip_playlist_id, status=status,
+                    reviewed_at=utcnow() if status == "approved" else None,
+                )
+                s.add(clip)
+                s.commit()
+                vod_id, name, count = vod.id, vod.title, len(plan.picks)
+                break
+            else:
+                return False
+        log.info("Added the compilation of video %d (%d clips)", vod_id, count)
+        if status == "proposed":
+            self._notify(Note(f"Compilation to review: {name}", f"Its {count} approved clips, joined into one video.",
+                              link="inbox"))
+        return True
+
+    @staticmethod
+    def _episode_name(ws: Workspace, vod: Vod) -> str:
+        """The AI's title for the whole stream, or the stream's own."""
+        try:
+            found = Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
+            return found.episode_title or vod.title
+        except (OSError, ValueError):
+            return vod.title
 
     # --- Uploads: through the YouTube API for connected channels, else YouTube Studio ----------
 
@@ -1136,6 +1200,7 @@ class Worker:
         with Session(self.engine) as s:
             candidates = s.exec(select(Vod).where(
                 Vod.status == "ready", col(Vod.cleaned_at).is_(None), col(Vod.workspace).is_not(None),
+                col(Vod.compilation_due).is_not(True),  # its compilation is cut from the stream
             ))
             for vod in candidates:
                 clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()

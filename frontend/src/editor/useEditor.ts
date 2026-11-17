@@ -466,7 +466,7 @@ export function useEditor(source: Source, desktop: boolean) {
       if (source.mode !== "new") return;
       const d = draftRef.current;
       const made = await api.makeClip(source.vod.id, {
-        kind: d.kind === "whole" ? "chapter" : d.kind, start: d.start, end: d.end, cuts: d.cuts, title: fullTitle,
+        kind: d.kind === "highlight" ? "highlight" : "chapter", start: d.start, end: d.end, cuts: d.cuts, title: fullTitle,
         description: d.description, make_short: d.kind === "highlight" && d.make_short,
         destination_id: d.destination_id, playlist_id: d.playlist_id, approve,
       });

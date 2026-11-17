@@ -5,7 +5,7 @@ import type { Line } from "../api";
 import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, TrashIcon, UploadIcon, VolumeIcon } from "../icons";
 import { clamp, clock, cn, go, goBack, length } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
-import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL } from "../ui";
+import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, isPick } from "../ui";
 import { startAt, useClock, type Clock } from "./clock";
 import { MAX_SHORT_S, type Range } from "./edit";
 import type { Editor } from "./useEditor";
@@ -193,7 +193,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
         {clip?.why && (
           <div className="rounded-2xl bg-panel p-4 text-[15px] leading-snug">
             <p className="mb-1 flex items-center gap-1.5 text-[13px] font-medium text-graphite">
-              <SparkIcon className="size-3.5" /> Why the AI picked it
+              <SparkIcon className="size-3.5" /> {isPick(clip) ? "Why the AI picked it" : "What it is"}
             </p>
             {clip.why}
           </div>

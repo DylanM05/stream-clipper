@@ -75,6 +75,55 @@ def render_landscape(
     tmp.replace(out)
 
 
+BLOCK_GAP_S = 10.0  # in render_compilation, a part cut out this long or longer splits the clip into blocks
+
+
+def render_compilation(
+    source: Path,
+    clip: Clip,
+    out: Path,
+    settings: Settings,
+    on_progress: Callable[[float], None] | None = None,
+    overlay: Overlay | None = None,
+) -> None:
+    """A clip whose parts are far apart in the stream, such as a compilation (compilation.py): rendered in blocks, each
+    as render_landscape does, so the long stretches between them are never decoded, then joined without re-encoding.
+    Each block's sound fades in and out, so the joins don't click. Shorter cuts (a pause taken out) stay inside their
+    block and are joined as in any clip."""
+    blocks: list[Clip] = []
+    for a, b in cuts_.kept(clip.start, clip.end, clip.cuts):
+        if blocks and a - blocks[-1].end < BLOCK_GAP_S:
+            last = blocks[-1]
+            blocks[-1] = last.model_copy(update={"end": b, "cuts": [*last.cuts, (last.end, a)]})
+        else:
+            blocks.append(clip.model_copy(update={"start": a, "end": b, "cuts": []}))
+    files = [out.with_name(f"{out.stem}.tmp.part{i:03d}.mp4") for i in range(len(blocks))]
+    listing = out.with_name(out.stem + ".tmp.parts.txt")
+    joined = out.with_name(out.stem + ".tmp.mp4")
+    total = max(clip.duration, 0.001)
+    done = 0.0
+    try:
+        for block, file in zip(blocks, files):
+            report = None
+            if on_progress:
+                def report(f: float, before: float = done, length: float = block.duration) -> None:
+                    on_progress((before + f * length) / total)
+            render_landscape(source, block, file, settings, on_progress=report, overlay=overlay)
+            done += block.duration
+        listing.write_text("".join(f"file '{_quoted(f.resolve())}'\n" for f in files), encoding="utf-8")
+        ffmpeg.run(["-f", "concat", "-safe", "0", "-i", str(listing), "-map", "0:v:0", "-map", "0:a:0?", "-c", "copy",
+                    "-movflags", "+faststart", str(joined)])
+        joined.replace(out)
+    finally:
+        for temporary in (*files, listing, joined):
+            temporary.unlink(missing_ok=True)
+
+
+def _quoted(path: Path) -> str:
+    """A path for a concat list between single quotes, which can't hold one itself."""
+    return str(path).replace("'", "'\\''")
+
+
 SHORT_W, SHORT_H = 1080, 1920
 MAX_SHORT_S = 180  # YouTube's limit for Shorts
 CAPTION_GAP = 136  # from the bottom of the video to the bottom of the captions under it

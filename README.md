@@ -14,6 +14,7 @@ How it works:
 1. List the **YouTube channels** you upload to, such as your clips channels.
 2. Set up each **show** once:
    - what to make from each video: clips, the full episode, or both
+   - whether each stream's approved clips are also joined into one compilation video, with a chapter for each
    - title patterns
    - context and guidance for the AI
    - which channel the clips and the full episodes go to
