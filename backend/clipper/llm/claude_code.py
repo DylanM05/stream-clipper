@@ -22,7 +22,9 @@ log = logging.getLogger(__name__)
 
 __all__ = ["ClaudeCode", "llm_schema"]
 
-_LIMIT = re.compile(r"usage limit|limit reached|rate.?limit|out of (extra )?usage", re.IGNORECASE)
+# Older versions said "Claude AI usage limit reached|<epoch>"; now it's "You've hit your session limit · resets 3pm (…)",
+# or "You've reached your …", the starts Claude Code itself tells its limits by.
+_LIMIT = re.compile(r"usage limit|limit reached|rate.?limit|out of (extra )?usage|\b(hit|reached) your\b", re.IGNORECASE)
 _RESET_EPOCH = re.compile(r"\|(\d{10})\b")
 
 

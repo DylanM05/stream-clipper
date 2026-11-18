@@ -392,6 +392,25 @@ def test_a_task_at_its_own_ais_usage_limit_asks_the_main_ai():
     assert ai.WithFallback(Limited("Codex"), no_main).structured(**REQUEST).title == "From Codex"
 
 
+def test_picking_clips_on_claude_code_at_its_session_limit_goes_to_codex_the_main_ai(settings, monkeypatch):
+    client = TestClient(web_app.create_app(settings))
+    client.patch("/api/ai", json={"provider": "codex"})
+    client.patch("/api/ai", json={"task": "clips", "provider": "claude"})
+    limit = json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                        "result": "You've hit your session limit · resets 3pm (America/New_York)"})
+    codex_run = FakeCodex(answered(GOOD))
+
+    def run(cmd, **kwargs):  # one subprocess module for both
+        if cmd[0] == "claude":
+            return subprocess.CompletedProcess(cmd, 1, stdout=limit, stderr="")
+        return codex_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    llm = ai.model(settings, "low", 60, task="clips")
+    assert llm.structured(**REQUEST) == Answer(**GOOD)
+    assert llm.name == "Codex" and len(codex_run.calls) == 1
+
+
 def test_with_both_at_their_limits_the_work_waits_for_the_first_to_reset():
     soon, later = datetime(2026, 11, 18, 3, tzinfo=timezone.utc), datetime(2026, 11, 20, tzinfo=timezone.utc)
     llm = ai.WithFallback(Limited("Codex", True, later), lambda: Limited("Claude", True, soon))
