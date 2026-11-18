@@ -280,7 +280,7 @@ function AiEditor(props: {
   provider: AiProviderId | "";
   model: string;
   withMain?: boolean;
-  fallsBack?: boolean; // a task that asks the main AI once its own reaches its usage limit
+  fallsBack?: boolean; // a task that asks the main AI when its own fails, at its usage limit or otherwise
   onSave: (provider: AiProviderId | "", model: string) => void;
   onCancel: () => void;
 }) {
@@ -331,7 +331,7 @@ function AiEditor(props: {
         <p className="text-[13px] text-graphite">
           {props.withMain ? `Leave the model empty for the one ${ofIt.name} uses (${ofIt.model || "its default"}). ` : ""}
           {AI_HINT[ofIt.id]}
-          {props.fallsBack ? " If it reaches its usage limit, the main AI takes over until it resets." : ""}
+          {props.fallsBack ? " If it fails or reaches its usage limit, the main AI does the task instead." : ""}
         </p>
       ) : (
         <p className="text-[13px] text-graphite">The task follows the main AI, whatever it's set to.</p>

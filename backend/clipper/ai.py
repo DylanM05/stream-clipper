@@ -3,7 +3,7 @@ app, or by CLIPPER_LLM_PROVIDER until it's changed there, with a model for each.
 
 That's the main AI. Each task (TASKS) uses it unless the app gives the task an AI of its own, such as Claude Code for
 picking clips and Codex for breakdowns, with that AI's model or another of its models for just that task. A task whose
-own AI reaches its usage limit asks the main AI instead (WithFallback).
+own AI fails, at its usage limit or otherwise, asks the main AI instead (WithFallback).
 """
 
 import logging
@@ -68,7 +68,7 @@ def model(settings: Settings, effort: str | None, timeout_s: int, model_name: st
           task: str | None = None, fallback: bool = True) -> LLM:
     """The AI for a task (chosen), set up for one piece of work: how hard it thinks, and how long it may take.
     `model_name` is another of its models to use for this work instead (e.g. a cheaper one for a backfill). With
-    `fallback`, a task on an AI other than the main one asks the main AI once its own reaches its usage limit."""
+    `fallback`, a task on an AI other than the main one asks the main AI when its own fails."""
     with Session(get_engine(settings)) as s:
         choice = chosen(s, settings, task)
         main = chosen(s, settings)
@@ -81,8 +81,9 @@ def model(settings: Settings, effort: str | None, timeout_s: int, model_name: st
 
 
 class WithFallback(LLM):
-    """A task's own AI, with the main AI to ask once the task's reaches its usage limit. When both have, the work waits
-    for whichever limit ends first: its next try asks the task's AI, then the main AI, again."""
+    """A task's own AI, with the main AI to ask when the task's fails: at its usage limit, or any other way (Claude Code
+    isn't held to one version, so how it says it's at its limit can change). When both fail and either is at its limit,
+    the work waits for the first limit to end: its next try asks the task's AI, then the main AI, again."""
 
     def __init__(self, first: LLM, fallback: Callable[[], LLM]):
         self.first = first
@@ -92,23 +93,31 @@ class WithFallback(LLM):
     def structured(self, **request):
         try:
             return self.first.structured(**request)
-        except UsageLimitError as limit:
+        except LLMError as failed:
             try:
                 main = self._fallback()
             except LLMError as e:
-                log.warning("%s reached its usage limit, and the main AI can't take over: %s", self.first.name, e)
-                raise limit from None
-            log.warning("%s reached its usage limit (%s); asking the main AI, %s, instead", self.first.name, limit, main.name)
+                log.warning("%s failed, and the main AI can't take over: %s", self.first.name, e)
+                raise failed from None
+            log.warning("%s failed (%s); asking the main AI, %s, instead", self.first.name, failed, main.name)
             self.name = main.name
             try:
                 return main.structured(**request)
-            except UsageLimitError as also:
-                known = [t for t in (limit.resets_at, also.resets_at) if t]
-                raise UsageLimitError(f"{limit} Then the main AI: {also}", resets_at=_earliest(known),
-                                      note=f"{limit.note} {also.note}") from None
+            except LLMError as also:
+                raise _both(failed, also) from None
 
     def plan_usage(self) -> list[dict] | None:
         return self.first.plan_usage()
+
+
+def _both(failed: LLMError, also: LLMError) -> LLMError:
+    """The task's AI and then the main AI failing, as one error: at a usage limit if either is, since a limit ends."""
+    message = f"{failed} Then the main AI: {also}"
+    limits = [e for e in (failed, also) if isinstance(e, UsageLimitError)]
+    if not limits:
+        return LLMError(message)
+    return UsageLimitError(message, resets_at=_earliest([e.resets_at for e in limits if e.resets_at]),
+                           note=" ".join(e.note for e in limits))
 
 
 def _earliest(times: list[datetime]) -> datetime | None:
