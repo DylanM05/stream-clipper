@@ -100,8 +100,9 @@ def ask_breakdown(settings: Settings, meta: dict, transcript: Transcript, breakd
     show's (Show.video_type), for what the request calls the video."""
     system_prompt = "\n".join((PROMPTS_DIR / name).read_text(encoding="utf-8") for name in ("breakdown_alone.md", "breakdown.md"))
     noun = NOUNS[video_type]
+    # No fallback: these are past streams (clipper breakdown), which mustn't use up the main AI's plan for new ones.
     llm = ai.model(settings, effort=effort or settings.llm_effort, timeout_s=settings.llm_timeout_s, model_name=model,
-                   task="breakdown")
+                   task="breakdown", fallback=False)
     result = llm.structured(
         system_prompt=system_prompt,
         task=(f"Break down what this {to_timecode(transcript.duration)} {noun}'s time goes on. The {noun} details, notes "

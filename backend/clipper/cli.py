@@ -549,7 +549,7 @@ class _Run:
         from . import ai
         from .db import utcnow
 
-        llm = ai.model(self.settings, effort=None, timeout_s=120, model_name=self.model, task="breakdown")
+        llm = ai.model(self.settings, effort=None, timeout_s=120, model_name=self.model, task="breakdown", fallback=False)
         said = ""
         while True:
             meters = llm.plan_usage()

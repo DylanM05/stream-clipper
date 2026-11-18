@@ -2,16 +2,22 @@
 app, or by CLIPPER_LLM_PROVIDER until it's changed there, with a model for each.
 
 That's the main AI. Each task (TASKS) uses it unless the app gives the task an AI of its own, such as Claude Code for
-picking clips and Codex for breakdowns, with that AI's model or another of its models for just that task.
+picking clips and Codex for breakdowns, with that AI's model or another of its models for just that task. A task whose
+own AI reaches its usage limit asks the main AI instead (WithFallback).
 """
 
+import logging
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlmodel import Session
 
 from .config import Settings
 from .db import get_app_setting, get_engine
-from .llm import LLM, ClaudeCode, CliProxy, Codex, LLMError, OpenRouter
+from .llm import LLM, ClaudeCode, CliProxy, Codex, LLMError, OpenRouter, UsageLimitError
+
+log = logging.getLogger(__name__)
 
 PROVIDERS = {"claude": "Claude Code", "codex": "Codex", "openrouter": "OpenRouter", "cliproxy": "CLI Proxy"}
 PROVIDER_KEY = "llm_provider"  # in the app's settings, with each provider's model under "<provider>_model"
@@ -59,14 +65,54 @@ def chosen(s: Session, settings: Settings, task: str | None = None) -> Choice:
 
 
 def model(settings: Settings, effort: str | None, timeout_s: int, model_name: str | None = None,
-          task: str | None = None) -> LLM:
+          task: str | None = None, fallback: bool = True) -> LLM:
     """The AI for a task (chosen), set up for one piece of work: how hard it thinks, and how long it may take.
-    `model_name` is another of its models to use for this work instead (e.g. a cheaper one for a backfill)."""
+    `model_name` is another of its models to use for this work instead (e.g. a cheaper one for a backfill). With
+    `fallback`, a task on an AI other than the main one asks the main AI once its own reaches its usage limit."""
     with Session(get_engine(settings)) as s:
         choice = chosen(s, settings, task)
+        main = chosen(s, settings)
     if model_name:
         choice = Choice(choice.provider, model_name)
-    return backend(settings, choice, effort, timeout_s)
+    llm = backend(settings, choice, effort, timeout_s)
+    if not (task and fallback and choice != main):
+        return llm
+    return WithFallback(llm, lambda: backend(settings, main, effort, timeout_s))
+
+
+class WithFallback(LLM):
+    """A task's own AI, with the main AI to ask once the task's reaches its usage limit. When both have, the work waits
+    for whichever limit ends first: its next try asks the task's AI, then the main AI, again."""
+
+    def __init__(self, first: LLM, fallback: Callable[[], LLM]):
+        self.first = first
+        self._fallback = fallback
+        self.name = first.name
+
+    def structured(self, **request):
+        try:
+            return self.first.structured(**request)
+        except UsageLimitError as limit:
+            try:
+                main = self._fallback()
+            except LLMError as e:
+                log.warning("%s reached its usage limit, and the main AI can't take over: %s", self.first.name, e)
+                raise limit from None
+            log.warning("%s reached its usage limit (%s); asking the main AI, %s, instead", self.first.name, limit, main.name)
+            self.name = main.name
+            try:
+                return main.structured(**request)
+            except UsageLimitError as also:
+                known = [t for t in (limit.resets_at, also.resets_at) if t]
+                raise UsageLimitError(f"{limit} Then the main AI: {also}", resets_at=_earliest(known),
+                                      note=f"{limit.note} {also.note}") from None
+
+    def plan_usage(self) -> list[dict] | None:
+        return self.first.plan_usage()
+
+
+def _earliest(times: list[datetime]) -> datetime | None:
+    return min(times) if times else None
 
 
 def in_use(s: Session, settings: Settings) -> list[Choice]:

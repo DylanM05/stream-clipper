@@ -344,6 +344,8 @@ def test_a_task_uses_the_main_ai_until_it_gets_one_of_its_own(settings):
     assert (tasks["breakdown"]["provider"], tasks["breakdown"]["model"]) == ("codex", "gpt-6-luna")
     assert tasks["breakdown"]["uses"] == "Codex (gpt-6-luna)" and tasks["clips"]["uses"] == "Claude Code (opus)"
     breakdowns, clips = ai.model(settings, "low", 60, task="breakdown"), ai.model(settings, "low", 60, task="clips")
+    assert isinstance(breakdowns, ai.WithFallback)  # to the main AI, at Codex's usage limit
+    breakdowns = breakdowns.first
     assert isinstance(breakdowns, Codex) and breakdowns.model == "gpt-6-luna"
     assert isinstance(clips, ClaudeCode) and clips.model == "opus"
 
@@ -351,7 +353,7 @@ def test_a_task_uses_the_main_ai_until_it_gets_one_of_its_own(settings):
     client.patch("/api/ai", json={"task": "titles", "provider": "codex"})
     client.patch("/api/ai", json={"provider": "codex", "model": "gpt-6-astra"})
     client.patch("/api/ai", json={"provider": "claude"})
-    assert ai.model(settings, "low", 60, task="titles").model == "gpt-6-astra"
+    assert ai.model(settings, "low", 60, task="titles").first.model == "gpt-6-astra"
 
     # Back on the main AI, its own model goes too.
     tasks = {t["id"]: t for t in client.patch("/api/ai", json={"task": "breakdown", "provider": ""}).json()["tasks"]}
@@ -359,6 +361,76 @@ def test_a_task_uses_the_main_ai_until_it_gets_one_of_its_own(settings):
     assert isinstance(ai.model(settings, "low", 60, task="breakdown"), ClaudeCode)
     assert client.patch("/api/ai", json={"task": "dancing", "provider": "codex"}).status_code == 422
     assert client.patch("/api/ai", json={"provider": ""}).status_code == 422
+
+
+class Limited(ai.LLM):
+    """An AI that answers, or is at its usage limit until `resets_at`."""
+
+    def __init__(self, name: str, at_limit: bool = False, resets_at: datetime | None = None):
+        self.name, self.at_limit, self.resets_at, self.asked = name, at_limit, resets_at, 0
+
+    def structured(self, **request):
+        self.asked += 1
+        if self.at_limit:
+            raise UsageLimitError(f"{self.name} says no", self.resets_at, note=f"{self.name}'s usage limit was reached.")
+        return Answer(title=f"From {self.name}", score=0.5)
+
+
+REQUEST = {"system_prompt": "s", "task": "t", "stdin_text": "x", "schema": Answer}
+
+
+def test_a_task_at_its_own_ais_usage_limit_asks_the_main_ai():
+    own, main = Limited("Codex", at_limit=True), Limited("Claude")
+    llm = ai.WithFallback(own, lambda: main)
+    assert llm.structured(**REQUEST).title == "From Claude"
+    assert (own.asked, main.asked, llm.name) == (1, 1, "Claude")
+
+    # A task whose own AI answers never gets the main AI set up.
+    def no_main():
+        raise AssertionError("the main AI wasn't needed")
+
+    assert ai.WithFallback(Limited("Codex"), no_main).structured(**REQUEST).title == "From Codex"
+
+
+def test_with_both_at_their_limits_the_work_waits_for_the_first_to_reset():
+    soon, later = datetime(2026, 11, 18, 3, tzinfo=timezone.utc), datetime(2026, 11, 20, tzinfo=timezone.utc)
+    llm = ai.WithFallback(Limited("Codex", True, later), lambda: Limited("Claude", True, soon))
+    with pytest.raises(UsageLimitError) as raised:
+        llm.structured(**REQUEST)
+    assert raised.value.resets_at == soon
+    assert raised.value.note == "Codex's usage limit was reached. Claude's usage limit was reached."
+
+    # One that doesn't say when it resets: the other's time.
+    llm = ai.WithFallback(Limited("Codex", True, None), lambda: Limited("Claude", True, later))
+    with pytest.raises(UsageLimitError) as raised:
+        llm.structured(**REQUEST)
+    assert raised.value.resets_at == later
+
+
+def test_a_main_ai_that_cant_be_set_up_leaves_the_tasks_own_limit_to_wait_out(settings):
+    settings.openrouter_api_key = ""
+    client = TestClient(web_app.create_app(settings))
+    client.patch("/api/ai", json={"provider": "openrouter"})  # the main AI, with no key
+    client.patch("/api/ai", json={"task": "clips", "provider": "claude"})
+    limit = datetime(2026, 11, 18, tzinfo=timezone.utc)
+    llm = ai.model(settings, "low", 60, task="clips")
+    llm.first = Limited("Claude", True, limit)
+    with pytest.raises(UsageLimitError) as raised:
+        llm.structured(**REQUEST)
+    assert (raised.value.resets_at, raised.value.note) == (limit, "Claude's usage limit was reached.")
+
+
+def test_only_a_task_on_another_ai_falls_back_and_never_the_breakdown_backfill(settings):
+    client = TestClient(web_app.create_app(settings))
+    assert isinstance(ai.model(settings, "low", 60, task="clips"), ClaudeCode)  # on the main AI already
+    assert isinstance(ai.model(settings, "low", 60), ClaudeCode)
+    # The same AI with another model is another AI to fall back from (OpenRouter's and the proxy's limits are a model's).
+    client.patch("/api/ai", json={"task": "clips", "provider": "claude", "model": "sonnet"})
+    assert isinstance(ai.model(settings, "low", 60, task="clips"), ai.WithFallback)
+    client.patch("/api/ai", json={"task": "breakdown", "provider": "codex"})
+    assert isinstance(ai.model(settings, "low", 60, task="breakdown", fallback=False), Codex)
+    # Nor a backfill's cheaper model of the main AI itself.
+    assert isinstance(ai.model(settings, "low", 60, task="titles", model_name="opus"), ClaudeCode)
 
 
 def test_the_cli_proxy_needs_its_key_its_sign_ins_and_the_model(settings, monkeypatch):
