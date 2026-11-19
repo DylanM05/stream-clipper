@@ -14,7 +14,7 @@ How it works:
 1. List the **YouTube channels** you upload to, such as your clips channels.
 2. Set up each **show** once:
    - what to make from each video: clips, the full episode, or both
-   - whether each stream's approved clips are also joined into one compilation video, with a chapter for each
+   - whether each stream's kept clips are joined into one compilation video, with a chapter for each
    - title patterns
    - context and guidance for the AI
    - which channel the clips and the full episodes go to
@@ -25,6 +25,8 @@ How it works:
 6. Approved clips are rendered on the GPU and land in **Upload** with everything needed to post them. Once the worker uploads a clip, its file is deleted; once every clip of a stream is done, so is the stream's video.
 
 A pre-show from X is usually posted whole, and the AI writes its short title from the post's text. Links that don't match any show are posted whole if they're from X and clipped otherwise.
+
+**A show that makes compilations** works differently: its clips and highlights are for the compilation, not posted one by one. In the inbox, **Keep** (swipe right, or A) keeps a clip for the compilation instead of rendering and posting it, and the stream's strip fills in as you go. To post one by itself as well, choose **Keep and post** (P); **Compilation only**, on Upload or in the editor, takes that back until it's uploaded, and **Post it by itself too** does it later. Clips the show takes without review are kept too, never posted by themselves. Once none of the stream's clips is left to review, and 10 seconds after the last decision so **Undo** still works, the kept clips are joined in stream order into the compilation, which goes to the inbox or straight on, as **Without review → Compilation** says. With only one clip kept there's no compilation: the app says so and offers **Post it by itself**. If you change the kept clips after the compilation is made, it doesn't change by itself: it says it's out of date, and **Rebuild from kept clips** makes it again, keeping the parts you cut out of it. The stream's files stay until its compilation is uploaded or rejected. Whether a stream works this way is fixed when it's processed, so turning the setting on or off only changes streams processed after that.
 
 ## Server setup (Ubuntu, NVIDIA GPU)
 
