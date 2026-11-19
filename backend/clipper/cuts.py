@@ -57,6 +57,29 @@ def kept(start: float, end: float, cuts: list[Cut]) -> list[Cut]:
     return parts
 
 
+def removed(start: float, end: float, cut_list: list[Cut],
+            picked_start: float, picked_end: float, picked_cuts: list[Cut]) -> list[Cut]:
+    """What the owner took out of a compilation since the app made it from its plan (picked_*): a later start, an
+    earlier end, and cuts beyond the gaps the app cut. A new cut touching a gap was merged into it by `tidy`, so
+    only the new part counts. Sorted and merged."""
+    parts = [(picked_start, start), (end, picked_end)]
+    for a, b in cut_list:
+        at = a
+        for ga, gb in picked_cuts:
+            if gb <= at or ga >= b:
+                continue
+            parts.append((at, ga))
+            at = max(at, gb)
+        parts.append((at, b))
+    merged: list[list[float]] = []
+    for a, b in sorted(p for p in parts if p[1] > p[0]):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    return [(a, b) for a, b in merged]
+
+
 def stream_time(parts: list[Cut], t: float) -> float:
     """Where `t` seconds into the finished video is in the stream, for the `parts` that stay (kept)."""
     for a, b in parts:

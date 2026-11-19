@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState, type PointerEvent, type ReactNode } from "react";
 import type { Line } from "../api";
 import { BackIcon, MutedIcon, PauseIcon, PhoneIcon, PlayIcon, SparkIcon, TrashIcon, UploadIcon, VolumeIcon } from "../icons";
+import { ChangedNotice, CompilationStrip } from "../CompilationStrip";
 import { clamp, clock, cn, go, goBack, length } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, isPick } from "../ui";
@@ -190,18 +191,29 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
   function details() {
     return (
       <>
-        {clip?.why && (
+        {clip && ed.why && (
           <div className="rounded-2xl bg-panel p-4 text-[15px] leading-snug">
             <p className="mb-1 flex items-center gap-1.5 text-[13px] font-medium text-graphite">
               <SparkIcon className="size-3.5" /> {isPick(clip) ? "Why the AI picked it" : "What it is"}
             </p>
-            {clip.why}
+            {ed.why}
+            {ed.compilationFrom !== null && (
+              <p className="mt-2 text-[13px] text-graphite">
+                In the compilation from <span className="font-mono text-chalk">{clock(ed.compilationFrom)}</span>
+              </p>
+            )}
+          </div>
+        )}
+        {clip?.kind === "compilation" && ed.compilation && (
+          <div className="rounded-2xl bg-panel p-4">
+            <CompilationStrip compilation={ed.compilation} />
+            {clip.compilation_changed && <ChangedNotice onRebuild={ed.rebuild} busy={busy} />}
           </div>
         )}
         {clip?.status === "extra" && (
           <p className="rounded-2xl bg-panel p-4 text-sm text-graphite">
-            An extra: the AI scored it below this show's best few for the stream, so it isn't in your inbox. Approve it
-            to use it anyway.
+            An extra: the AI scored it below this show's best few for the stream, so it isn't in your inbox.{" "}
+            {clip.in_compilation ? "Keep it" : "Approve it"} to use it anyway.
           </p>
         )}
         {clip?.status === "failed" && <ErrorNote>{clip.error}</ErrorNote>}
@@ -316,12 +328,24 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
       const ready = !busy && !!draft.title.trim();
       return (
         <>
-          <Button disabled={!ready} onClick={() => ed.create(false)}>
+          <Button disabled={!ready} onClick={() => ed.create("inbox")}>
             Save to inbox
           </Button>
-          <Button tone="approve" disabled={!ready} onClick={() => ed.create(true)} className="flex-1">
-            Approve
-          </Button>
+          {ed.compiling ? (
+            <>
+              <Button disabled={!ready} onClick={() => ed.create("approve")} className="px-3.5">
+                <UploadIcon className="size-4" />
+                <span className="sr-only">Keep and post</span>
+              </Button>
+              <Button tone="approve" disabled={!ready} onClick={() => ed.create("keep")} className="flex-1">
+                Keep
+              </Button>
+            </>
+          ) : (
+            <Button tone="approve" disabled={!ready} onClick={() => ed.create("approve")} className="flex-1">
+              Approve
+            </Button>
+          )}
         </>
       );
     }
@@ -330,7 +354,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
       <>
         {(c.status === "proposed" || c.status === "extra") && (
           <>
-            <Button tone="danger" disabled={busy} onClick={() => ed.decide(false)}>
+            <Button tone="danger" disabled={busy} onClick={() => ed.decide("reject")}>
               Reject
             </Button>
             {dirty && (
@@ -338,8 +362,36 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
                 Save
               </Button>
             )}
-            <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide(true)} className="flex-1">
-              Approve
+            {ed.compiling ? (
+              <>
+                <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="px-3.5">
+                  <UploadIcon className="size-4" />
+                  <span className="sr-only">Keep and post</span>
+                </Button>
+                <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("keep")} className="flex-1">
+                  Keep
+                </Button>
+              </>
+            ) : (
+              <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="flex-1">
+                Approve
+              </Button>
+            )}
+          </>
+        )}
+        {c.status === "kept" && (
+          <>
+            <Button tone="danger" disabled={busy} onClick={ed.discard} className="px-3.5">
+              <TrashIcon className="size-4" />
+              <span className="sr-only">Delete</span>
+            </Button>
+            {dirty && (
+              <Button tone="primary" disabled={busy} onClick={ed.save}>
+                Save
+              </Button>
+            )}
+            <Button disabled={busy} onClick={ed.postToo} className="flex-1">
+              <UploadIcon className="size-4" /> Post it by itself too
             </Button>
           </>
         )}
@@ -352,6 +404,11 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
           <Button tone="danger" disabled={busy} onClick={ed.discard} className="px-3.5">
             <TrashIcon className="size-4" />
             <span className="sr-only">Delete</span>
+          </Button>
+        )}
+        {c.in_compilation && ed.active && (
+          <Button disabled={busy} onClick={ed.compilationOnly}>
+            Compilation only
           </Button>
         )}
         {["approved", "rendering", "failed"].includes(c.status) && (

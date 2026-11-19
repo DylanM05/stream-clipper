@@ -8,7 +8,8 @@ import {
   PlayIcon, PlusIcon, RedoIcon, ScissorsIcon, SparkIcon, ToEndIcon, ToStartIcon, TrashIcon, UndoIcon, UploadIcon,
   VolumeIcon, ZoomInIcon, ZoomOutIcon,
 } from "../icons";
-import { cn, go, goBack, loadSetting, saveSetting } from "../lib";
+import { ChangedNotice, CompilationStrip } from "../CompilationStrip";
+import { clock as streamClock, cn, go, goBack, loadSetting, saveSetting } from "../lib";
 import { PlaylistSelect } from "../PlaylistSelect";
 import { Button, ClipStatusChip, DestinationSelect, ErrorNote, KIND_LABEL, isPick, useToast } from "../ui";
 import { indexAt, startAt, useClock, useSettled, type Clock } from "./clock";
@@ -59,11 +60,11 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
     if (edge.current === "start") ed.setStart(draft.start + seconds, false);
     else ed.setEnd(draft.end + seconds, false);
   };
-  /** What ⌘↵ does: approve, make the clip, or save. */
+  /** What ⌘↵ does: approve (keep, in a stream that makes a compilation), make the clip, or save. */
   const primary = () => {
-    if (ed.source.mode === "new") return draft.title.trim() && ed.create(true);
+    if (ed.source.mode === "new") return draft.title.trim() && ed.create(ed.compiling ? "keep" : "approve");
     const status = ed.source.clip.status;
-    if (status === "proposed" || status === "extra") return draft.title.trim() && ed.decide(true);
+    if (status === "proposed" || status === "extra") return draft.title.trim() && ed.decide(ed.compiling ? "keep" : "approve");
     if (ed.dirty) return ed.save();
   };
 
@@ -337,12 +338,23 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
       const ready = !busy && !!draft.title.trim();
       return (
         <>
-          <Button disabled={!ready} onClick={() => ed.create(false)} className="py-2">
+          <Button disabled={!ready} onClick={() => ed.create("inbox")} className="py-2">
             Save to inbox
           </Button>
-          <Button tone="approve" disabled={!ready} onClick={() => ed.create(true)} className="py-2">
-            Approve
-          </Button>
+          {ed.compiling ? (
+            <>
+              <Button disabled={!ready} onClick={() => ed.create("approve")} className="py-2">
+                <UploadIcon className="size-4" /> Keep and post
+              </Button>
+              <Button tone="approve" disabled={!ready} onClick={() => ed.create("keep")} className="py-2">
+                Keep
+              </Button>
+            </>
+          ) : (
+            <Button tone="approve" disabled={!ready} onClick={() => ed.create("approve")} className="py-2">
+              Approve
+            </Button>
+          )}
         </>
       );
     }
@@ -351,7 +363,7 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
       <>
         {(c.status === "proposed" || c.status === "extra") && (
           <>
-            <Button tone="danger" disabled={busy} onClick={() => ed.decide(false)} className="py-2">
+            <Button tone="danger" disabled={busy} onClick={() => ed.decide("reject")} className="py-2">
               Reject
             </Button>
             {ed.dirty && (
@@ -359,8 +371,35 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
                 Save
               </Button>
             )}
-            <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide(true)} className="py-2">
-              Approve
+            {ed.compiling ? (
+              <>
+                <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="py-2">
+                  <UploadIcon className="size-4" /> Keep and post
+                </Button>
+                <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("keep")} className="py-2">
+                  Keep
+                </Button>
+              </>
+            ) : (
+              <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="py-2">
+                Approve
+              </Button>
+            )}
+          </>
+        )}
+        {c.status === "kept" && (
+          <>
+            <Button tone="danger" disabled={busy} onClick={ed.discard} className="px-3 py-2">
+              <TrashIcon className="size-4" />
+              <span className="sr-only">Delete</span>
+            </Button>
+            {ed.dirty && (
+              <Button tone="primary" disabled={busy} onClick={ed.save} className="py-2">
+                Save
+              </Button>
+            )}
+            <Button disabled={busy} onClick={ed.postToo} className="py-2">
+              <UploadIcon className="size-4" /> Post it by itself too
             </Button>
           </>
         )}
@@ -373,6 +412,11 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
           <Button tone="danger" disabled={busy} onClick={ed.discard} className="px-3 py-2">
             <TrashIcon className="size-4" />
             <span className="sr-only">Delete</span>
+          </Button>
+        )}
+        {c.in_compilation && ed.active && (
+          <Button disabled={busy} onClick={ed.compilationOnly} className="py-2">
+            Compilation only
           </Button>
         )}
         {["approved", "rendering", "failed"].includes(c.status) && (
@@ -563,12 +607,23 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
   return (
     <div className="space-y-5 p-4">
       {/* First, since it's what to judge the clip against. */}
-      {clip?.why && (
+      {clip && ed.why && (
         <div className="rounded-xl bg-panel p-3.5 text-sm leading-snug">
           <p className="mb-1 flex items-center gap-1.5 text-[13px] font-medium text-graphite">
             <SparkIcon className="size-3.5" /> {isPick(clip) ? "Why the AI picked it" : "What it is"}
           </p>
-          {clip.why}
+          {ed.why}
+          {ed.compilationFrom !== null && (
+            <p className="mt-2 text-[13px] text-graphite">
+              In the compilation from <span className="font-mono text-chalk">{streamClock(ed.compilationFrom)}</span>
+            </p>
+          )}
+        </div>
+      )}
+      {clip?.kind === "compilation" && ed.compilation && (
+        <div className="rounded-xl bg-panel p-3.5">
+          <CompilationStrip compilation={ed.compilation} />
+          {clip.compilation_changed && <ChangedNotice onRebuild={ed.rebuild} busy={ed.busy} />}
         </div>
       )}
       {ed.source.mode === "new" && (
@@ -659,8 +714,8 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
       {clip?.manual && <p className="text-xs text-zinc-500">You made this clip, so it has no score from the AI.</p>}
       {clip?.status === "extra" && (
         <p className="rounded-xl bg-zinc-900 p-3 text-sm text-zinc-400 ring-1 ring-white/10">
-          An extra: the AI scored it below this show's best few for the stream, so it isn't in your inbox. Approve it to
-          use it anyway.
+          An extra: the AI scored it below this show's best few for the stream, so it isn't in your inbox.{" "}
+          {clip.in_compilation ? "Keep it" : "Approve it"} to use it anyway.
         </p>
       )}
       {clip?.status === "failed" && <ErrorNote>{clip.error}</ErrorNote>}

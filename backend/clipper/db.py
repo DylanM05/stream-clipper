@@ -25,7 +25,9 @@ VOD_STATUSES = ("queued", *VOD_ACTIVE, "waiting", "ready", "failed")
 
 # Clip statuses: proposed -> approved -> rendering -> rendered -> uploaded, or rejected; failed renders can be retried.
 # "extra" is a pick beyond the show's best few per stream: kept out of the inbox unless you add it.
-CLIP_STATUSES = ("proposed", "extra", "approved", "rejected", "rendering", "rendered", "uploaded", "failed")
+# "kept" is a pick of a stream that makes a compilation (Vod.makes_compilation), kept for it: reviewed and wanted, but
+# never rendered or uploaded by itself. Approving it as well ("Keep and post it by itself too") makes it "approved".
+CLIP_STATUSES = ("proposed", "extra", "approved", "kept", "rejected", "rendering", "rendered", "uploaded", "failed")
 # A stream whose clips all have one of these needs its video files no more (see Worker.clean_up_next).
 CLIP_DONE = ("uploaded", "rejected", "extra")
 
@@ -309,6 +311,9 @@ class Vod(SQLModel, table=True):
     paused: bool = False  # held in the app; carries on from its last finished step when resumed
     # Its show makes compilations, and this one's is still to be made, once its clips are reviewed (Worker.compile_next).
     compilation_due: bool = False
+    # Approving its picks keeps them for its compilation ("kept") instead of posting them. Set when it's processed, from
+    # its show's setting then, so turning that off or on later doesn't change streams already processed.
+    makes_compilation: bool = False
     cleaned_at: datetime | None = None  # when its big files were deleted (see Worker.clean_up)
     created_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)
@@ -368,6 +373,10 @@ class ClipRecord(SQLModel, table=True):
     picked_start: float | None = None
     picked_end: float | None = None
     picked_title: str = ""
+    # For a compilation: the gaps the app cut between its clips when it made it, as JSON like `cuts`. With picked_start
+    # and picked_end it's the compilation as first made, which the owner's edits are compared against (learning.py), and
+    # which says whether the kept clips changed since.
+    picked_cuts: str = ""
     # Offered as an extra (beyond the show's best few, by score) rather than in the inbox: approving it anyway says the
     # AI scored it too low (learning.py). Unset for clips made in the app, full episodes, and older clips until it's
     # worked out from their scores.
@@ -543,6 +552,7 @@ def _engine(db_path: str) -> Engine:
     SQLModel.metadata.create_all(engine)
     _rename_columns(engine)
     _add_missing_columns(engine)
+    _backfill_makes_compilation(engine)
     return engine
 
 
@@ -584,6 +594,16 @@ def _add_missing_columns(engine: Engine) -> None:
                 value, source = _FILLED.get((table.name, column.name), ("", ""))
                 if source in have:
                     conn.exec_driver_sql(f'UPDATE "{table.name}" SET "{column.name}" = {value}')
+
+
+def _backfill_makes_compilation(engine: Engine) -> None:
+    """Streams made before Vod.makes_compilation that make a compilation: one still due, or one already made. Their
+    picks still to review get Keep from then on; the ones approved already stay as they are. Safe to run every start."""
+    with engine.begin() as conn:
+        conn.exec_driver_sql(
+            "UPDATE vod SET makes_compilation = 1 WHERE NOT makes_compilation AND (compilation_due"
+            " OR EXISTS (SELECT 1 FROM clip WHERE clip.vod_id = vod.id AND clip.kind = 'compilation'))"
+        )
 
 
 def _sql_literal(value) -> str:
