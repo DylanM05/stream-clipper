@@ -65,8 +65,8 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 
 **Read first:** Spec › Screens; the existing `design-mockups/edit-bay.html`. This task's "finishing" tick and handoff note are the only commit (of this plan file).
 
-- [ ] **Step 1:** Add mockups for: the compilation strip (waiting, making, one-kept states), the inbox group with Keep / Keep and post cards (phone and desktop), the stream page's compilation panel (each row of Spec › Screens' table), and the editor's button sets for a proposed, kept and compilation clip. Use Spec › Screens for layout and copy, and the existing mockups' tokens.
-- [ ] **Step 2:** Open the file in the browser and check it at phone and desktop widths. Send the owner the file path to look at; carry on once they've seen it, since later tasks follow it.
+- [x] **Step 1:** Add mockups for: the compilation strip (waiting, making, one-kept states), the inbox group with Keep / Keep and post cards (phone and desktop), the stream page's compilation panel (each row of Spec › Screens' table), and the editor's button sets for a proposed, kept and compilation clip. Use Spec › Screens for layout and copy, and the existing mockups' tokens.
+- [x] **Step 2:** Open the file in the browser and check it at phone and desktop widths. Send the owner the file path to look at; carry on once they've seen it, since later tasks follow it.
 
 ### Task 2: The `kept` status and the new columns
 
@@ -243,6 +243,8 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 ## Handoff notes
 
 (Each task adds a few lines here when it finishes: names chosen, machine-only test failures, decisions made.)
+
+- **Task 1 (mockups):** three pages added to `/Users/yirpz/Documents/stream-clipper/design-mockups/edit-bay.html` (outside the repo): `compinbox` (inbox with strip, Keep / Keep and post cards, "Being made" and "Only one clip kept" groups), `compstream` (every row of the stream-page panel table), `compeditor` (button sets per status, and a compilation's editor with the out-of-date notice). View one page with `edit-bay.html?only=compinbox` (add `&shot` to hide the headings). The mockup draws strip blocks wider than real ones (a 3-minute pick on a 6-hour stream is under 1% of the bar). The owner has not yet signed off on the look; Task 8 builds the strip from it, so ask them to glance at it first.
 
 ## Self-review notes
 
