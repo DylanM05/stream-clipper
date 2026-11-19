@@ -392,6 +392,59 @@ def test_a_task_at_its_own_ais_usage_limit_asks_the_main_ai():
     assert ai.WithFallback(Limited("Codex"), no_main).structured(**REQUEST).title == "From Codex"
 
 
+def test_picking_clips_on_claude_code_at_its_session_limit_goes_to_codex_the_main_ai(settings, monkeypatch):
+    client = TestClient(web_app.create_app(settings))
+    client.patch("/api/ai", json={"provider": "codex"})
+    client.patch("/api/ai", json={"task": "clips", "provider": "claude"})
+    limit = json.dumps({"type": "result", "subtype": "success", "is_error": True,
+                        "result": "You've hit your session limit · resets 3pm (America/New_York)"})
+    codex_run = FakeCodex(answered(GOOD))
+
+    def run(cmd, **kwargs):  # one subprocess module for both
+        if cmd[0] == "claude":
+            return subprocess.CompletedProcess(cmd, 1, stdout=limit, stderr="")
+        return codex_run(cmd, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    llm = ai.model(settings, "low", 60, task="clips")
+    assert llm.structured(**REQUEST) == Answer(**GOOD)
+    assert llm.name == "Codex" and len(codex_run.calls) == 1
+
+
+class Failing(ai.LLM):
+    """An AI that fails with something other than its usage limit."""
+
+    def __init__(self, name: str):
+        self.name = name
+
+    def structured(self, **request):
+        raise LLMError(f"{self.name} reported an error: something new")
+
+
+def test_a_task_whose_own_ai_fails_any_other_way_asks_the_main_ai_too():
+    # Such as a usage limit in words the app doesn't know yet: Claude Code isn't held to one version.
+    llm = ai.WithFallback(Failing("Claude Code"), lambda: Limited("Codex"))
+    assert llm.structured(**REQUEST).title == "From Codex" and llm.name == "Codex"
+
+    # Both failing that way: one error, saying both.
+    llm = ai.WithFallback(Failing("Claude Code"), lambda: Failing("Codex"))
+    with pytest.raises(LLMError) as raised:
+        llm.structured(**REQUEST)
+    assert type(raised.value) is LLMError
+    assert str(raised.value) == ("Claude Code reported an error: something new Then the main AI: Codex reported an "
+                                 "error: something new")
+
+
+def test_with_either_at_its_limit_and_the_other_failing_the_work_waits_for_the_limit():
+    soon = datetime(2026, 11, 18, 3, tzinfo=timezone.utc)
+    for llm in (ai.WithFallback(Failing("Claude Code"), lambda: Limited("Codex", True, soon)),
+                ai.WithFallback(Limited("Codex", True, soon), lambda: Failing("Claude Code"))):
+        with pytest.raises(UsageLimitError) as raised:  # a limit ends, so the video waits instead of failing
+            llm.structured(**REQUEST)
+        assert (raised.value.resets_at, raised.value.note) == (soon, "Codex's usage limit was reached.")
+        assert "something new" in str(raised.value)
+
+
 def test_with_both_at_their_limits_the_work_waits_for_the_first_to_reset():
     soon, later = datetime(2026, 11, 18, 3, tzinfo=timezone.utc), datetime(2026, 11, 20, tzinfo=timezone.utc)
     llm = ai.WithFallback(Limited("Codex", True, later), lambda: Limited("Claude", True, soon))

@@ -90,6 +90,23 @@ def test_usage_limit_is_reported_with_reset_time(monkeypatch):
     assert err.value.resets_at.year == 2026
 
 
+@pytest.mark.parametrize("message", [
+    # How Claude Code words its limits now: "You've hit your" and the limit, then " · resets" and when.
+    "You've hit your session limit · resets 3pm (America/New_York)",
+    "You've hit your weekly limit · resets Nov 20, 9am (America/New_York)",
+    "You've hit your Opus limit · resets Nov 20, 9am (America/New_York)",
+    "You've reached your Fable limit.",
+    "You're out of usage credits",
+    "Your org is out of usage · contact your admin",
+])
+def test_usage_limit_in_the_words_claude_code_uses_now(monkeypatch, message):
+    fake = FakeClaude(result(is_error=True, result=message), returncode=1)
+    with pytest.raises(UsageLimitError) as err:
+        ask(fake, monkeypatch)
+    assert err.value.resets_at is None  # the worker tries again in a while
+    assert err.value.note == "Claude's usage limit was reached."
+
+
 def test_other_errors_and_non_json_output_raise(monkeypatch):
     with pytest.raises(LLMError, match="Invalid API key"):
         ask(FakeClaude(result(is_error=True, result="Invalid API key"), returncode=1), monkeypatch)
