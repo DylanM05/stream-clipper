@@ -11,6 +11,9 @@ A channel or folder in the Library (Channel.backlog) has its older videos worked
 day (backlog_order): a folder's in season and episode order, a channel's oldest first, the other way round, or at
 random. A channel's whole history is listed for that, once, where the platform can list it (HISTORY_PLATFORMS).
 
+A YouTube channel can be watched for only its streams or only its uploads (Channel.youtube_watch): its Live tab lists
+the one and its Videos tab the other, so each video is marked by where it was listed, and the other kind is skipped.
+
 A Rumble channel's videos are listed by the upload browser (rumble.py), without saying which is live or how
 long it is, so of the newest few, those that haven't been settled yet are each read for that (list_rumble).
 """
@@ -71,6 +74,7 @@ class Listed:
     final: bool = False  # a post, done as soon as it's up, rather than a stream's VOD
     published: float | None = None  # when it was posted or streamed (unix time), if the platform says
     members_only: bool = False  # for the channel's paying members, where the listing says so (YouTube's badge)
+    stream: bool | None = None  # on YouTube, listed on the Live tab rather than the Videos tab; elsewhere unknown
 
 
 def parse_channel(url: str) -> tuple[str, str]:
@@ -175,6 +179,7 @@ def list_recent(platform: str, channel_url: str, limit: int | None = RECENT) -> 
                 live=is_live(entry),
                 published=published(entry),
                 members_only=entry.get("availability") == "subscriber_only",
+                stream=listing.endswith("/streams") if platform == "youtube" else None,
             ))
     return found
 
@@ -263,6 +268,8 @@ def skip_reason(channel: Channel, item: Listed) -> str:
     """
     if item.members_only:
         return MEMBERS_ONLY
+    if reason := kind_reason(channel, item.stream):
+        return reason
     title = _words(item.title)
     what = "post" if channel.platform == "x" else "title"
     keywords = [k.strip() for k in channel.keywords.split(",") if k.strip()]
@@ -273,6 +280,18 @@ def skip_reason(channel: Channel, item: Listed) -> str:
         return f'The {what} has "{hit}"'
     if channel.min_minutes and (item.duration or 0) < channel.min_minutes * 60:
         return f"Shorter than {channel.min_minutes:g} minutes"
+    return ""
+
+
+def kind_reason(channel: Channel, stream: bool | None) -> str:
+    """Why a YouTube channel leaves out this kind of video (Channel.youtube_watch), or "" if it watches it or the
+    platform doesn't say which kind it is."""
+    if channel.platform != "youtube" or stream is None:
+        return ""
+    if channel.youtube_watch == "streams" and not stream:
+        return "An upload, not a stream"
+    if channel.youtube_watch == "videos" and stream:
+        return "A stream, not an upload"
     return ""
 
 
@@ -297,9 +316,11 @@ def older_reason(channel: Channel) -> str:
 
 def _older(channel: Channel, item: Listed) -> dict:
     """The status and reason of a video already on the channel when it was added: older, for the backlog or to ask
-    for, except a members-only one, which can't be downloaded."""
+    for, except a members-only one, which can't be downloaded, and one of a kind the channel isn't watched for."""
     if item.members_only:
         return {"status": "skipped", "reason": MEMBERS_ONLY}
+    if reason := kind_reason(channel, item.stream):
+        return {"status": "skipped", "reason": reason}
     return {"status": "older", "reason": older_reason(channel)}
 
 
@@ -376,7 +397,7 @@ class Monitor:
                     if not (channel.baseline_done or item.live or (not item.duration and not item.final)):
                         s.add(ChannelVideo(
                             channel_id=channel_id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                            duration=item.duration, **_older(channel, item),
+                            duration=item.duration, stream=item.stream, **_older(channel, item),
                         ))
                         continue
                     row = ChannelVideo(channel_id=channel_id, video_id=item.id, url=item.url)
@@ -384,10 +405,14 @@ class Monitor:
                     if when and not row.published_at:  # listed before dates were kept
                         row.published_at = when
                         s.add(row)
+                    if row.stream is None and item.stream is not None:  # or before streams were told apart
+                        row.stream = item.stream
+                        s.add(row)
                     continue
                 finished = not item.live and (item.final or bool(item.duration and row.duration == item.duration))
                 row.title, row.duration, row.updated_at = item.title, item.duration, utcnow()
                 row.published_at = when or row.published_at
+                row.stream = item.stream
                 if not finished:
                     row.status, row.reason = "waiting", _waiting_reason(channel, item)
                 elif reason := skip_reason(channel, item):
@@ -423,7 +448,7 @@ class Monitor:
             when = datetime.fromtimestamp(item.published, timezone.utc) if item.published else None
             s.add(ChannelVideo(
                 channel_id=channel.id, video_id=item.id, url=item.url, title=item.title, published_at=when,
-                duration=item.duration, **_older(channel, item),
+                duration=item.duration, stream=item.stream, **_older(channel, item),
             ))
         channel.history_listed = True
         s.add(channel)
@@ -431,7 +456,8 @@ class Monitor:
     @staticmethod
     def _work_through(s: Session, channel: Channel, show: Show, listed: list[Listed]) -> list[ChannelVideo]:
         """Queue the next of the backlog's older videos, so that it queues at most channel.backlog_per_day in 24
-        hours. A folder's file that's gone, or is being copied in again, is left for later."""
+        hours. A folder's file that's gone, or is being copied in again, is left for later, and so is a YouTube video of
+        the kind the channel isn't watched for (listed as older before it was set to leave that kind out)."""
         recent = s.exec(select(func.count()).select_from(ChannelVideo).where(
             ChannelVideo.channel_id == channel.id, col(ChannelVideo.backlog_at) >= utcnow() - timedelta(days=1),
         )).one()
@@ -441,6 +467,7 @@ class Monitor:
         if channel.platform == "folder":
             there = {item.id for item in listed if not item.live}
             older = [row for row in older if row.video_id in there]
+        older = [row for row in older if not kind_reason(channel, row.stream)]
         rows = backlog_order(channel, older)[:channel.backlog_per_day - recent]
         for row in rows:
             row.vod_id = queue_vod(s, row.url, show=show).id

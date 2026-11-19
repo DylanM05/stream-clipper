@@ -6,6 +6,7 @@ import {
   type Box,
   type Channel,
   type ChannelFields,
+  type YoutubeWatch,
   type ChannelVideo,
   type Destination,
   type Mode,
@@ -1791,12 +1792,15 @@ function PatternField(props: { label: string; value: string; placeholder: string
 
 // --- Channels to watch ---
 
+const NO_FILTERS: ChannelFields = { keywords: "", exclude: "", min_minutes: 0, youtube_watch: "both" };
+const YOUTUBE_WATCH: Record<YoutubeWatch, string> = { both: "Both", streams: "Streams", videos: "Uploads" };
+
 function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   const toast = useToast();
   const { data: shows } = usePoll(api.shows, 0);
   const otherShows = shows?.filter((s) => s.id !== show.id) ?? [];
   const [url, setUrl] = useState("");
-  const [filters, setFilters] = useState<ChannelFields>({ keywords: "", exclude: "", min_minutes: 0 });
+  const [filters, setFilters] = useState<ChannelFields>(NO_FILTERS);
   const [showFilters, setShowFilters] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -1805,7 +1809,7 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
     try {
       await api.addChannel(show.id, { url: url.trim(), ...filters });
       setUrl("");
-      setFilters({ keywords: "", exclude: "", min_minutes: 0 });
+      setFilters(NO_FILTERS);
       setShowFilters(false);
       toast({ text: "Watching. The first check lists what's already there." });
       onChanged();
@@ -1836,10 +1840,15 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
           className={cn(input, "bg-zinc-800 ring-0")}
         />
         {showFilters ? (
-          <FilterFields value={filters} onChange={setFilters} posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())} />
+          <FilterFields
+            value={filters}
+            onChange={setFilters}
+            posts={/(^|\/\/|\.)(x|twitter)\.com\//i.test(url.trim())}
+            youtube={/(^|\/\/|\.)youtube\.com\//i.test(url.trim())}
+          />
         ) : (
           <button type="button" onClick={() => setShowFilters(true)} className="text-sm font-medium text-violet-300">
-            + Filters (keywords, minimum length)
+            + Filters (keywords, minimum length, streams or uploads)
           </button>
         )}
         <Button tone="primary" onClick={add} disabled={!url.trim() || busy} className="w-full">
@@ -1856,11 +1865,19 @@ function Channels({ show, onChanged }: { show: Show; onChanged: () => void }) {
   );
 }
 
-/** `posts`: an X account, whose filters match the text of each post. */
-function FilterFields({ value, onChange, posts }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean }) {
+/** `posts`: an X account, whose filters match the text of each post. `youtube`: a YouTube channel, which can be watched
+ * for only its streams or only its uploads. */
+function FilterFields({ value, onChange, posts, youtube }: { value: ChannelFields; onChange: (v: ChannelFields) => void; posts?: boolean; youtube?: boolean }) {
   const what = posts ? "posts" : "titles";
   return (
     <div className="space-y-3">
+      {youtube && (
+        <Field label="Watch for" hint="streams are its Live tab, uploads its Videos tab">
+          <div className="flex">
+            <Segmented options={YOUTUBE_WATCH} value={value.youtube_watch} onChange={(youtube_watch) => onChange({ ...value, youtube_watch })} />
+          </div>
+        </Field>
+      )}
       <Field label={`Only ${what} with`} hint={`comma-separated; empty means every ${posts ? "post with a video" : "video"}`}>
         <input value={value.keywords} onChange={(e) => onChange({ ...value, keywords: e.target.value })} placeholder={posts ? "tonight on + night owls" : "night owls, full show"} className={cn(input, "bg-zinc-800 ring-0")} />
         <p className="mt-1.5 text-xs text-zinc-500">
@@ -1893,6 +1910,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
     keywords: channel.keywords,
     exclude: channel.exclude,
     min_minutes: channel.min_minutes,
+    youtube_watch: channel.youtube_watch,
   });
 
   const act = async (work: () => Promise<unknown>, done?: string) => {
@@ -1912,6 +1930,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
       : "Checking soon…";
   const folder = channel.platform === "folder";
   const rules = [
+    channel.platform === "youtube" && channel.youtube_watch !== "both" && `${YOUTUBE_WATCH[channel.youtube_watch].toLowerCase()} only`,
     channel.keywords && `only “${channel.keywords}”`,
     channel.exclude && `not “${channel.exclude}”`,
     channel.min_minutes > 0 && `${channel.min_minutes}+ min`,
@@ -1966,7 +1985,7 @@ function ChannelCard({ channel, otherShows, onChanged }: { channel: Channel; oth
         <div className="space-y-3 border-t border-white/5 p-4">
           {!folder && (
             <>
-              <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} />
+              <FilterFields value={filters} onChange={setFilters} posts={channel.platform === "x"} youtube={channel.platform === "youtube"} />
               <Button
                 tone="primary"
                 className="w-full"
