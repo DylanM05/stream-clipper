@@ -30,25 +30,51 @@ def plan(clips: list[ClipRecord], template: str) -> Plan | None:
     than MIN_CLIPS. Parts of them that overlap (a highlight inside a chapter) go in once, and parts cut out of them in
     the app stay out. Its description lists them with where each starts, as chapters on YouTube, titled without the
     show's `template`."""
-    picks = sorted(
-        (c for c in clips if c.kind in PICKED_KINDS and c.status in INCLUDED), key=lambda c: (c.start, c.end),
-    )
+    picks = included(clips)
     if len(picks) < MIN_CLIPS:
         return None
+    merged = kept_parts(picks)
+    start, end, gaps = cuts.tidy(merged[0][0], merged[-1][1], [(x[1], y[0]) for x, y in zip(merged, merged[1:])])
+    return Plan(start, end, gaps, picks, describe(picks, template, cuts.kept(start, end, gaps)))
+
+
+def describe(picks: list[ClipRecord], template: str, parts: list[cuts.Cut]) -> str:
+    """The compilation's description: its `picks` with where each starts in the video made of `parts`."""
+    starts = [
+        (_video_time(parts, cuts.kept(c.start, c.end, cuts.parse(c.cuts))[0][0]), titles.own_part(template, c.title))
+        for c in picks
+    ]
+    return titles.chapter_list(starts) or "\n".join(f"- {title}" for _, title in starts)
+
+
+def included(clips: list[ClipRecord]) -> list[ClipRecord]:
+    """The stream's chapters and highlights that go in its compilation, in stream order."""
+    return sorted(
+        (c for c in clips if c.kind in PICKED_KINDS and c.status in INCLUDED), key=lambda c: (c.start, c.end),
+    )
+
+
+def kept_parts(picks: list[ClipRecord]) -> list[cuts.Cut]:
+    """The parts of the `picks` that stay, in stream order, with overlapping and touching ones joined."""
     merged: list[list[float]] = []
     for a, b in sorted(part for c in picks for part in cuts.kept(c.start, c.end, cuts.parse(c.cuts))):
         if merged and a <= merged[-1][1] + cuts.EDGE_S:
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])
-    start, end, gaps = cuts.tidy(merged[0][0], merged[-1][1], [(x[1], y[0]) for x, y in zip(merged, merged[1:])])
-    parts = cuts.kept(start, end, gaps)
-    starts = [
-        (_video_time(parts, cuts.kept(c.start, c.end, cuts.parse(c.cuts))[0][0]), titles.own_part(template, c.title))
-        for c in picks
-    ]
-    description = titles.chapter_list(starts) or "\n".join(f"- {title}" for _, title in starts)
-    return Plan(start, end, gaps, picks, description)
+    return [(a, b) for a, b in merged]
+
+
+def is_changed(clip: ClipRecord, plan: Plan | None) -> bool:
+    """Whether the stream's clips now make a different compilation (`plan`, None for none) than the one `clip` was
+    made from (picked_*): its start, end or gaps differ. The owner's own edits to it don't count. A compilation made
+    before it recorded that is never out of date."""
+    if clip.picked_start is None:
+        return False
+    if plan is None:
+        return True
+    return (round(plan.start, 3), round(plan.end, 3), cuts.dump(plan.cuts)) != (
+        round(clip.picked_start, 3), round(clip.picked_end or 0, 3), clip.picked_cuts)
 
 
 def mark_due(vod: Vod, clips: list[ClipRecord]) -> None:
