@@ -2,7 +2,7 @@
 // preview video and its playback, the timeline's view, and saving, deciding on or making the clip.
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, errorText, media, type Clip, type ClipPatch, type Line, type NewClipInfo, type Vod } from "../api";
+import { api, errorText, media, type Clip, type ClipPatch, type Compilation, type Line, type NewClipInfo, type Vod } from "../api";
 import { go, goBack, goInstead, loadSetting, saveSetting, usePoll } from "../lib";
 import { useToast } from "../ui";
 import { createClock } from "./clock";
@@ -19,6 +19,15 @@ export type Source =
   | { mode: "new"; vod: Vod; info: NewClipInfo; from?: number; to?: number };
 
 export type Kind = Clip["kind"];
+
+/** What deciding on a clip does: in a stream that makes a compilation, "keep" keeps it for the compilation only and
+ * "approve" keeps it and posts it by itself too. */
+export type Decision = "approve" | "keep" | "reject";
+
+/** Where a clip made in the editor goes: the inbox, or decided on straight away. */
+export type Making = "inbox" | "approve" | "keep";
+
+const ACTIVE = ["approved", "rendering", "rendered", "failed"]; // the server's ACTIVE_CLIP: rendering or rendered to post
 
 export interface Draft extends Geometry {
   title: string; // a clip's full title; for a new one, the part you write, which goes into the show's pattern
@@ -124,6 +133,8 @@ export function useEditor(source: Source, desktop: boolean) {
   const needsRender = ["start", "end", "cuts", "make_short"].some((k) => k in changes);
   const duration = keptLength(draft);
   const editable = draft.kind !== "whole";
+  // A chapter or highlight of a stream that makes a compilation: Approve is Keep there.
+  const compiling = source.mode === "edit" ? source.clip.in_compilation : source.vod.compilation !== null;
   const fullTitle =
     source.mode === "new"
       ? source.info.title_pattern.replaceAll("{title}", draft.title).split(/\s+/).filter(Boolean).join(" ")
@@ -357,6 +368,22 @@ export function useEditor(source: Source, desktop: boolean) {
   }, [desktop, clip?.id, vodId]); // eslint-disable-line react-hooks/exhaustive-deps -- the clip's id, not each poll of it
   const { data: destinations } = usePoll(api.destinations, 0);
 
+  // --- The stream's compilation: for a compilation's strip, and where a kept clip comes in it ---
+
+  const wantsCompilation = !!clip && (clip.kind === "compilation" || clip.status === "kept");
+  const { data: compilation, refresh: refreshCompilation } = usePoll<Compilation | null>(
+    () => (wantsCompilation ? api.vod(vodId).then((d) => d.vod.compilation) : Promise.resolve(null)),
+    wantsCompilation ? 5000 : 0,
+    `${clip?.id} ${wantsCompilation}`,
+  );
+  // A compiling stream's compilation says what it's made of in its words (the server's says "approved"), as its card does.
+  const why = clip?.kind === "compilation" && compilation ? `The ${clip.compilation_clips} kept clips of this stream, in order.` : clip?.why ?? "";
+  /** For a kept clip once the compilation is made: how far into the compilation it starts. */
+  let compilationFrom: number | null = null;
+  if (clip?.status === "kept" && compilation?.clip_id && compilation.kept.some(([a, b]) => a < clip.end && b > clip.start)) {
+    compilationFrom = compilation.kept.reduce((t, [a, b]) => t + Math.max(0, Math.min(b, clip.start) - a), 0);
+  }
+
   /** To the start of the next line of the transcript, or back to the start of this one (once a moment into it) or the
    * one before. Playing carries on. */
   const toLine = (direction: 1 | -1) => {
@@ -422,23 +449,26 @@ export function useEditor(source: Source, desktop: boolean) {
       source.onSaved(c);
       // The server tidies the cuts the same way; take its numbers so nothing looks unsaved.
       apply({ start: c.start, end: c.end, cuts: c.cuts });
-      toast({ text: source.clip.status !== "proposed" && needsRender ? "Saved: it will render again" : "Saved" });
+      const renders = !["proposed", "extra", "kept"].includes(source.clip.status) && needsRender;
+      toast({ text: renders ? "Saved: it will render again" : "Saved" });
     });
 
-  const decide = (approve: boolean) =>
+  const decide = (decision: Decision) =>
     run(async () => {
       if (source.mode !== "edit") return;
       const c = source.clip;
       // Extras are opened from their video, so that's where to go back to.
       const next = c.status === "proposed" ? await nextClipAfter(c.id) : null;
       if (dirty) await api.updateClip(c.id, changes);
-      await (approve ? api.approve(c.id) : api.reject(c.id));
+      await (decision === "keep" ? api.keep(c.id) : decision === "approve" ? api.approve(c.id) : api.reject(c.id));
       // Undo opens the clip again, in place of the next one if that's still showing.
       const reopen = () => (location.hash.startsWith("#/clip/") ? goInstead : go)(`clip/${c.id}`);
-      toast({
-        text: approve ? "Approved: it will render shortly" : "Rejected",
-        action: { label: "Undo", run: () => void api.restore(c.id).then(reopen) },
-      });
+      const text = {
+        keep: "Kept for the compilation",
+        approve: c.in_compilation ? "Kept. It will also render to post by itself." : "Approved: it will render shortly",
+        reject: "Rejected",
+      }[decision];
+      toast({ text, action: { label: "Undo", run: () => void api.restore(c.id).then(reopen) } });
       // The next clip takes this one's place, so Back goes straight to where you started; after the last, that's
       // where this goes.
       if (next) goInstead(next);
@@ -450,35 +480,85 @@ export function useEditor(source: Source, desktop: boolean) {
       if (source.mode === "edit") source.onSaved(await api.restore(source.clip.id));
     });
 
-  // Approved clips can still be thrown away, render and all.
+  // Approved and kept clips can still be thrown away, render and all. Undo puts it back as it was: a kept clip is kept
+  // again, not approved, which would render it.
   const discard = () =>
     run(async () => {
       if (source.mode !== "edit") return;
-      const id = source.clip.id;
+      const { id, status } = source.clip;
+      const kept = status === "kept";
       await api.reject(id);
-      toast({ text: "Deleted", action: { label: "Undo", run: () => void api.approve(id) } });
-      goBack("approved");
+      toast({ text: "Deleted", action: { label: "Undo", run: () => void (kept ? api.keep(id) : api.approve(id)) } });
+      goBack(kept ? `videos/${vodId}` : "approved"); // Upload never lists a kept clip
     });
 
-  /** Make the new clip: into the inbox, or with `approve` straight to rendering. */
-  const create = (approve: boolean) =>
+  /** A kept clip: post it by itself too, as well as in the compilation. */
+  const postToo = () =>
+    run(async () => {
+      if (source.mode !== "edit") return;
+      const id = source.clip.id;
+      if (dirty) await api.updateClip(id, changes);
+      source.onSaved(await api.approve(id));
+      toast({
+        text: "It will render to post by itself",
+        action: { label: "Undo", run: () => void api.keep(id).then(source.onSaved) },
+      });
+    });
+
+  /** A clip of a compiling stream that's posted by itself too: keep it for the compilation only. */
+  const compilationOnly = () =>
+    run(async () => {
+      if (source.mode !== "edit") return;
+      const id = source.clip.id;
+      if (dirty) await api.updateClip(id, changes);
+      source.onSaved(await api.keep(id));
+      toast({
+        text: "It stays in the compilation and won't be posted by itself",
+        action: { label: "Undo", run: () => void api.approve(id).then(source.onSaved) },
+      });
+    });
+
+  /** A compilation: make it again from the clips kept now. What's in the draft is saved first, so its cuts stay out. */
+  const rebuild = () =>
+    run(async () => {
+      if (source.mode !== "edit") return;
+      if (!confirm("Rebuild with the clips kept now? Its description is written again, and the parts you cut out stay out.")) return;
+      const id = source.clip.id;
+      if (dirty) await api.updateClip(id, changes);
+      const c = await api.rebuild(id);
+      source.onSaved(c);
+      // Its ends, cuts and description are new, so the draft starts again from them.
+      past.current = [];
+      future.current = [];
+      draftRef.current = toDraft(c);
+      setDraft(toDraft(c));
+      setHistoryVersion((v) => v + 1);
+      void refreshCompilation();
+      toast({ text: "Rebuilt" });
+    });
+
+  /** Make the new clip: into the inbox, or decided on straight away (approved to render, or kept). */
+  const create = (making: Making) =>
     run(async () => {
       if (source.mode !== "new") return;
       const d = draftRef.current;
       const made = await api.makeClip(source.vod.id, {
         kind: d.kind === "highlight" ? "highlight" : "chapter", start: d.start, end: d.end, cuts: d.cuts, title: fullTitle,
         description: d.description, make_short: d.kind === "highlight" && d.make_short,
-        destination_id: d.destination_id, playlist_id: d.playlist_id, approve,
+        destination_id: d.destination_id, playlist_id: d.playlist_id, approve: making === "approve", keep: making === "keep",
       });
-      toast({
-        text: approve ? "Made and approved: it will render shortly" : "Made: it's in your inbox",
-        action: { label: "Open", run: () => go(`clip/${made.id}`) },
-      });
+      const text = {
+        inbox: "Made: it's in your inbox",
+        keep: "Made and kept for the compilation",
+        approve: compiling ? "Made and kept: it will also render to post by itself" : "Made and approved: it will render shortly",
+      }[making];
+      toast({ text, action: { label: "Open", run: () => go(`clip/${made.id}`) } });
       goBack(`videos/${source.vod.id}`);
     });
 
   return {
     source, clip, vodId, length, draft, setDraft, busy, dirty, needsRender, changes, duration, editable, fullTitle,
+    compiling, compilation, compilationFrom, why, active: !!clip && ACTIVE.includes(clip.status),
     // history
     commit, live, undo, redo, canUndo: past.current.length > 0, canRedo: future.current.length > 0,
     // playback
@@ -491,7 +571,7 @@ export function useEditor(source: Source, desktop: boolean) {
     // data
     lines, destinations,
     // actions
-    save, decide, restore, discard, create,
+    save, decide, restore, discard, create, postToo, compilationOnly, rebuild,
   };
 }
 

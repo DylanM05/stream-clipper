@@ -1,5 +1,6 @@
 import type { Compilation } from "./api";
 import { cn, length } from "./lib";
+import { Button } from "./ui";
 
 /** What the strip's header says about the clips in it, from where the compilation stands. */
 function counts({ status, clips, to_review }: Compilation): string {
@@ -45,6 +46,19 @@ export function CompilationStrip({ compilation, highlight }: { compilation: Comp
         ))}
         {highlight && <i className="absolute inset-y-0 min-w-[3px] rounded-sm bg-mark" style={place(highlight)} />}
       </div>
+    </div>
+  );
+}
+
+/** Under a compilation's strip when the clips kept now would make a different one: Rebuild makes it again from them. */
+export function ChangedNotice({ onRebuild, busy }: { onRebuild: () => void; busy?: boolean }) {
+  return (
+    <div className="mt-3 flex flex-wrap items-center justify-end gap-x-3 gap-y-2 rounded-xl bg-panel-2 px-3.5 py-3">
+      <span className="size-2 shrink-0 rounded-full bg-mark" />
+      <span className="min-w-0 flex-1 basis-48 text-sm">The kept clips changed since it was made.</span>
+      <Button tone="primary" disabled={busy} onClick={onRebuild} className="px-3 py-2">
+        Rebuild from kept clips
+      </Button>
     </div>
   );
 }
