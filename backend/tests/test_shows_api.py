@@ -185,7 +185,8 @@ def test_a_youtube_channel_can_be_watched_for_only_its_streams_or_only_its_uploa
     assert client.post(url, json={"url": "kick.com/kino"}).json()["youtube_watch"] == "both"
     channel = client.post(url, json={"url": "youtube.com/@kino", "youtube_watch": "streams"}).json()
     assert channel["youtube_watch"] == "streams"
-    assert client.patch(f"/api/channels/{channel['id']}", json={"youtube_watch": "videos"}).json()["youtube_watch"] == "videos"
+    changed = client.patch(f"/api/channels/{channel['id']}", json={"youtube_watch": "videos"}).json()
+    assert (changed["youtube_watch"], changed["last_checked_at"]) == ("videos", None)  # checked within seconds
 
 
 

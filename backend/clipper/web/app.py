@@ -1767,7 +1767,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             ch.show_id = show_id
         for k, v in changes.items():
             setattr(ch, k, v.strip() if isinstance(v, str) else v)
-        if changes.keys() & {"backlog", "backlog_per_day", "backlog_paused", "backlog_order"}:
+        if changes.keys() & {"backlog", "backlog_per_day", "backlog_paused", "backlog_order", "youtube_watch"}:
             ch.last_checked_at = None  # so it takes effect on a check within seconds
         s.add(ch)
         s.commit()
