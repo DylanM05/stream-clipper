@@ -12,8 +12,8 @@ from .db import PICKED_KINDS, ClipRecord
 
 KEY = "comp"
 MIN_CLIPS = 2  # one clip on its own is already a video
-# Approved in review or without it, whether rendered yet or not.
-INCLUDED = ("approved", "rendering", "rendered", "uploaded", "failed")
+# Kept for it, or approved (in review or without it), whether rendered yet or not.
+INCLUDED = ("kept", "approved", "rendering", "rendered", "uploaded", "failed")
 
 
 @dataclass

@@ -6,6 +6,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
+from clipper import db as db_module
 from clipper.config import Settings
 from clipper.db import Channel, ChannelVideo, ClipRecord, Show, UploadJob, Vod, get_engine, utcnow
 from clipper.web import app as web_app
@@ -40,6 +41,21 @@ def set_status(settings, clip_id: int, status: str) -> None:
         clip.status = status
         s.add(clip)
         s.commit()
+
+
+def test_the_backfill_marks_streams_that_already_make_a_compilation(settings):
+    with Session(get_engine(settings)) as s:
+        due = Vod(url="https://kick.com/a/videos/1", compilation_due=True)
+        made = Vod(url="https://kick.com/a/videos/2")
+        plain = Vod(url="https://kick.com/a/videos/3")
+        s.add_all([due, made, plain])
+        s.commit()
+        s.add(ClipRecord(vod_id=made.id, key="comp", kind="compilation", start=0, end=60, title="Best of"))
+        s.commit()
+        ids = due.id, made.id, plain.id
+    db_module._engine.cache_clear()  # as when the app starts again
+    with Session(get_engine(settings)) as s:
+        assert [s.get(Vod, i).makes_compilation for i in ids] == [True, True, False]
 
 
 def test_adding_videos_picks_the_mode_and_ignores_duplicates(client):

@@ -35,7 +35,7 @@ LATEST = 100  # the newest picks looked at for changes and rejections
 EXAMPLES = 6  # changed picks, and the owner's own clips, shown with their words
 QUOTE_WORDS = 18  # longer quotes keep their start and end
 MOVED_S = 0.5  # a start or end moved less than this wasn't changed
-APPROVED = ("approved", "rendering", "rendered", "failed", "uploaded")
+APPROVED = ("approved", "kept", "rendering", "rendered", "failed", "uploaded")  # kept: for its stream's compilation
 PLURAL = {"clip": "Clips", "highlight": "Highlights", "Short": "Shorts"}
 LENGTHS = {
     "clip": ((600, "under 10 min"), (1200, "10–20 min"), (2400, "20–40 min"), (inf, "over 40 min")),

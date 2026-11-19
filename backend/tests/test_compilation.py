@@ -46,6 +46,11 @@ def test_fewer_than_two_approved_clips_make_no_compilation(statuses):
     assert compilation.plan([clip(f"hl{i}", i * 100, i * 100 + 20, s) for i, s in enumerate(statuses)], "{title}") is None
 
 
+def test_kept_clips_are_included_in_the_compilation():
+    found = compilation.plan([clip("hl01", 100, 130, status="kept"), clip("hl02", 500, 530, status="kept")], "{title}")
+    assert [c.key for c in found.picks] == ["hl01", "hl02"]
+
+
 def test_where_each_clip_starts_skips_the_parts_before_it():
     parts = [(100, 130), (500, 530), (1000, 1600)]
     assert compilation._video_time(parts, 500) == 30
