@@ -52,6 +52,8 @@ WHOLE_VIDEO_HOSTS = ("x.com", "twitter.com")
 # The order a backlog takes its videos in (monitor.backlog_order): from a folder's first episode or a channel's oldest
 # video, from the latest, or at random.
 BACKLOG_ORDERS = ("first", "latest", "random")
+# What a YouTube channel is watched for: its streams (its Live tab), its uploads (its Videos tab), or both.
+YOUTUBE_WATCH = ("both", "streams", "videos")
 
 # What a show's videos are, for the instructions the AI picks clips with (segment.py): livestreams, episodes of a TV
 # show, or anything else (podcasts, vlogs, lectures).
@@ -386,6 +388,7 @@ class Channel(SQLModel, table=True):
     keywords: str = ""  # only titles (on X, post text) with one of these, comma-separated; empty means every video
     exclude: str = ""  # skip titles with any of these
     min_minutes: float = 0
+    youtube_watch: str = "both"  # see YOUTUBE_WATCH; other platforms don't say which videos are streams
     enabled: bool = True
     baseline_done: bool = False  # the videos already there when the channel was added have been listed
     # In the Library: its older videos (a folder's episodes, or a channel's past streams) are worked through by
@@ -416,6 +419,7 @@ class ChannelVideo(SQLModel, table=True):
     reason: str = ""
     vod_id: int | None = Field(default=None, foreign_key="vod.id")
     published_at: datetime | None = None  # when it was posted or streamed, if the platform says (roughly, on YouTube)
+    stream: bool | None = None  # on YouTube, listed on the channel's Live tab rather than its Videos tab
     backlog_at: datetime | None = None  # when working through the channel's backlog queued it
     first_seen_at: datetime = Field(default_factory=utcnow)
     updated_at: datetime = Field(default_factory=utcnow)

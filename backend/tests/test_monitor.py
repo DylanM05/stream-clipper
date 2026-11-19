@@ -132,6 +132,70 @@ def test_members_only_videos_are_skipped_without_being_queued(setup):
     assert (found.status, found.reason, found.vod_id) == ("skipped", "Members only", None)
 
 
+def test_a_youtube_channel_can_watch_only_its_streams_or_only_its_uploads(setup):
+    settings, mon, fake, (show_id, channel_id) = setup
+    change(settings, channel_id, platform="youtube", youtube_watch="streams")
+    fake.videos = [replace(video("old-upload"), stream=False), replace(video("old-stream"), stream=True)]
+    mon.check(channel_id)  # an upload already there isn't even kept for the backlog
+    found = items(settings)
+    assert (found["old-upload"].status, found["old-upload"].reason) == ("skipped", "An upload, not a stream")
+    assert (found["old-stream"].status, found["old-stream"].stream) == ("older", True)
+
+    fake.videos = [replace(video("upload"), stream=False), replace(video("stream"), stream=True), *fake.videos]
+    mon.check(channel_id)
+    mon.check(channel_id)  # same length twice: finished
+    found = items(settings)
+    assert (found["upload"].status, found["upload"].reason) == ("skipped", "An upload, not a stream")
+    assert found["stream"].status == "queued"
+
+    change(settings, channel_id, youtube_watch="videos")
+    fake.videos = [replace(video("upload2"), stream=False), replace(video("stream2"), stream=True), *fake.videos]
+    mon.check(channel_id)
+    mon.check(channel_id)
+    found = items(settings)
+    assert (found["stream2"].status, found["stream2"].reason) == ("skipped", "A stream, not an upload")
+    assert found["upload2"].status == "queued"
+
+
+def test_a_youtube_channels_backlog_leaves_out_the_kind_it_doesnt_watch(setup):
+    settings, mon, fake, (show_id, channel_id) = setup
+    change(settings, channel_id, platform="youtube")
+    fake.videos = [replace(video("v3"), stream=False), replace(video("v2"), stream=True), replace(video("v1"), stream=True)]
+    mon.check(channel_id)  # watching both: all older
+    assert statuses(settings) == {"v3": "older", "v2": "older", "v1": "older"}
+
+    change(settings, channel_id, youtube_watch="videos", backlog=True, backlog_per_day=5, history_listed=True)
+    mon.check(channel_id)  # the streams listed before stay older, but aren't worked through
+    assert statuses(settings) == {"v3": "queued", "v2": "older", "v1": "older"}
+
+
+def test_a_youtube_channels_videos_are_streams_if_its_live_tab_lists_them(monkeypatch):
+    class FakeYoutubeDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def extract_info(self, url, download):
+            tab = url.rsplit("/", 1)[-1]
+            return {"entries": [{"id": tab, "url": f"https://www.youtube.com/watch?v={tab}", "duration": 60}]}
+
+    monkeypatch.setattr(monitor, "YoutubeDL", FakeYoutubeDL)
+    listed = monitor.list_recent("youtube", "https://www.youtube.com/@kino")
+    assert {item.id: item.stream for item in listed} == {"streams": True, "videos": False}
+    assert {item.stream for item in monitor.list_recent("kick", "https://kick.com/kino")} == {None}
+
+
+def test_only_youtube_channels_say_which_videos_are_streams():
+    # Kick and Twitch only list streams, and other platforms don't say, so the setting doesn't apply to them.
+    channel = Channel(show_id=1, url="https://kick.com/kino", platform="kick", youtube_watch="videos")
+    assert monitor.skip_reason(channel, video("1")) == ""
+
+
 def test_videos_keep_when_they_were_posted_even_ones_listed_before_dates_were_kept(setup):
     settings, mon, fake, (show_id, channel_id) = setup
     fake.videos = [video("old")]

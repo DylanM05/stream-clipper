@@ -62,6 +62,7 @@ SIGN_IN_MAX_AGE_S = 3600
 Mode = Literal["segment", "whole", "both"]
 VideoType = Literal["streams", "episodes", "other"]  # db.VIDEO_TYPES
 BacklogOrder = Literal["first", "latest", "random"]  # db.BACKLOG_ORDERS
+YoutubeWatch = Literal["both", "streams", "videos"]  # db.YOUTUBE_WATCH
 Auto = Literal["review", "render", "upload"]
 Visibility = Literal["public", "unlisted", "private"]
 Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
@@ -475,6 +476,7 @@ class ChannelIn(BaseModel):
     keywords: str = Field(default="", max_length=1000)
     exclude: str = Field(default="", max_length=1000)
     min_minutes: float = Field(default=0, ge=0, le=1440)
+    youtube_watch: YoutubeWatch = "both"
     # In the Library (Channel.backlog). For a channel the show already watches, this puts it in.
     backlog: bool = False
     backlog_per_day: int = Field(default=2, ge=1, le=100)
@@ -485,6 +487,7 @@ class ChannelPatch(BaseModel):
     keywords: str | None = Field(default=None, max_length=1000)
     exclude: str | None = Field(default=None, max_length=1000)
     min_minutes: float | None = Field(default=None, ge=0, le=1440)
+    youtube_watch: YoutubeWatch | None = None
     enabled: bool | None = None
     show_id: int | None = None  # move it to another show; what it has already seen stays seen
     backlog: bool | None = None
@@ -501,6 +504,7 @@ class ChannelOut(BaseModel):
     keywords: str
     exclude: str
     min_minutes: float
+    youtube_watch: str
     enabled: bool
     last_checked_at: str | None
     last_error: str
@@ -1726,7 +1730,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             s.refresh(ch)
             return channel_out(s, ch)
         ch = Channel(show_id=show_id, url=url, platform=platform, keywords=body.keywords.strip(),
-                     exclude=body.exclude.strip(), min_minutes=body.min_minutes, **backlog)
+                     exclude=body.exclude.strip(), min_minutes=body.min_minutes, youtube_watch=body.youtube_watch,
+                     **backlog)
         s.add(ch)
         add_term(s, s.get(Show, show_id), url)
         s.commit()

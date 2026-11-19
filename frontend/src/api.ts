@@ -228,6 +228,7 @@ export interface Channel {
   keywords: string;
   exclude: string;
   min_minutes: number;
+  youtube_watch: YoutubeWatch; // a YouTube channel's streams (its Live tab), uploads (its Videos tab), or both
   enabled: boolean;
   last_checked_at: string | null;
   last_error: string;
@@ -242,6 +243,7 @@ export interface Channel {
 
 /** The order a backlog takes its videos in: from the first episode (or oldest video), from the latest, or at random. */
 export type BacklogOrder = "first" | "latest" | "random";
+export type YoutubeWatch = "both" | "streams" | "videos";
 
 /** What a show's videos are, for the AI: livestreams, TV episodes, or anything else (podcasts, vlogs, talks). */
 export type VideoType = "streams" | "episodes" | "other";
@@ -311,7 +313,7 @@ export type ShowFields = Omit<
   Show,
   "id" | "channels" | "video_count" | "short_background" | "overlay" | "overlay_box" | "overlay_screen" | "intro" | "intro_seconds"
 >;
-export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes">;
+export type ChannelFields = Pick<Channel, "keywords" | "exclude" | "min_minutes" | "youtube_watch">;
 export type BacklogFields = Pick<Channel, "backlog_per_day" | "backlog_paused" | "backlog_order">;
 
 export interface ChannelVideo {

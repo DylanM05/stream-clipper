@@ -178,6 +178,16 @@ def test_channels(client, settings):
     assert client.get(f"/api/channels/{channel['id']}/videos").status_code == 404
 
 
+def test_a_youtube_channel_can_be_watched_for_only_its_streams_or_only_its_uploads(client):
+    show = client.post("/api/shows", json={"name": "Kino Casino"}).json()
+    url = f"/api/shows/{show['id']}/channels"
+    assert client.post(url, json={"url": "youtube.com/@kino", "youtube_watch": "shorts"}).status_code == 422
+    assert client.post(url, json={"url": "kick.com/kino"}).json()["youtube_watch"] == "both"
+    channel = client.post(url, json={"url": "youtube.com/@kino", "youtube_watch": "streams"}).json()
+    assert channel["youtube_watch"] == "streams"
+    assert client.patch(f"/api/channels/{channel['id']}", json={"youtube_watch": "videos"}).json()["youtube_watch"] == "videos"
+
+
 
 def test_a_show_can_watch_a_folder_of_tv_episodes_inside_the_media_folder(tmp_path):
     media = tmp_path / "media"
