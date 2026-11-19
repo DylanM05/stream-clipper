@@ -58,6 +58,12 @@ def mark_due(vod: Vod, clips: list[ClipRecord]) -> None:
         vod.compilation_due = True
 
 
+def done(clips: list[ClipRecord]) -> bool:
+    """Whether the stream's compilation is uploaded or rejected, so its kept clips need nothing more (until then the
+    stream's files stay, as for any clip still to be uploaded)."""
+    return any(c.kind == "compilation" and c.status in ("uploaded", "rejected") for c in clips)
+
+
 def _video_time(parts: list[cuts.Cut], t: float) -> float:
     """How far into the finished video `t` (in the stream's seconds, inside one of the `parts`) comes."""
     before = 0.0

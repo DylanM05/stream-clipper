@@ -1268,15 +1268,18 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/vods/{vod_id}/delete-files")
     def delete_vod_files(vod_id: int, s: Session = Depends(db)) -> VodOut:
-        """Delete a stream's video files now. Its clips that aren't uploaded can't be cut any more, so they're rejected."""
+        """Delete a stream's video files now. Its clips that aren't uploaded can't be cut any more, so they're rejected;
+        kept clips stay kept once the compilation they're in is uploaded (and the AI learns from them)."""
         vod = found(s, Vod, vod_id, "video")
         if vod.status not in ("ready", "failed") or not vod.workspace:
             raise HTTPException(409, "Only the files of a video that's done processing (or failed) can be deleted")
         clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod_id)).all()
         if any(c.status == "rendering" for c in clips):
             raise HTTPException(409, "A clip from it is rendering right now. Pause rendering first.")
+        stays = ("uploaded", "rejected", "kept") if any(
+            c.kind == "compilation" and c.status == "uploaded" for c in clips) else ("uploaded", "rejected")
         for clip in clips:
-            if clip.status not in ("uploaded", "rejected"):
+            if clip.status not in stays:
                 discard_render(s, clip, vod)
                 clip.status, clip.updated_at = "rejected", utcnow()
                 s.add(clip)

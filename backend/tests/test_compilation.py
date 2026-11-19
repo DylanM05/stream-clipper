@@ -60,6 +60,28 @@ def test_where_each_clip_starts_skips_the_parts_before_it():
     assert cuts.stream_time(parts, 160) == 1100
 
 
+# --- What the owner removed from a compilation ------------------------------------------
+
+
+def test_removed_parts_include_a_new_cut_that_merged_into_a_gap():
+    # the owner cut 500-520 right after the gap the app cut, and tidy merged the two
+    assert cuts.removed(100, 1600, [(130, 520)], 100, 1600, [(130, 500)]) == [(500, 520)]
+
+
+def test_removed_parts_include_a_moved_start_and_end():
+    assert cuts.removed(110, 1500, [(130, 500), (700, 720)], 100, 1600, [(130, 500)]) == [
+        (100, 110), (700, 720), (1500, 1600)]
+
+
+def test_a_gap_the_owner_put_back_is_not_removed_and_touching_parts_are_merged():
+    # 130-500 was given back; the start moved to 110 and 110-120 was cut right after it
+    assert cuts.removed(110, 1600, [(110, 120), (800, 900)], 100, 1600, [(130, 500)]) == [(100, 120), (800, 900)]
+
+
+def test_removed_is_empty_when_nothing_changed():
+    assert cuts.removed(100, 1600, [(130, 500)], 100, 1600, [(130, 500)]) == []
+
+
 # --- The worker -----------------------------------------------------------------------
 
 

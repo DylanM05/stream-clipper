@@ -117,6 +117,48 @@ def test_cleanup_waits_as_long_as_set_in_the_app(settings):
     assert worker_module.Worker(settings).clean_up_next() is True
 
 
+def add_compilation(settings, vod_id, status):
+    with Session(get_engine(settings)) as s:
+        s.add(ClipRecord(vod_id=vod_id, key="compilation", kind="compilation", start=0, end=10, title="c",
+                         status=status, updated_at=utcnow() - timedelta(days=4)))
+        s.commit()
+
+
+def test_a_stream_with_a_kept_clip_and_no_uploaded_compilation_is_not_cleaned(settings):
+    vod_id, _, source = finished_stream(settings, ("kept", "uploaded"))
+    w = worker_module.Worker(settings)
+    assert w.clean_up_next() is False  # no compilation yet (one kept clip makes none)
+    add_compilation(settings, vod_id, "rendered")
+    assert w.clean_up_next() is False
+    assert source.exists()
+
+
+@pytest.mark.parametrize("status", ["uploaded", "rejected"])
+def test_it_is_cleaned_once_its_compilation_is_uploaded_or_rejected(settings, status):
+    vod_id, _, source = finished_stream(settings, ("kept", "kept", "rejected"))
+    add_compilation(settings, vod_id, status)
+    assert worker_module.Worker(settings).clean_up_next() is True
+    assert not source.exists()
+    with Session(get_engine(settings)) as s:  # the kept clips stay kept: they're in it, and the AI learns from them
+        assert [c.status for c in s.exec(select(ClipRecord).where(ClipRecord.kind == "highlight"))] == [
+            "kept", "kept", "rejected"]
+
+
+@pytest.mark.parametrize("compilation, kept_becomes", [("uploaded", "kept"), ("rendered", "rejected"), (None, "rejected")])
+def test_deleting_a_streams_files_leaves_kept_clips_only_once_its_compilation_is_uploaded(settings, compilation,
+                                                                                         kept_becomes):
+    vod_id, _, source = finished_stream(settings, ("kept", "uploaded"))
+    if compilation:
+        add_compilation(settings, vod_id, compilation)
+    client = TestClient(web_app.create_app(settings))
+    assert client.post(f"/api/vods/{vod_id}/delete-files").json()["cleaned"] is True
+    with Session(get_engine(settings)) as s:
+        statuses = {c.key: c.status for c in s.exec(select(ClipRecord))}
+    assert statuses["hl0"] == kept_becomes and statuses["hl1"] == "uploaded"
+    if compilation:
+        assert statuses["compilation"] == ("uploaded" if compilation == "uploaded" else "rejected")
+
+
 def test_downloads_wait_while_the_disk_is_nearly_full(settings, monkeypatch):
     monkeypatch.setattr(worker_module, "disk_free_gb", lambda path: 12.0)
     fetched = []

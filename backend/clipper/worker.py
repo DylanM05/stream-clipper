@@ -1223,8 +1223,9 @@ class Worker:
     def clean_up_next(self) -> bool:
         """Delete the big files of one finished stream that's due. True if one was cleaned up.
 
-        A stream is finished when every clip is uploaded, rejected or an extra and no upload is pending;
-        it's due `cleanup_after_days` after the last change to it or its clips.
+        A stream is finished when every clip is uploaded, rejected or an extra (or kept, once its compilation is
+        uploaded or rejected) and no upload is pending; it's due `cleanup_after_days` after the last change to it or
+        its clips.
         """
         cutoff = utcnow() - timedelta(days=self.app_setting("cleanup_after_days"))
         with Session(self.engine) as s:
@@ -1234,7 +1235,8 @@ class Worker:
             ))
             for vod in candidates:
                 clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
-                if any(c.status not in CLIP_DONE for c in clips):
+                done = CLIP_DONE + (("kept",) if compilation.done(clips) else ())
+                if any(c.status not in done for c in clips):
                     continue
                 pending = s.exec(
                     select(UploadJob).join(ClipRecord)

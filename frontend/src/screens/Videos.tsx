@@ -366,7 +366,10 @@ export function VideoDetail({ id }: { id: number }) {
   };
 
   const deleteFiles = async () => {
-    const dropped = data?.clips.filter((c) => !["uploaded", "rejected"].includes(c.status)).length ?? 0;
+    // Kept clips stay kept once the compilation they're in is uploaded; otherwise they're rejected too.
+    const compiled = data?.clips.some((c) => c.kind === "compilation" && c.status === "uploaded");
+    const stays: string[] = compiled ? ["uploaded", "rejected", "kept"] : ["uploaded", "rejected"];
+    const dropped = data?.clips.filter((c) => !stays.includes(c.status)).length ?? 0;
     const warning = dropped ? ` ${dropped} clip${dropped === 1 ? " that isn't" : "s that aren't"} uploaded can't be cut any more and will be rejected.` : "";
     if (!confirm(`Delete this stream's video files now to free space?${warning}`)) return;
     try {
