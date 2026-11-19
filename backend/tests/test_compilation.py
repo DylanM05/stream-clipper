@@ -418,3 +418,4 @@ def test_compilations_endpoint_only_returns_streams_with_something_to_say(settin
     found = client.get("/api/compilations").json()
     assert sorted((c["vod_id"], c["status"]) for c in found) == [
         (1, "waiting"), (2, "making"), (3, "one"), (5, "proposed")]
+    assert not any(c["changed"] for c in found)  # its plan was stored as whole seconds, the stream's comes as floats

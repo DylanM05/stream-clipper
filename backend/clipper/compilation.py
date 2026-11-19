@@ -73,8 +73,10 @@ def is_changed(clip: ClipRecord, plan: Plan | None) -> bool:
         return False
     if plan is None:
         return True
-    return (round(plan.start, 3), round(plan.end, 3), cuts.dump(plan.cuts)) != (
-        round(clip.picked_start, 3), round(clip.picked_end or 0, 3), clip.picked_cuts)
+    def rounded(start: float, end: float, gaps: list[cuts.Cut]) -> list[float]:
+        return [round(t, 3) for t in (start, end, *(t for gap in gaps for t in gap))]
+    return rounded(plan.start, plan.end, plan.cuts) != rounded(
+        clip.picked_start, clip.picked_end or 0, cuts.parse(clip.picked_cuts))
 
 
 def mark_due(vod: Vod, clips: list[ClipRecord]) -> None:
