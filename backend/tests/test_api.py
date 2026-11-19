@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from sqlmodel import Session, select
 
 from clipper import db as db_module
+from clipper import learning
 from clipper.config import Settings
 from clipper.db import Channel, ChannelVideo, ClipRecord, Show, UploadJob, Vod, get_engine, utcnow
 from clipper.web import app as web_app
@@ -274,6 +275,14 @@ def test_editing_a_kept_clips_ends_leaves_it_kept(client, settings):
     edited = client.patch(f"/api/clips/{clip_id}", json={"start": 12, "end": 60, "cuts": [[20, 25]], "make_short": True})
     assert edited.status_code == 200 and edited.json()["status"] == "kept"
     assert stored(settings, clip_id)[0].start == 12
+
+
+def test_editing_the_ends_of_a_clip_kept_without_review_counts_as_looked_at(client, settings):
+    made = utcnow() - timedelta(hours=1)
+    clip_id = kept_clip(settings, status="kept", created_at=made, reviewed_at=made)
+    client.patch(f"/api/clips/{clip_id}", json={"start": 12})
+    clip = stored(settings, clip_id)[0]
+    assert clip.status == "kept" and learning._looked_at(clip)
 
 
 def test_restore_and_reject_work_from_kept(client, settings):

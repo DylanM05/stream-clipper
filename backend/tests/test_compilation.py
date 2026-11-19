@@ -422,3 +422,19 @@ def test_compilations_endpoint_only_returns_streams_with_something_to_say(settin
     assert sorted((c["vod_id"], c["status"]) for c in found) == [
         (1, "waiting"), (2, "making"), (3, "one"), (5, "proposed")]
     assert not any(c["changed"] for c in found)  # its plan was stored as whole seconds, the stream's comes as floats
+
+
+@pytest.mark.parametrize("status", ["rendered", "uploaded", "rejected"])
+def test_the_compilations_endpoint_doesnt_work_out_streams_past_the_inbox(settings, client, monkeypatch, status):
+    # The inbox asks every 10 s, so months of finished compilations mustn't each be planned again.
+    stream(settings, ["kept", "kept", "rejected"], due=False)
+    add_compilation(settings, 1, status)
+    stream(settings, ["approved", "uploaded"], n=2, due=False)
+    add_compilation(settings, 2, "uploaded")
+
+    def planned(*args):
+        raise AssertionError("planned a compilation past the inbox")
+
+    monkeypatch.setattr(compilation, "plan", planned)
+    monkeypatch.setattr(compilation, "kept_parts", planned)
+    assert client.get("/api/compilations").json() == []

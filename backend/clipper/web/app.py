@@ -2008,9 +2008,17 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """The compilation of every stream that makes one and the inbox has something to say about: picks to review,
         a compilation being made or to review, or a single kept clip to keep another for or post by itself. Newest
         stream first."""
+        # Only streams that can be one of those: a compilation to review, or none made yet and picks still in play.
+        # The inbox asks every 10 s, so the rest (every finished stream so far) aren't worked out.
+        made = select(ClipRecord.vod_id).where(ClipRecord.kind == "compilation")
+        to_review = made.where(ClipRecord.status == "proposed")
+        in_play = select(ClipRecord.vod_id).where(col(ClipRecord.kind).in_(PICKED_KINDS),
+                                                  col(ClipRecord.status).in_((*compilation.INCLUDED, "proposed")))
         streams: dict[int, tuple[Vod, list[ClipRecord]]] = {}
-        for clip, vod in s.exec(select(ClipRecord, Vod).join(Vod).where(col(Vod.makes_compilation).is_(True))
-                                .order_by(col(Vod.created_at).desc(), col(Vod.id).desc())):
+        for clip, vod in s.exec(select(ClipRecord, Vod).join(Vod).where(
+                col(Vod.makes_compilation).is_(True),
+                col(Vod.id).in_(to_review) | (col(Vod.id).not_in(made) & col(Vod.id).in_(in_play)),
+        ).order_by(col(Vod.created_at).desc(), col(Vod.id).desc())):
             streams.setdefault(vod.id, (vod, []))[1].append(clip)
         found = []
         for vod, clips in streams.values():
@@ -2049,9 +2057,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             setattr(clip, k, v)
         clip.updated_at = utcnow()
         # New cut points or a new Short mean a new render; titles and channels don't change the video.
-        # A kept clip isn't rendered by itself, so it stays kept (ACTIVE_CLIP doesn't have it).
+        # A kept clip isn't rendered by itself, so it stays kept (ACTIVE_CLIP doesn't have it), but it's been looked at
+        # now, even if it was kept without review, so the AI learns from the change (learning._looked_at).
         if changed.keys() & {"start", "end", "cuts", "make_short"} and clip.status in ACTIVE_CLIP:
             clip.status, clip.reviewed_at = "approved", utcnow()
+        elif changed.keys() & {"start", "end", "cuts"} and clip.status == "kept":
+            clip.reviewed_at = utcnow()
         s.add(clip)
         s.commit()
         s.refresh(clip)
