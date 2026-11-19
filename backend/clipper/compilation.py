@@ -8,7 +8,7 @@ clip. It's rendered a part at a time (render.render_compilation), so the hours b
 from dataclasses import dataclass
 
 from . import cuts, titles
-from .db import PICKED_KINDS, ClipRecord
+from .db import PICKED_KINDS, ClipRecord, Vod
 
 KEY = "comp"
 MIN_CLIPS = 2  # one clip on its own is already a video
@@ -49,6 +49,13 @@ def plan(clips: list[ClipRecord], template: str) -> Plan | None:
     ]
     description = titles.chapter_list(starts) or "\n".join(f"- {title}" for _, title in starts)
     return Plan(start, end, gaps, picks, description)
+
+
+def mark_due(vod: Vod, clips: list[ClipRecord]) -> None:
+    """Have the stream's compilation made (again checked for) after one of its picks changed status, if it makes one
+    and hasn't got one yet: so a stream that had too few kept clips gets one once there are enough."""
+    if vod.makes_compilation and not any(c.kind == "compilation" for c in clips):
+        vod.compilation_due = True
 
 
 def _video_time(parts: list[cuts.Cut], t: float) -> float:

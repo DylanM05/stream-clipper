@@ -28,10 +28,10 @@ from sqlalchemy import func
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
-from .. import ai, cuts, ffmpeg, learning, notify, stats, titles
+from .. import ai, compilation, cuts, ffmpeg, learning, notify, stats, titles
 from ..config import Settings, get_settings
 from ..db import (
-    PAUSABLE, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
+    PAUSABLE, PICKED_KINDS, VOD_ACTIVE, Channel, ChannelVideo, ClipRecord, Destination, Show, UploadJob, Vod,
     get_app_setting, get_engine, is_paused, parse_box, parse_boxes, queue_vod, set_app_setting, sites_name, upload_sites,
     utcnow,
 )
@@ -68,7 +68,8 @@ Visibility = Literal["public", "unlisted", "private"]
 Sites = Literal["", "youtube", "rumble", "both"]  # "" goes by the channel's own setting
 Fraction = Annotated[float, Field(ge=0, le=1)]
 BoxIn = tuple[Fraction, Fraction, Fraction, Fraction]  # x, y, w, h of a part of the picture, as fractions of it
-ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")  # statuses with a render queued, running or done
+# Statuses with a render queued, running or done. Not "kept": a clip kept only for the compilation has no render.
+ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")
 
 
 # --- API shapes ----------------------------------------------------------------
@@ -176,6 +177,7 @@ class NewClip(BaseModel):
     destination_id: int | None = None
     playlist_id: str = Field(default="", max_length=64)
     approve: bool = False  # straight to rendering, rather than into the inbox
+    keep: bool = False  # kept for the stream's compilation (one that makes one), rather than into the inbox
 
 
 class NewClipInfo(BaseModel):
@@ -991,13 +993,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def set_status(s: Session, clip: ClipRecord, vod: Vod, status: str) -> ClipOut:
         clip.status = status
         clip.reviewed_at = clip.updated_at = utcnow()
-        clip.approved_in_review = status == "approved"
+        clip.approved_in_review = status in ("approved", "kept")
         if status == "approved":
             clip.error = ""
         s.add(clip)
+        due_again(s, clip, vod)
         s.commit()
         s.refresh(clip)
         return clip_out(clip, vod)
+
+    def due_again(s: Session, clip: ClipRecord, vod: Vod) -> None:
+        """After a chapter or highlight changed status, have its stream's compilation made if it's still to be."""
+        if clip.kind in PICKED_KINDS:
+            compilation.mark_due(vod, s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all())
+            s.add(vod)
 
     def cancel_retries(s: Session, clip: ClipRecord) -> None:
         """Stop the clip's failed uploads from trying again by themselves."""
@@ -1969,7 +1978,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             setattr(clip, k, v)
         clip.updated_at = utcnow()
         # New cut points or a new Short mean a new render; titles and channels don't change the video.
-        if changed.keys() & {"start", "end", "cuts", "make_short"} and clip.status in ("approved", "rendering", "rendered", "failed"):
+        # A kept clip isn't rendered by itself, so it stays kept (ACTIVE_CLIP doesn't have it).
+        if changed.keys() & {"start", "end", "cuts", "make_short"} and clip.status in ACTIVE_CLIP:
             clip.status, clip.reviewed_at = "approved", utcnow()
         s.add(clip)
         s.commit()
@@ -1984,6 +1994,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if vod.cleaned_at:
             raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
         return set_status(s, clip, vod, "approved")
+
+    @app.post("/api/clips/{clip_id}/keep")
+    def keep(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+        """Keep a chapter or highlight for its stream's compilation only. One that was to be posted by itself too
+        ("Compilation only") has its render and queued uploads discarded, as restore does."""
+        clip, vod = get_clip(s, clip_id)
+        if clip.kind not in PICKED_KINDS or not vod.makes_compilation:
+            raise HTTPException(422, "Only a clip or a highlight of a stream that makes a compilation can be kept for it")
+        if clip.status == "kept":
+            return clip_out(clip, vod)
+        if clip.status == "uploaded":
+            raise HTTPException(409, "It's on YouTube already. It stays in the compilation.")
+        if vod.cleaned_at:
+            raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
+        if clip.status in ACTIVE_CLIP:
+            discard_render(s, clip, vod)
+        return set_status(s, clip, vod, "kept")
 
     @app.post("/api/clips/{clip_id}/pause")
     def pause_clip(clip_id: int, s: Session = Depends(db)) -> ClipOut:
@@ -2258,8 +2285,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.post("/api/vods/{vod_id}/clips", status_code=201)
     def make_clip(vod_id: int, body: NewClip, s: Session = Depends(db)) -> ClipOut:
-        """A clip made in the app from any part of the stream: into the inbox, or with `approve` straight to
-        rendering. It's marked as made by hand (manual), since it has no score from Claude."""
+        """A clip made in the app from any part of the stream: into the inbox, with `approve` straight to
+        rendering, or with `keep` kept for the stream's compilation. It's marked as made by hand (manual), since it has no score from Claude."""
         vod = found(s, Vod, vod_id, "video")
         if vod.cleaned_at:
             raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
@@ -2271,16 +2298,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         make_short = body.make_short and body.kind == "highlight"
         start, end, cut_list = checked_cuts(body.kind, vod, body.start, body.end, body.cuts, make_short)
         check_destinations(s, body.destination_id)
+        if body.keep and not vod.makes_compilation:
+            raise HTTPException(422, "Only a stream that makes a compilation has clips kept for it")
+        status = "approved" if body.approve else "kept" if body.keep else "proposed"
         keys = set(s.exec(select(ClipRecord.key).where(ClipRecord.vod_id == vod.id)))
         number = next(n for n in range(1, len(keys) + 2) if f"my{n:02d}" not in keys)
         clip = ClipRecord(
             vod_id=vod.id, key=f"my{number:02d}", kind=body.kind, start=start, end=end, cuts=cuts.dump(cut_list),
             title=title, description=body.description.strip(), vertical_ok=body.kind == "highlight", make_short=make_short,
             destination_id=body.destination_id, playlist_id=body.playlist_id if body.destination_id else "",
-            manual=True, status="approved" if body.approve else "proposed", reviewed_at=utcnow() if body.approve else None,
-            approved_in_review=body.approve,
+            manual=True, status=status, reviewed_at=utcnow() if status != "proposed" else None,
+            approved_in_review=status != "proposed",
         )
         s.add(clip)
+        due_again(s, clip, vod)
         s.commit()
         s.refresh(clip)
         return clip_out(clip, vod)

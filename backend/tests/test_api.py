@@ -183,6 +183,136 @@ def test_a_clip_ready_to_upload_can_be_deleted_unless_its_uploading_or_uploaded(
     assert client.post(f"/api/clips/{clip_id}/reject").status_code == 409
 
 
+def make_compiling(settings, clip_id: int) -> None:
+    """Make the clip's stream one that makes a compilation (Vod.makes_compilation)."""
+    with Session(get_engine(settings)) as s:
+        vod = s.get(Vod, s.get(ClipRecord, clip_id).vod_id)
+        vod.makes_compilation = True
+        s.add(vod)
+        s.commit()
+
+
+def kept_clip(settings, **fields) -> int:
+    clip_id = add_clip(settings, **fields)
+    make_compiling(settings, clip_id)
+    return clip_id
+
+
+def stored(settings, clip_id: int) -> tuple[ClipRecord, Vod]:
+    with Session(get_engine(settings)) as s:
+        clip = s.get(ClipRecord, clip_id)
+        return clip, s.get(Vod, clip.vod_id)
+
+
+def test_keep_sets_kept_and_marks_it_reviewed(client, settings):
+    clip_id = kept_clip(settings)
+    kept = client.post(f"/api/clips/{clip_id}/keep")
+    assert kept.status_code == 200 and kept.json()["status"] == "kept"
+    clip, vod = stored(settings, clip_id)
+    assert clip.approved_in_review and clip.reviewed_at is not None
+    assert vod.compilation_due
+
+
+def test_keep_is_refused_outside_a_compiling_stream(client, settings):
+    assert client.post(f"/api/clips/{add_clip(settings)}/keep").status_code == 422
+    with Session(get_engine(settings)) as s:
+        vod = Vod(url="https://www.twitch.tv/videos/2", status="ready", workspace="twitchvod-2", makes_compilation=True)
+        s.add(vod)
+        s.commit()
+        whole = ClipRecord(vod_id=vod.id, key="comp", kind="compilation", start=0, end=60, title="Best of")
+        s.add(whole)
+        s.commit()
+        whole_id = whole.id
+    assert client.post(f"/api/clips/{whole_id}/keep").status_code == 422  # only a chapter or a highlight
+
+
+def test_keep_is_refused_from_uploaded(client, settings):
+    clip_id = kept_clip(settings, status="uploaded")
+    refused = client.post(f"/api/clips/{clip_id}/keep")
+    assert refused.status_code == 409
+    assert refused.json()["detail"] == "It's on YouTube already. It stays in the compilation."
+
+
+def test_keep_is_refused_after_the_files_are_deleted(client, settings):
+    clip_id = kept_clip(settings)
+    with Session(get_engine(settings)) as s:
+        vod = s.get(Vod, s.get(ClipRecord, clip_id).vod_id)
+        vod.cleaned_at = utcnow()
+        s.add(vod)
+        s.commit()
+    assert client.post(f"/api/clips/{clip_id}/keep").status_code == 409
+    assert stored(settings, clip_id)[0].status == "proposed"
+
+
+def test_keep_from_approved_discards_the_render(client, settings):
+    clip_id, video = rendered_clip(settings)
+    make_compiling(settings, clip_id)
+    add_job(settings, clip_id)
+    kept = client.post(f"/api/clips/{clip_id}/keep").json()
+    assert kept["status"] == "kept" and not kept["has_video"] and not video.exists()
+    assert client.get(f"/api/clips/{clip_id}/uploads").json() == []  # its queued upload is cancelled
+
+
+def test_keep_twice_changes_nothing(client, settings):
+    clip_id = kept_clip(settings)
+    client.post(f"/api/clips/{clip_id}/keep")
+    first = stored(settings, clip_id)[0].reviewed_at
+    again = client.post(f"/api/clips/{clip_id}/keep")
+    assert again.status_code == 200 and again.json()["status"] == "kept"
+    assert stored(settings, clip_id)[0].reviewed_at == first
+
+
+def test_approve_from_kept_is_keep_and_post(client, settings):
+    clip_id = kept_clip(settings, status="kept")
+    assert client.post(f"/api/clips/{clip_id}/approve").json()["status"] == "approved"
+    clip, vod = stored(settings, clip_id)
+    assert clip.approved_in_review and vod.compilation_due
+
+
+def test_editing_a_kept_clips_ends_leaves_it_kept(client, settings):
+    clip_id = kept_clip(settings, status="kept")
+    edited = client.patch(f"/api/clips/{clip_id}", json={"start": 12, "end": 60, "cuts": [[20, 25]], "make_short": True})
+    assert edited.status_code == 200 and edited.json()["status"] == "kept"
+    assert stored(settings, clip_id)[0].start == 12
+
+
+def test_restore_and_reject_work_from_kept(client, settings):
+    clip_id = kept_clip(settings, status="kept")
+    assert client.post(f"/api/clips/{clip_id}/restore").json()["status"] == "proposed"
+    assert stored(settings, clip_id)[1].compilation_due
+    set_status(settings, clip_id, "kept")
+    assert client.post(f"/api/clips/{clip_id}/reject").json()["status"] == "rejected"
+
+
+def test_a_stream_with_a_compilation_already_isnt_made_due_again(client, settings):
+    clip_id = kept_clip(settings)
+    with Session(get_engine(settings)) as s:
+        s.add(ClipRecord(vod_id=s.get(ClipRecord, clip_id).vod_id, key="comp", kind="compilation", start=0, end=60,
+                         title="Best of"))
+        s.commit()
+    client.post(f"/api/clips/{clip_id}/keep")
+    assert not stored(settings, clip_id)[1].compilation_due
+
+
+def test_make_clip_with_keep_creates_it_kept(client, settings):
+    clip_id = kept_clip(settings)
+    vod_id = stored(settings, clip_id)[1].id
+    made = client.post(f"/api/vods/{vod_id}/clips", json={"kind": "chapter", "start": 100, "end": 200, "title": "Mine",
+                                                           "keep": True})
+    assert made.status_code == 201 and made.json()["status"] == "kept"
+    clip, vod = stored(settings, made.json()["id"])
+    assert clip.approved_in_review and clip.reviewed_at is not None and vod.compilation_due
+    plain = stored(settings, add_clip(settings))[1].id
+    body = {"kind": "chapter", "start": 100, "end": 200, "title": "Mine", "keep": True}
+    assert client.post(f"/api/vods/{plain}/clips", json=body).status_code == 422
+
+
+def test_a_kept_clip_is_not_listed_as_ready_to_upload_or_counted(client, settings):
+    kept_clip(settings, status="kept")
+    assert client.get("/api/clips", params={"status": "rendered"}).json() == []
+    assert client.get("/api/summary").json()["to_upload"] == 0
+
+
 def test_pausing_parts_of_the_work_and_single_videos_and_clips(client, settings):
     assert client.get("/api/pauses").json() == {"downloads": False, "processing": False, "renders": False, "uploads": False}
     assert client.patch("/api/pauses", json={"renders": True, "uploads": True}).json()["renders"] is True
