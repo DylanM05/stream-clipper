@@ -1,6 +1,6 @@
 # Compilation-only streams Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task, in one session, with the context cleared after every task (see "Starting and finishing a task" below). Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** In a stream that makes a compilation, approving a clip keeps it for the compilation (new status `kept`) instead of rendering and posting it; the compilation is made once the stream's clips are reviewed.
 
@@ -29,6 +29,23 @@
 - All kept clips rejected afterwards: the stream's compilation is not made, no empty compilation row, files not cleaned while one is still `kept`.
 - Two kept clips where one overlaps the other (a highlight inside a chapter): the compilation joins them once, and a cut in the overlap is credited to the shorter clip.
 
+## Starting and finishing a task
+
+The owner clears the conversation after each task, so nothing from an earlier task is remembered. The plan, the spec, the git log and the "Handoff notes" at the bottom are the only memory.
+
+**Starting (do this every time):**
+1. You're on branch `kept-clips`. Run `git status -sb` (must be clean) and `git log --oneline -8`.
+2. Find the first task whose boxes are not all ticked in this file. That's yours; don't touch later ones.
+3. Read the "Handoff notes" at the bottom, the task's **Interfaces**, and its **Read first** list. Read only what it lists, plus the Spec sections it cites. Line numbers in this plan were taken before any edits and drift: find code by name (`grep -n`), not by number.
+4. Use `superpowers:executing-plans` and, for code, `superpowers:test-driven-development`.
+
+**Finishing (every task ends with this, after its own last step):**
+1. Everything the task changed is committed; `git status -sb` is clean.
+2. Tick the task's boxes in this file. Under "Handoff notes", add a few lines on anything the next task can't get from the Interfaces: a name you chose differently, a test that fails for a machine reason, a decision you made. Commit those two together as `Plan: task N done`.
+3. Stop. Tell the owner "Task N is done and committed; clear the context and start the next one", with one line on what you verified. Don't begin the next task.
+
+If a task turns out to be wrong or too big, stop and say so instead of reshaping the plan quietly.
+
 ## File Structure
 
 - `backend/clipper/db.py`: `kept` in `CLIP_STATUSES`; `Vod.makes_compilation`, `ClipRecord.picked_cuts`; start-up backfill.
@@ -46,12 +63,16 @@
 
 **Files:** Modify `/Users/yirpz/Documents/stream-clipper/design-mockups/edit-bay.html` (outside the repo; **no commit step**).
 
+**Read first:** Spec › Screens; the existing `design-mockups/edit-bay.html`. This task's "finishing" tick and handoff note are the only commit (of this plan file).
+
 - [ ] **Step 1:** Add mockups for: the compilation strip (waiting, making, one-kept states), the inbox group with Keep / Keep and post cards (phone and desktop), the stream page's compilation panel (each row of Spec › Screens' table), and the editor's button sets for a proposed, kept and compilation clip. Use Spec › Screens for layout and copy, and the existing mockups' tokens.
 - [ ] **Step 2:** Open the file in the browser and check it at phone and desktop widths. Send the owner the file path to look at; carry on once they've seen it, since later tasks follow it.
 
 ### Task 2: The `kept` status and the new columns
 
 **Files:** Modify `backend/clipper/db.py:28,292-312,317-380,545`, `backend/clipper/compilation.py:15`, `backend/clipper/learning.py:38`; Test `backend/tests/test_compilation.py`, `backend/tests/test_api.py`.
+
+**Read first:** `db.py` (`CLIP_STATUSES`, `Vod`, `ClipRecord`, `get_engine`, `_add_missing_columns`), `compilation.py`, `learning.py` lines 30-45, the top 30 lines of `tests/test_compilation.py` (its `clip()` helper) and `tests/test_api.py` (`settings`, `client`, `add_clip`).
 
 **Interfaces:**
 - Produces: `"kept"` in `db.CLIP_STATUSES`; `compilation.INCLUDED` and `learning.APPROVED` include `"kept"`; `Vod.makes_compilation: bool = False`; `ClipRecord.picked_cuts: str = ""`. **`CLIP_DONE` is not changed** (kept counts as done only conditionally, Task 5).
@@ -65,6 +86,8 @@
 ### Task 3: Keep, approve from kept, and the status leaks
 
 **Files:** Modify `backend/clipper/web/app.py` (`ACTIVE_CLIP` at 71, `set_status` ~989, `update_clip` ~1972, `approve` ~1980, `restore`/`reject` ~2175-2195, `make_clip` ~2260, `NewClip` body); Test `backend/tests/test_api.py`.
+
+**Read first:** Spec › Server behaviour (Keep, Approve, Restore/reject, Making a clip, Whenever a pick changes status); in `app.py` the functions `set_status`, `discard_render`, `approve`, `reject`, `restore`, `update_clip`, `make_clip`, `ACTIVE_CLIP`; `tests/test_api.py` helpers (`add_clip`, `set_status`).
 
 **Interfaces:**
 - Produces: `POST /api/clips/{id}/keep -> ClipOut`; `NewClip.keep: bool = False`; helper `compilation.mark_due(vod: Vod, clips: list[ClipRecord]) -> None` (in `compilation.py`, so the worker shares it) that sets `vod.compilation_due = True` when `vod.makes_compilation` and the stream has no `compilation` clip (called by keep, approve, restore, reject, make_clip).
@@ -88,6 +111,8 @@
 ### Task 4: Processing and compile_next
 
 **Files:** Modify `backend/clipper/worker.py` (`_add_clips` ~434-465, ready summary ~280-296 and `_added_summary` ~1284, `compilation_due` at 301, `compile_next` 705-750); Test `backend/tests/test_worker.py`, `backend/tests/test_compilation.py`.
+
+**Read first:** Spec › Server behaviour (Processing, compile_next, Automatic uploads); in `worker.py` `_add_clips`, `_added_summary`, the `status="ready"` block of `process`, `compile_next`; in `tests/test_worker.py` the fixtures and `add_show`/`add_vod` helpers and the existing `compile_next` tests; the `track_record` → `segment.run` test.
 
 **Interfaces:**
 - Produces: module constant `worker.COMPILE_DELAY_S = 10`; `_add_clips` gives a pick the show takes without review `status="kept"` (not `approved`) when the stream makes a compilation; `compile_next` sets `picked_start`, `picked_end`, `picked_cuts` on the compilation.
@@ -113,6 +138,8 @@
 
 **Files:** Modify `backend/clipper/worker.py` (`clean_up_next` ~1195, `clean_up`), `backend/clipper/web/app.py` (the delete-files endpoint and its warning), `backend/clipper/cuts.py`; Test `backend/tests/test_cleanup.py`, new tests in `backend/tests/test_cuts.py` if present, else `test_compilation.py`.
 
+**Read first:** Spec › Server behaviour (What the owner removed, Cleanup); `cuts.py` (`tidy`, `kept`, `Cut`); in `worker.py` `clean_up_next` and `clean_up`; the delete-files endpoint in `app.py` (`grep -n delete-files`); `tests/test_cleanup.py`.
+
 **Interfaces:**
 - Produces: `cuts.removed(start: float, end: float, cut_list: list[Cut], picked_start: float, picked_end: float, picked_cuts: list[Cut]) -> list[Cut]`: what the owner took out of a compilation: `picked_start→start`, `end→picked_end`, and `cut_list` minus `picked_cuts` as an interval difference (a new cut touching a gap was merged into it by `tidy`, so only the new part counts). Sorted, merged.
 - Cleanup rule: a stream with a `kept` clip is not cleaned until its compilation is uploaded or rejected; "Delete this stream's video files" leaves `kept` clips alone once the compilation is uploaded, else rejects them, and its warning counts them.
@@ -127,6 +154,8 @@
 
 **Files:** Modify `backend/clipper/compilation.py`, `backend/clipper/web/app.py` (`ClipOut`, `clip_out`, new `CompilationOut`, `vod_out`, new routes); Test `backend/tests/test_compilation.py`, `backend/tests/test_api.py`.
 
+**Read first:** Spec › Server behaviour (The compilation changed, Rebuild) and › API additions; `compilation.py` (`plan`); in `app.py` `ClipOut`, `clip_out`, `VodOut`, `vod_out`, `discard_render`, `set_status`; the `compile_next` code in `worker.py` as Task 4 left it (Rebuild must set status the same way).
+
 **Interfaces:**
 - Produces: `compilation.is_changed(clip: ClipRecord, plan: Plan | None) -> bool` (true when the plan from the stream's clips now differs in start, end or gaps from `picked_*`; false if the compilation has no `picked_start`); `ClipOut.in_compilation: bool`, `.compilation_clips: int`, `.compilation_changed: bool`; `CompilationOut` and `VodOut.compilation` exactly as in Spec › API additions; `GET /api/compilations -> list[CompilationOut]`; `POST /api/clips/{id}/rebuild -> ClipOut` (Spec › Rebuild: 409 when uploaded, files deleted, or fewer than two clips with the message "Only one clip is kept now. Post it by itself, or reject the compilation."; applies `cuts.removed` to the new plan; keeps title, channel and playlist; rewrites the description; discards the render; status follows `auto_compilation`).
 
@@ -139,6 +168,8 @@
 ### Task 7: Learning from kept clips and cuts in the compilation
 
 **Files:** Modify `backend/clipper/learning.py` (`_changes` ~222, `_shorts` ~326, a new helper `_compilation_cuts`); Test `backend/tests/test_learning.py`.
+
+**Read first:** Spec › Learning; `learning.py` (`_changes`, `_looked_at`, `_changed_line`, `_shorts`, `_Transcripts`); `tests/test_learning.py` helpers (`add_clip`); `cuts.removed` as Task 5 left it.
 
 **Interfaces:**
 - Consumes: `cuts.removed`. Produces: for each compilation of the show with `picked_start` set, the removed parts split across the included clips' kept parts they overlap and credited to that clip as an extra cut "in the compilation" (the shorter clip where two overlap); those clips count as changed even when kept without review; lines read "in the compilation they cut out 8 s: …"; they count in "cut parts out of N". `_shorts` skips kept highlights that weren't posted.
@@ -153,6 +184,8 @@
 
 **Files:** Modify `frontend/src/api.ts` (`ClipStatus` at 17, `Clip`, `Vod`, new `Compilation` type, `api.keep`, `api.rebuild`, `api.compilations`, `NewClip.keep`), `frontend/src/ui.tsx` (`CLIP_STATUS` ~44: `kept: ["In compilation", "bg-panel-2 text-chalk"]`); Create `frontend/src/CompilationStrip.tsx`.
 
+**Read first:** Spec › Screens › the strip; the Task 1 mockups; `frontend/src/api.ts` (`Clip`, `Vod`, the `api` object), `ui.tsx` (`CLIP_STATUS`, `Chip`), `ClipCard.tsx` (`Slate`); the backend's `CompilationOut` and `ClipOut` as Task 6 left them (the TypeScript types must match field for field).
+
 **Interfaces:**
 - Produces: `CompilationStrip({ compilation, highlight? }: { compilation: Compilation; highlight?: [number, number] })` per Spec › Screens › compilation strip (6px bar, chalk kept blocks, graphite outlines to review, mark yellow only for `highlight`, header "Compilation" + counts + running length in mono; 200 ms fill, none with reduced motion).
 
@@ -165,12 +198,16 @@
 
 **Files:** Modify `frontend/src/screens/Inbox.tsx`, `frontend/src/ClipCard.tsx` (`ReviewCard`).
 
+**Read first:** Spec › Screens › Inbox and › Words the app uses; the Task 1 mockups; `Inbox.tsx`, `ClipCard.tsx`, `CompilationStrip.tsx`, and the `api` calls Task 8 added.
+
 - [ ] **Step 1:** Build per Spec › Screens › Inbox: groups also built from `api.compilations()` (one extra request per poll); a compiling group's strip at the top inside the fold; Keep instead of Approve when `clip.in_compilation`; "Keep and post it by itself too" as a quiet text button; swipe right says "Keep"; keys A Keep, P Keep and post (does nothing elsewhere), legend shows "A Keep" only when a compiling stream is on screen; toasts exactly as in the words table; last-clip toast and "Being made" folded state; "Only one clip kept" with "Post it by itself"; the compilation's card; "All caught up" with any "Being made" strips under it; the subtitle doesn't count strip-only groups.
 - [ ] **Step 2:** Type-check and build; expected no errors.
 - [ ] **Step 3:** In the running app (`local-testing`): keep, keep-and-post and reject by mouse, keys and swipe; undo with Z restores the clip to the inbox; keep the last clip of a stream and watch the group fold to "Being made".
 - [ ] **Step 4:** Commit `Keep clips for the compilation from the inbox`.
 
 ### Task 10: Editor
+
+**Read first:** Spec › Screens › Editor; the Task 1 mockups; `useEditor.ts` (`decide`, `discard`, `create`), the button blocks of `DesktopEditor.tsx` and `PhoneEditor.tsx`, `CompilationStrip.tsx`.
 
 **Files:** Modify `frontend/src/editor/useEditor.ts` (`decide` ~428, `discard` ~453, `create` ~464), `DesktopEditor.tsx` (`primary` ~63, buttons ~343-392, extra note ~660), `PhoneEditor.tsx` (~322-371).
 
@@ -183,6 +220,8 @@
 
 **Files:** Modify `frontend/src/screens/Videos.tsx` (`VideoDetail` ~349: compilation panel above its clips, "3 in compilation" counts, `deleteFiles` warning counts kept clips, kept clips' chip), `screens/Approved.tsx` (compilation row reads "Compilation of 4 clips to {channel}"; "Compilation only" beside "To inbox" for a posted-too clip; kept never listed), `screens/Shows.tsx` (**wording only**: the tick label, hint and the note under Without review, per Spec › Show editor › Compilation; no change to `formFields`/`BLANK_SHOW`/save body), `screens/Overview.tsx` (count kept as "in compilation").
 
+**Read first:** Spec › Screens (Upload, Stream page, Show editor › Compilation, Overview and Videos list); the Task 1 mockups; `VideoDetail` in `Videos.tsx`, `Approved.tsx`, the Compilation group in `Shows.tsx` (~lines 790-830), the clip-status counts in `Overview.tsx`; `CompilationStrip.tsx`.
+
 - [ ] **Step 1:** Build per Spec › Screens (the stand/line/action table for the panel).
 - [ ] **Step 2:** Add a check in the app that a show save with every field set gives identical JSON before and after (Spec › Tests, condition 1).
 - [ ] **Step 3:** Type-check and build; expected no errors.
@@ -191,6 +230,8 @@
 
 ### Task 12: Whole-branch verification and the PR
 
+**Read first:** the Handoff notes, `git log --oneline origin/main..HEAD`, and the Spec's "Calls made for the owner to check". Because this is the last task, a fresh reviewer (a subagent on the most capable model) reads `git diff origin/main...HEAD` against the Spec and this plan's Review Focus before the PR is opened; fix what it finds.
+
 - [ ] **Step 1:** Run the full backend suite with `CLIPPER_MIN_FREE_GB=1`; expected: only the 2 + 5 machine failures, which also fail on a `git stash -u` baseline.
 - [ ] **Step 2:** `npm run build` and the type-check in `frontend/`; expected clean.
 - [ ] **Step 3:** One end-to-end pass in the running app (`local-testing`): process a fake stream of a show with the compilation tick on, keep three clips and post one by itself, reject one, and watch the compilation get made after the 10 s; confirm only the posted-too clip appears on Upload.
@@ -198,6 +239,10 @@
 - [ ] **Step 5:** Push and open the PR with `tea pr create` (the `forgejo` login), listing the six "Calls made for the owner to check" from the spec.
 
 ---
+
+## Handoff notes
+
+(Each task adds a few lines here when it finishes: names chosen, machine-only test failures, decisions made.)
 
 ## Self-review notes
 
