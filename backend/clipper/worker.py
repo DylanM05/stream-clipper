@@ -19,7 +19,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -55,6 +55,7 @@ STATS_EVERY_S = 1800
 DIGEST_HOUR = 9  # Monday, in CLIPPER_TIMEZONE: the week's uploads and their views
 MAX_AUTO_RETRIES = 3  # nights a failed upload is tried again by itself
 QUOTA_TIMEZONE = "America/Los_Angeles"  # the YouTube API quota resets at midnight here
+COMPILE_DELAY_S = 10  # a stream's compilation waits this long after its last review decision, for the inbox's Undo
 
 
 class Paused(Exception):
@@ -289,16 +290,20 @@ class Worker:
                     description="\n\n".join(p for p in (episode_summary or text, chapters) if p),
                 ))
 
+            # Whether approving a pick here keeps it for the compilation, fixed for the stream's life from its show
+            # now. Set before the clips are added, so Keep works on them as soon as the inbox lists them.
+            compiling = bool(show and show.compilation)
+            self._update_vod(vod_id, makes_compilation=compiling)
             # The clips don't need the preview: ones going ahead without review start rendering now, and the
             # inbox lists the rest. Only playing them in the app waits for it.
-            added = self._add_clips(vod_id, clips, show)
+            added = self._add_clips(vod_id, clips, show, compiling)
             if summary := _added_summary(added):
                 if preview.is_alive():
                     summary += "\nThe preview to watch them in the app is still being made."
                 self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
             self._wait_for_preview(vod_id, preview)
             # Its compilation is made once its clips are reviewed (compile_next).
-            due = bool(show and show.compilation and any(c.kind in PICKED_KINDS for c in clips))
+            due = compiling and any(c.kind in PICKED_KINDS for c in clips)
             self._update_vod(vod_id, status="ready", progress=1, compilation_due=due)
             log.info("Video %d ready with %d clips", vod_id, len(clips))
         except Paused:
@@ -428,12 +433,14 @@ class Worker:
             log.warning("No title preview from the AI (%s); using the post's first line", e)
             return ""
 
-    def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None) -> dict[str, int]:
+    def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None, compiling: bool = False) -> dict[str, int]:
         """Add clips the database doesn't have yet, so re-running a video never duplicates them.
 
         The full episode and the show's best chapters and highlights go to the inbox, or straight to
         rendering if the show takes their kind (or their score) without review; the rest are kept as
-        extras. Returns how many were added with each status.
+        extras. In a stream that makes a compilation (`compiling`), a chapter or highlight taken without
+        review is kept for it instead, and never posted by itself. Returns how many were added with each
+        status, counting that stream's chapters and highlights left to review as "to_keep".
         """
         offered = best_picks(clips, show)
         added: dict[str, int] = {}
@@ -447,7 +454,7 @@ class Worker:
                 if c.id not in offered:
                     status = "extra"
                 elif show and show.auto_for_clip(c.kind, c.score) != "review":
-                    status = "approved"
+                    status = "kept" if compiling and c.kind in PICKED_KINDS else "approved"
                 else:
                     status = "proposed"
                 # The AI's pick as offered, to learn from what the owner changes (learning.py).
@@ -456,12 +463,13 @@ class Worker:
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
                     description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
                     make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
-                    status=status, reviewed_at=utcnow() if status == "approved" else None,
+                    status=status, reviewed_at=utcnow() if status in ("approved", "kept") else None,
                     picked_start=c.start if picked else None, picked_end=c.end if picked else None,
                     picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
                     was_extra=status == "extra" if picked else None,
                 ))
-                added[status] = added.get(status, 0) + 1
+                counted = "to_keep" if status == "proposed" and compiling and c.kind in PICKED_KINDS else status
+                added[counted] = added.get(counted, 0) + 1
             s.commit()
         return added
 
@@ -681,7 +689,12 @@ class Worker:
             show = s.get(Show, vod.show_id) if vod.show_id else None
             if not show or clip.status != "rendered":
                 return
-            if show.auto_for_clip(clip.kind, clip.score) != "upload" and not (show.upload_approved and clip.approved_in_review):
+            # In a stream that makes a compilation, the show's rules for taking picks without review keep them for
+            # it: one of them is posted by itself only because the owner chose to.
+            by_rules = show.auto_for_clip(clip.kind, clip.score) == "upload" and not (
+                vod.makes_compilation and clip.kind in PICKED_KINDS
+            )
+            if not by_rules and not (show.upload_approved and clip.approved_in_review):
                 return
             which = "short" if clip.short_path else "video"
             if s.exec(select(UploadJob).where(UploadJob.clip_id == clip_id, UploadJob.which == which)).first():
@@ -703,13 +716,18 @@ class Worker:
 
     def compile_next(self) -> bool:
         """Add the compilation of one stream that's due one (Vod.compilation_due), once none of its chapters and
-        highlights is left to review: the approved ones joined into one clip (compilation.py), which goes where the
-        show's clips go, and to the inbox unless the show takes it without review. A stream with fewer than two approved
-        gets none. True if one was dealt with."""
+        highlights is left to review and the last decision on them is COMPILE_DELAY_S old (so the inbox's Undo can take
+        it back first): the kept and approved ones joined into one clip (compilation.py), which goes where the show's
+        clips go, and to the inbox unless the show takes it without review. A stream with fewer than two gets none; if
+        its one clip is only kept, the owner is told. True if one was dealt with."""
+        lone = None
         with Session(self.engine) as s:
             for vod in s.exec(select(Vod).where(col(Vod.compilation_due).is_(True), Vod.status == "ready")):
                 clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
                 if any(c.kind in PICKED_KINDS and c.status == "proposed" for c in clips):
+                    continue
+                decided = [_aware(c.reviewed_at) for c in clips if c.kind in PICKED_KINDS and c.reviewed_at]
+                if decided and utcnow() - max(decided) < timedelta(seconds=COMPILE_DELAY_S):
                     continue
                 show = s.get(Show, vod.show_id) if vod.show_id else None
                 made = any(c.kind == "compilation" for c in clips)
@@ -717,8 +735,11 @@ class Worker:
                 vod.compilation_due = False
                 s.add(vod)
                 if not plan:
+                    included = [c for c in clips if c.kind in PICKED_KINDS and c.status in compilation.INCLUDED]
+                    if not made and len(included) == 1 and included[0].status == "kept":
+                        lone = vod.id, vod.title
                     s.commit()
-                    return True
+                    break
                 ws = Workspace(self.settings.vods_dir / vod.workspace)
                 try:
                     meta = ws.meta()
@@ -733,6 +754,8 @@ class Worker:
                     vod_id=vod.id, key=compilation.KEY, kind="compilation", start=plan.start, end=plan.end,
                     cuts=cuts.dump(plan.cuts), title=title,
                     description=plan.description, why=f"The {len(plan.picks)} approved clips of this stream, in order.",
+                    # As the app first made it, to tell what the owner changes in it.
+                    picked_start=plan.start, picked_end=plan.end, picked_cuts=cuts.dump(plan.cuts),
                     destination_id=show.clip_destination_id, playlist_id=show.clip_playlist_id, status=status,
                     reviewed_at=utcnow() if status == "approved" else None,
                 )
@@ -742,6 +765,13 @@ class Worker:
                 break
             else:
                 return False
+        if lone:
+            vod_id, name = lone
+            self._notify(Note(f"Only one clip kept: {name}",
+                              f"Only one clip was kept from {name}. Keep another, or post this one by itself.",
+                              link=f"videos/{vod_id}"))
+        if not plan:
+            return True
         log.info("Added the compilation of video %d (%d clips)", vod_id, count)
         if status == "proposed":
             self._notify(Note(f"Compilation to review: {name}", f"Its {count} approved clips, joined into one video.",
@@ -1275,13 +1305,20 @@ def best_picks(clips: list[Clip], show: Show | None) -> set[str]:
     return picks
 
 
+def _aware(when: datetime) -> datetime:
+    """A time from the database, which SQLite gives back without its UTC zone."""
+    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
+
+
 def _added_summary(added: dict[str, int]) -> str:
     """E.g. "5 to review · 1 on its way without review · 14 extras"."""
     parts = [
         f"{n} {label}" if n == 1 else f"{n} {label_n}"
         for status, label, label_n in (
             ("proposed", "to review", "to review"),
+            ("to_keep", "to keep or reject for the compilation", "to keep or reject for the compilation"),
             ("approved", "on its way without review", "on their way without review"),
+            ("kept", "kept for the compilation without review", "kept for the compilation without review"),
             ("extra", "extra", "extras"),
         )
         if (n := added.get(status))

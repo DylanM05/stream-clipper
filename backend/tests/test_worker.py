@@ -717,6 +717,96 @@ def test_offered_clips_claude_scores_high_enough_upload_without_review(settings,
         ]
 
 
+# --- Streams that make a compilation: approving keeps a pick for it -----------------------------
+
+
+def test_a_pick_taken_without_review_in_a_compiling_stream_is_kept(settings, fake_pipeline, monkeypatch):
+    monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: scored())
+    add_show(settings, name="Kino", match="twitch.tv/videos", mode="both", compilation=True, auto_episode="upload",
+             max_chapters=2, max_shorts=1, auto_upload_score=0.75)
+    sent = collect_notes(monkeypatch)
+    worker_module.Worker(settings).process_vod(add_vod(settings))
+
+    found = {c.title: c for c in clips(settings) if c.kind != "whole"}
+    assert {t: c.status for t, c in found.items()} == {
+        "Whole show": "proposed",  # 0.6
+        "Second half": "kept",  # 0.8, at least the score the show takes without review
+        "Vertical": "kept",
+        "Landscape only": "extra",
+    }
+    assert found["Vertical"].reviewed_at is not None and not found["Vertical"].approved_in_review
+    [whole] = [c for c in clips(settings) if c.kind == "whole"]
+    assert whole.status == "approved"  # the full episode isn't in the compilation
+    assert [n.message for n in sent] == [
+        "1 to keep or reject for the compilation · 1 on its way without review"
+        " · 2 kept for the compilation without review · 1 extra"
+    ]
+
+
+def test_the_stream_is_marked_as_making_a_compilation_when_processed(settings, fake_pipeline, monkeypatch):
+    show_id = add_show(settings, name="Kino", match="twitch.tv/videos", compilation=True)
+    seen = {}
+
+    def proxy(ws, settings_, on_progress=None):
+        deadline = time.monotonic() + 5
+        while not clips(settings) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        seen["while_in_the_inbox"] = get(settings, Vod, 1).makes_compilation  # Keep works on them already
+
+    monkeypatch.setattr(worker_module.render, "render_proxy", proxy)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+    assert seen["while_in_the_inbox"] is True
+    assert get(settings, Vod, vod_id).makes_compilation is True
+
+    with Session(get_engine(settings)) as s:
+        s.get(Show, show_id).compilation = False
+        s.commit()
+    assert get(settings, Vod, vod_id).makes_compilation is True  # fixed when it was processed
+    other = add_vod(settings, url="https://www.twitch.tv/videos/2")
+    worker_module.Worker(settings).process_vod(other)
+    assert get(settings, Vod, other).makes_compilation is False
+
+
+def test_a_kept_clip_never_renders(settings, fake_pipeline, fake_render):
+    add_show(settings, name="Kino", match="twitch.tv/videos", compilation=True, auto_chapters="render")
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    assert {c.status for c in clips(settings) if c.kind == "chapter"} == {"kept"}
+    while w.render_next_clip():
+        pass
+    assert {c.status for c in clips(settings) if c.kind == "chapter"} == {"kept"}
+    assert fake_render == []
+
+
+@pytest.mark.parametrize("upload_approved", [True, False])
+def test_a_pick_in_a_compiling_stream_never_uploads_by_the_show_rules(settings, fake_pipeline, fake_render, monkeypatch,
+                                                                      upload_approved):
+    monkeypatch.setattr(worker_module.segment, "run", lambda *a, **k: scored())
+    with Session(get_engine(settings)) as s:
+        dest = Destination(name="Kino Clips")
+        s.add(dest)
+        s.commit()
+        dest_id = dest.id
+    add_show(settings, name="Kino", match="twitch.tv/videos", compilation=True, auto_shorts="upload",
+             auto_upload_score=0.75, upload_approved=upload_approved, clip_destination_id=dest_id)
+    w = worker_module.Worker(settings)
+    w.process_vod(add_vod(settings))
+    with Session(get_engine(settings)) as s:
+        for clip in s.exec(select(ClipRecord)):
+            if clip.title == "Vertical":  # kept, then the owner chose to post it by itself too
+                clip.status, clip.approved_in_review = "approved", True
+            elif clip.title == "Second half":  # scored above the show's threshold, rendered without the owner's say
+                clip.status, clip.approved_in_review = "approved", False
+            s.add(clip)
+        s.commit()
+    while w.render_next_clip():
+        pass
+    with Session(get_engine(settings)) as s:
+        jobs = [(s.get(ClipRecord, j.clip_id).title, j.which) for j in s.exec(select(UploadJob))]
+    assert jobs == ([("Vertical", "short")] if upload_approved else [])
+
+
 # --- Pausing ----------------------------------------------------------------------------------
 
 

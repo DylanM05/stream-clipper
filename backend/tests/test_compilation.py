@@ -1,12 +1,14 @@
 """Compilations: a stream's approved clips joined into one video, for a show that makes them."""
 
+from datetime import timedelta
+
 import pytest
 from sqlmodel import Session, select
 
 from clipper import compilation, cuts
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Show, Vod, get_engine
+from clipper.db import ClipRecord, Show, Vod, get_engine, utcnow
 from clipper.workspace import Workspace, write_json
 
 
@@ -66,7 +68,12 @@ def settings(tmp_path):
     return Settings(data_dir=tmp_path / "data", web_dir=tmp_path / "web")
 
 
-def stream(settings, statuses, *, due=True, auto="review"):
+def long_ago():
+    """A decision old enough that the inbox's Undo can't take it back any more."""
+    return utcnow() - timedelta(seconds=worker_module.COMPILE_DELAY_S + 1)
+
+
+def stream(settings, statuses, *, due=True, auto="review", reviewed_at=None):
     ws = Workspace.open(settings.vods_dir, "kickvod-1")
     write_json(ws.meta_json, {"source_path": str(ws.root / "source.mp4"), "upload_date": "20261020"})
     with Session(get_engine(settings)) as s:
@@ -75,12 +82,12 @@ def stream(settings, statuses, *, due=True, auto="review"):
         s.add(show)
         s.commit()
         vod = Vod(url="https://kick.com/kino/videos/1", status="ready", workspace="kickvod-1", show_id=show.id,
-                  title="Late night stream", compilation_due=due)
+                  title="Late night stream", compilation_due=due, makes_compilation=True)
         s.add(vod)
         s.commit()
         for i, status in enumerate(statuses):
             s.add(ClipRecord(vod_id=vod.id, key=f"hl{i:02d}", kind="highlight", start=i * 100, end=i * 100 + 30,
-                             title=f"NIGHT OWLS Oct 20, 2026 - Moment {i}", status=status))
+                             title=f"NIGHT OWLS Oct 20, 2026 - Moment {i}", status=status, reviewed_at=reviewed_at))
         s.commit()
         return vod.id
 
@@ -143,3 +150,84 @@ def test_the_streams_files_stay_until_its_compilation_is_made(settings):
         s.get(Vod, 1).compilation_due = False
         s.commit()
     assert w.clean_up_next() is True
+
+
+def notes(monkeypatch) -> list:
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings, note: sent.append(note))
+    return sent
+
+
+def set_clip(settings, key, **fields):
+    with Session(get_engine(settings)) as s:
+        c = s.exec(select(ClipRecord).where(ClipRecord.key == key)).one()
+        for k, v in fields.items():
+            setattr(c, k, v)
+        s.add(c)
+        s.commit()
+
+
+def test_compile_waits_ten_seconds_after_the_last_decision(settings):
+    vod_id = stream(settings, ["kept", "kept", "rejected"], reviewed_at=long_ago())
+    set_clip(settings, "hl02", reviewed_at=utcnow())  # just rejected: Undo can still take it back
+    w = worker_module.Worker(settings)
+    assert w.compile_next() is False
+    assert due(settings, vod_id) is True
+    set_clip(settings, "hl02", reviewed_at=long_ago())
+    assert w.compile_next() is True
+    assert clips(settings, vod_id)[-1].kind == "compilation"
+
+
+def test_compilation_records_what_it_was_first_made_as(settings):
+    vod_id = stream(settings, ["kept", "approved", "kept"], reviewed_at=long_ago())
+    assert worker_module.Worker(settings).compile_next() is True
+    made = clips(settings, vod_id)[-1]
+    assert (made.start, made.end, cuts.parse(made.cuts)) == (0, 230, [(30, 100), (130, 200)])
+    assert (made.picked_start, made.picked_end, cuts.parse(made.picked_cuts)) == (0, 230, [(30, 100), (130, 200)])
+
+
+def test_one_kept_clip_makes_no_compilation_and_says_so(settings, monkeypatch):
+    sent = notes(monkeypatch)
+    vod_id = stream(settings, ["kept", "rejected"], reviewed_at=long_ago())
+    w = worker_module.Worker(settings)
+    assert w.compile_next() is True
+    assert [c.status for c in clips(settings, vod_id)] == ["kept", "rejected"]
+    assert [(n.title, n.message, n.link) for n in sent] == [(
+        "Only one clip kept: Late night stream",
+        "Only one clip was kept from Late night stream. Keep another, or post this one by itself.",
+        f"videos/{vod_id}",
+    )]
+    assert due(settings, vod_id) is False
+    assert w.compile_next() is False
+    assert len(sent) == 1
+
+
+def test_one_clip_posted_by_itself_sends_no_note(settings, monkeypatch):
+    sent = notes(monkeypatch)
+    stream(settings, ["approved", "rejected"], reviewed_at=long_ago())
+    assert worker_module.Worker(settings).compile_next() is True
+    assert sent == []
+
+
+def test_keeping_another_after_one_makes_the_compilation(settings, monkeypatch):
+    notes(monkeypatch)
+    vod_id = stream(settings, ["kept", "rejected"], reviewed_at=long_ago())
+    w = worker_module.Worker(settings)
+    assert w.compile_next() is True
+    set_clip(settings, "hl01", status="kept")  # as the Keep button does, a while ago
+    with Session(get_engine(settings)) as s:
+        vod = s.get(Vod, vod_id)
+        compilation.mark_due(vod, s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod_id)).all())
+        s.add(vod)
+        s.commit()
+    assert due(settings, vod_id) is True
+    assert w.compile_next() is True
+    assert [c.kind for c in clips(settings, vod_id)] == ["highlight", "highlight", "compilation"]
+
+
+def test_none_kept_does_nothing(settings, monkeypatch):
+    sent = notes(monkeypatch)
+    vod_id = stream(settings, ["rejected", "rejected"], reviewed_at=long_ago())
+    assert worker_module.Worker(settings).compile_next() is True
+    assert len(clips(settings, vod_id)) == 2 and sent == []
+    assert due(settings, vod_id) is False
