@@ -96,6 +96,7 @@ function Row({ clip, status, children }: { clip: Clip; status: ReactNode; childr
         </a>
         <p className="mt-0.5 truncate text-[13px] text-graphite">
           {clip.kind === "whole" && `${KIND_LABEL.whole} to `}
+          {clip.kind === "compilation" && `Compilation of ${clip.compilation_clips} clips to `}
           {clip.destination_name || "No channel chosen yet"}
           {clip.has_short && " + Short"}
         </p>
@@ -146,6 +147,16 @@ function useClipAction(onChanged: () => void) {
   };
 }
 
+/** For a clip of a compiling stream that's posted by itself too: back to being in the compilation only. */
+function CompilationOnly({ clip, act }: { clip: Clip; act: ReturnType<typeof useClipAction> }) {
+  if (!clip.in_compilation) return null;
+  return (
+    <Act onClick={() => act(() => api.keep(clip.id), "It stays in the compilation and won't be posted by itself", () => api.approve(clip.id))}>
+      Compilation only
+    </Act>
+  );
+}
+
 /** What's happening with a clip's upload, and in what colour. */
 function uploadLine(clip: Clip): [string, string] {
   const at = clip.next_upload ? upcoming(clip.next_upload) : "";
@@ -172,6 +183,7 @@ function UploadRow({ clip, onChanged }: { clip: Clip; onChanged: () => void }) {
       <Act onClick={() => act(() => api.restore(clip.id), "Back in the inbox. Its render was deleted.")}>
         <InboxIcon className="size-4" /> To inbox
       </Act>
+      <CompilationOnly clip={clip} act={act} />
       <Act tone="danger" onClick={() => act(() => api.reject(clip.id), "Deleted", () => api.approve(clip.id))}>
         <TrashIcon className="size-4" /> Delete
       </Act>
@@ -206,6 +218,7 @@ function RenderRow({ clip, onChanged }: { clip: Clip; onChanged: () => void }) {
       <Act onClick={() => act(() => api.restore(clip.id), "Back in the inbox")}>
         <InboxIcon className="size-4" /> To inbox
       </Act>
+      <CompilationOnly clip={clip} act={act} />
     </Row>
   );
 }

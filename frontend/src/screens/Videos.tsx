@@ -1,6 +1,7 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { api, errorText, type Clip, type ClipStatus, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type Clip, type ClipStatus, type Compilation, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
+import { ChangedNotice, CompilationStrip } from "../CompilationStrip";
 import { ChevronIcon, LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, titleDate, upcoming, useDesktop, usePoll } from "../lib";
 import { usePauses, WorkStrip } from "../Work";
@@ -241,6 +242,7 @@ function VodRow({ vod, pauses, onChanged }: { vod: Vod; pauses?: Pauses; onChang
   ].filter(Boolean);
   const counts = [
     vod.counts.proposed && `${vod.counts.proposed} to review`,
+    vod.counts.kept && `${vod.counts.kept} in compilation`,
     (vod.counts.approved || vod.counts.rendering) && `${(vod.counts.approved ?? 0) + (vod.counts.rendering ?? 0)} rendering`,
     vod.counts.rendered && `${vod.counts.rendered} ready`,
     vod.counts.uploaded && `${vod.counts.uploaded} uploaded`,
@@ -413,6 +415,7 @@ export function VideoDetail({ id }: { id: number }) {
           {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for the AI: {vod.notes}</p>}
         </div>
       )}
+      {data?.vod.compilation && <CompilationPanel compilation={data.vod.compilation} clips={data.clips} onChanged={refresh} />}
       <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
         {offered.map((c) => <ClipCard key={c.id} clip={c} showStatus />)}
         {data && data.clips.length === 0 && <p className="text-sm text-zinc-500">No clips yet.</p>}
@@ -442,11 +445,112 @@ export function VideoDetail({ id }: { id: number }) {
   );
 }
 
+/**
+ * Above a compiling stream's clips: its compilation's strip, a line saying where it stands, and the one thing to do
+ * next with it. When the clips kept now would make a different one, the notice to rebuild it from them.
+ */
+function CompilationPanel({ compilation, clips, onChanged }: { compilation: Compilation; clips: Clip[]; onChanged: () => void }) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const made = clips.find((c) => c.id === compilation.clip_id);
+  const open = compilation.clip_id ? () => go(`clip/${compilation.clip_id}`) : undefined;
+  const left = compilation.to_review.length;
+
+  const postByItself = async () => {
+    const clip = clips.find((c) => c.status === "kept");
+    if (!clip) return onChanged();
+    try {
+      await api.approve(clip.id);
+      const undo = async () => {
+        await api.keep(clip.id);
+        onChanged();
+      };
+      toast({ text: "It will render to post by itself", action: { label: "Undo", run: undo } });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+    onChanged();
+  };
+
+  const rebuild = async () => {
+    if (!compilation.clip_id) return;
+    if (!confirm("Rebuild with the clips kept now? Its description is written again, and the parts you cut out stay out.")) return;
+    setBusy(true);
+    try {
+      await api.rebuild(compilation.clip_id);
+      toast({ text: "Rebuilt" });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+    setBusy(false);
+    onChanged();
+  };
+
+  // Where it stands, and the one next action: [label, what it does, whether it's the main thing to do].
+  type Action = [string, (() => void) | string, boolean?];
+  const [line, action]: [string, Action?] = (() => {
+    switch (compilation.status) {
+      case "waiting":
+        return [`Made once the last ${left === 1 ? "clip is" : `${left} clips are`} reviewed`, ["Review them", () => go("inbox")]];
+      case "making":
+        return ["Being made"];
+      case "proposed":
+        return ["Ready to review", open && ["Review it", open, true]];
+      case "approved":
+      case "rendering":
+        return ["Rendering", open && ["Open", open]];
+      case "rendered":
+        return ["Ready to upload", ["Upload", `#/upload/${compilation.clip_id}`]];
+      case "uploaded":
+        return ["Uploaded", made?.youtube_url ? ["On YouTube", made.youtube_url] : undefined];
+      case "failed":
+        return ["Render failed", open && ["Open", open]];
+      case "rejected":
+        return ["Rejected", open && ["Open", open]];
+      case "one":
+        return ["Only one clip kept. Keep another, or post this one by itself.", ["Post it by itself", postByItself]];
+      case "none":
+        return ["No clips kept, so there's no compilation"];
+      default:
+        return [""];
+    }
+  })();
+  // Out of date: the notice's Rebuild is the action instead.
+  const changed = compilation.changed && compilation.status !== "uploaded";
+  const button = !changed && action && (
+    typeof action[1] === "string" ? (
+      <a
+        href={action[1]}
+        {...(action[1].startsWith("http") && { target: "_blank", rel: "noreferrer" })}
+        className="inline-flex shrink-0 items-center justify-center rounded-xl bg-zinc-800 px-4 py-3 text-sm font-semibold text-zinc-100 hover:bg-zinc-700/80 active:bg-zinc-700"
+      >
+        {action[0]}
+      </a>
+    ) : (
+      <Button tone={action[2] ? "primary" : undefined} onClick={action[1]} className="shrink-0">
+        {action[0]}
+      </Button>
+    )
+  );
+
+  return (
+    <section className="mb-6 rounded-2xl bg-panel p-4 lg:max-w-2xl">
+      <CompilationStrip compilation={compilation} />
+      <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-center">
+        <p className="min-w-0 flex-1 text-sm font-semibold">{line}</p>
+        {button}
+      </div>
+      {changed && <ChangedNotice onRebuild={rebuild} busy={busy} />}
+    </section>
+  );
+}
+
 /** More about a video, on a desktop where there's room: where it's from, how long it is, and where its clips stand. */
 function VodFacts({ vod }: { vod: Vod }) {
   const c = vod.counts;
   const clips = [
     c.proposed && `${c.proposed} to review`,
+    c.kept && `${c.kept} in compilation`,
     (c.approved || c.rendering) && `${(c.approved ?? 0) + (c.rendering ?? 0)} rendering`,
     c.failed && `${c.failed} failed to render`,
     c.rendered && `${c.rendered} ready`,

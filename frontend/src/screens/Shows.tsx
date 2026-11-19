@@ -798,14 +798,15 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         {hasClips(fields.mode) && (
           <Group label="Compilation" hint={`one per ${VIDEO_NOUN[fields.video_type]}`}>
             <Tick
-              label={`Also join each ${VIDEO_NOUN[fields.video_type]}'s approved clips and Shorts into one video`}
+              label={`Make a compilation of each ${VIDEO_NOUN[fields.video_type]}`}
               checked={fields.compilation}
               onChange={(compilation) => set({ compilation })}
             />
             <p className="mt-1.5 text-xs text-zinc-500">
-              Once none is left to review, the approved ones are joined in the order they happened, with a chapter for each in
-              the description, and it goes where the clips go. One with fewer than two approved gets none. Only{" "}
-              {VIDEO_NOUN[fields.video_type]}s processed after you turn this on get one.
+              Approving a clip keeps it for the compilation instead of posting it. To post one by itself too, choose Keep and
+              post on it. Once none is left to review, the kept clips are joined in the order they happened, with a chapter
+              for each, and the compilation goes where the clips go. Only {VIDEO_NOUN[fields.video_type]}s processed after you
+              turn this on work this way.
             </p>
           </Group>
         )}
@@ -819,6 +820,11 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               <>
                 <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
                 <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
+                {fields.compilation && (
+                  <p className="text-xs text-zinc-500">
+                    With compilations on, clips taken without review are kept for the compilation, not posted by themselves.
+                  </p>
+                )}
                 {fields.compilation && (
                   <AutoChoice
                     label="Compilation"
