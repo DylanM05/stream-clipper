@@ -77,11 +77,11 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 **Interfaces:**
 - Produces: `"kept"` in `db.CLIP_STATUSES`; `compilation.INCLUDED` and `learning.APPROVED` include `"kept"`; `Vod.makes_compilation: bool = False`; `ClipRecord.picked_cuts: str = ""`. **`CLIP_DONE` is not changed** (kept counts as done only conditionally, Task 5).
 
-- [ ] **Step 1: Failing tests.** In `test_compilation.py`: `test_kept_clips_are_included_in_the_compilation` (two `kept` clips plan a compilation with both as `picks`). In `test_api.py`: `test_the_backfill_marks_streams_that_already_make_a_compilation` (a Vod with `compilation_due=True`, and another with a `kind="compilation"` clip, both get `makes_compilation` after `get_engine`; a plain one doesn't).
-- [ ] **Step 2:** Run them; expected FAIL (unknown status / column).
-- [ ] **Step 3:** Add the status, the two columns, and the tuple edits. Add `_backfill_makes_compilation(engine)` in `db.py`, called from `get_engine` after `_add_missing_columns`: one idempotent `UPDATE vod SET makes_compilation = 1` for rows with `compilation_due` or with a `compilation` clip (chosen over `_FILLED` because the second case needs a subquery). Update the comment above `CLIP_STATUSES`.
-- [ ] **Step 4:** Run both; expected PASS. Run the whole of `test_learning.py` and `test_compilation.py`; expected PASS.
-- [ ] **Step 5:** Commit `Add the kept clip status and the columns compilation-only streams need`.
+- [x] **Step 1: Failing tests.** In `test_compilation.py`: `test_kept_clips_are_included_in_the_compilation` (two `kept` clips plan a compilation with both as `picks`). In `test_api.py`: `test_the_backfill_marks_streams_that_already_make_a_compilation` (a Vod with `compilation_due=True`, and another with a `kind="compilation"` clip, both get `makes_compilation` after `get_engine`; a plain one doesn't).
+- [x] **Step 2:** Run them; expected FAIL (unknown status / column).
+- [x] **Step 3:** Add the status, the two columns, and the tuple edits. Add `_backfill_makes_compilation(engine)` in `db.py`, called from `get_engine` after `_add_missing_columns`: one idempotent `UPDATE vod SET makes_compilation = 1` for rows with `compilation_due` or with a `compilation` clip (chosen over `_FILLED` because the second case needs a subquery). Update the comment above `CLIP_STATUSES`.
+- [x] **Step 4:** Run both; expected PASS. Run the whole of `test_learning.py` and `test_compilation.py`; expected PASS.
+- [x] **Step 5:** Commit `Add the kept clip status and the columns compilation-only streams need`.
 
 ### Task 3: Keep, approve from kept, and the status leaks
 
@@ -244,7 +244,8 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 
 (Each task adds a few lines here when it finishes: names chosen, machine-only test failures, decisions made.)
 
-- **Task 1 (mockups):** three pages added to `/Users/yirpz/Documents/stream-clipper/design-mockups/edit-bay.html` (outside the repo): `compinbox` (inbox with strip, Keep / Keep and post cards, "Being made" and "Only one clip kept" groups), `compstream` (every row of the stream-page panel table), `compeditor` (button sets per status, and a compilation's editor with the out-of-date notice). View one page with `edit-bay.html?only=compinbox` (add `&shot` to hide the headings). The mockup draws strip blocks wider than real ones (a 3-minute pick on a 6-hour stream is under 1% of the bar). The owner has not yet signed off on the look; Task 8 builds the strip from it, so ask them to glance at it first.
+- **Task 1 (mockups):** three pages added to `/Users/yirpz/Documents/stream-clipper/design-mockups/edit-bay.html` (outside the repo): `compinbox` (inbox with strip, Keep / Keep and post cards, "Being made" and "Only one clip kept" groups), `compstream` (every row of the stream-page panel table), `compeditor` (button sets per status, and a compilation's editor with the out-of-date notice). View one page with `edit-bay.html?only=compinbox` (add `&shot` to hide the headings). The mockup draws strip blocks wider than real ones (a 3-minute pick on a 6-hour stream is under 1% of the bar). The owner has not yet signed off on the look; Task 8 builds the strip from it, so ask them to glance at it first. Owner approved the mockups on 2026-11-19.
+- **Task 2 (status and columns):** done as planned. `_backfill_makes_compilation` runs on every start from `db._engine`; because `_engine` is `lru_cache`d per path, a test that needs it to run again calls `db._engine.cache_clear()` first (see `test_the_backfill_marks_streams_that_already_make_a_compilation`). The frontend `ClipStatus` type doesn't know `kept` yet (Task 8). Full suite: 424 passed, only the 7 known machine failures.
 
 ## Self-review notes
 
