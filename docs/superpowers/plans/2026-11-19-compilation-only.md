@@ -93,7 +93,7 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 - Produces: `POST /api/clips/{id}/keep -> ClipOut`; `NewClip.keep: bool = False`; helper `compilation.mark_due(vod: Vod, clips: list[ClipRecord]) -> None` (in `compilation.py`, so the worker shares it) that sets `vod.compilation_due = True` when `vod.makes_compilation` and the stream has no `compilation` clip (called by keep, approve, restore, reject, make_clip).
 - Consumes: Task 2's status and columns.
 
-- [ ] **Step 1: Failing tests** (names, with the asserted behaviour):
+- [x] **Step 1: Failing tests** (names, with the asserted behaviour):
   - `test_keep_sets_kept_and_marks_it_reviewed`: status `kept`, `approved_in_review` true, `reviewed_at` set, vod `compilation_due` true.
   - `test_keep_is_refused_outside_a_compiling_stream` (422), `..._from_uploaded` (409, "It's on YouTube already. It stays in the compilation."), `..._after_the_files_are_deleted` (409).
   - `test_keep_from_approved_discards_the_render` (rendered clip → `kept`, `video_path` file removed, queued upload job cancelled).
@@ -103,10 +103,10 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
   - `test_restore_and_reject_work_from_kept`.
   - `test_make_clip_with_keep_creates_it_kept`.
   - `test_a_kept_clip_is_not_listed_as_ready_to_upload_or_counted` (`/api/clips?status=rendered` and the summary's upload count exclude it).
-- [ ] **Step 2:** Run; expected FAIL.
-- [ ] **Step 3:** Implement. `keep` follows `approve`'s shape and Spec › Server behaviour › Keep (allowed from `proposed`, `extra`, `rejected`, and from `approved`/`rendering`/`rendered`/`failed` via `discard_render`). Change `set_status` so `approved_in_review` is true for `approved` **and** `kept`. In `update_clip`, the re-render flip to `approved` (the `changed.keys() & {...}` line) only applies to `ACTIVE_CLIP` statuses, which excludes `kept`; keep `ACTIVE_CLIP` as is and say so in a comment. `approve` returns early only for `approved`/`rendering`/`rendered`/`uploaded`, so `kept` falls through to `set_status`. Call `mark_due` in the five places named above.
-- [ ] **Step 4:** Run `test_api.py`; expected PASS.
-- [ ] **Step 5:** Commit `Keep a clip for its stream's compilation`.
+- [x] **Step 2:** Run; expected FAIL.
+- [x] **Step 3:** Implement. `keep` follows `approve`'s shape and Spec › Server behaviour › Keep (allowed from `proposed`, `extra`, `rejected`, and from `approved`/`rendering`/`rendered`/`failed` via `discard_render`). Change `set_status` so `approved_in_review` is true for `approved` **and** `kept`. In `update_clip`, the re-render flip to `approved` (the `changed.keys() & {...}` line) only applies to `ACTIVE_CLIP` statuses, which excludes `kept`; keep `ACTIVE_CLIP` as is and say so in a comment. `approve` returns early only for `approved`/`rendering`/`rendered`/`uploaded`, so `kept` falls through to `set_status`. Call `mark_due` in the five places named above.
+- [x] **Step 4:** Run `test_api.py`; expected PASS.
+- [x] **Step 5:** Commit `Keep a clip for its stream's compilation`.
 
 ### Task 4: Processing and compile_next
 
@@ -246,6 +246,7 @@ If a task turns out to be wrong or too big, stop and say so instead of reshaping
 
 - **Task 1 (mockups):** three pages added to `/Users/yirpz/Documents/stream-clipper/design-mockups/edit-bay.html` (outside the repo): `compinbox` (inbox with strip, Keep / Keep and post cards, "Being made" and "Only one clip kept" groups), `compstream` (every row of the stream-page panel table), `compeditor` (button sets per status, and a compilation's editor with the out-of-date notice). View one page with `edit-bay.html?only=compinbox` (add `&shot` to hide the headings). The mockup draws strip blocks wider than real ones (a 3-minute pick on a 6-hour stream is under 1% of the bar). The owner has not yet signed off on the look; Task 8 builds the strip from it, so ask them to glance at it first. Owner approved the mockups on 2026-11-19.
 - **Task 2 (status and columns):** done as planned. `_backfill_makes_compilation` runs on every start from `db._engine`; because `_engine` is `lru_cache`d per path, a test that needs it to run again calls `db._engine.cache_clear()` first (see `test_the_backfill_marks_streams_that_already_make_a_compilation`). The frontend `ClipStatus` type doesn't know `kept` yet (Task 8). Full suite: 424 passed, only the 7 known machine failures.
+- **Task 3 (keep):** `compilation.mark_due` is as planned; in `app.py` it's called through a small `due_again(s, clip, vod)` (chapters and highlights only, it loads the stream's clips), which `set_status` calls, so keep/approve/restore/reject all get it, and `make_clip` calls it directly. The worker (Task 4) should call `compilation.mark_due` itself. `keep` checks in this order: not a chapter/highlight or stream without `makes_compilation` → 422; already `kept` → returned unchanged; `uploaded` → 409; files deleted → 409; `ACTIVE_CLIP` → `discard_render`. `make_clip` with `keep: true` on a stream without `makes_compilation` is a 422 (my call; the spec is silent). `update_clip`'s re-render flip now uses `ACTIVE_CLIP` instead of the same tuple written out. Test helpers added to `test_api.py`: `make_compiling`, `kept_clip`, `stored`. Full suite: 436 passed, only the 7 known machine failures.
 
 ## Self-review notes
 
