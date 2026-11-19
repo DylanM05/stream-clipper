@@ -224,3 +224,82 @@ def test_new_clips_keep_the_ais_pick_and_older_ones_find_it_in_their_stream(sett
         assert old["ch02"].picked_start is None and old["my01"].picked_start is None
         assert (old["ch01"].was_extra, old["ch02"].was_extra, old["my01"].was_extra) == (False, True, None)
         assert learning.backfill(s, settings) == 0  # nothing left to fill in
+
+
+def add_compilation(settings, start, end, cut_list, picked_cuts, **fields) -> int:
+    """The stream's compilation as the owner left it, made by the app from `picked_cuts` (the gaps between its clips)."""
+    return add_clip(settings, "The compilation", kind="compilation", start=start, end=end, status="proposed",
+                    cuts=json.dumps(cut_list), picked_cuts=json.dumps(picked_cuts), **fields)
+
+
+def changed_lines(text: str) -> list[str]:
+    return section(text, "Picks they changed, newest first:") if "Picks they changed" in text else []
+
+
+def test_a_kept_picks_cut_appears_in_the_changed_picks(settings):
+    add_clip(settings, "Kept with a cut", start=0.0, end=600.0, status="kept", cuts=json.dumps([[50.0, 60.0]]))
+
+    assert ('- Clip "Kept with a cut": they cut out 10 s: "a quick word from the sponsor".'
+            in changed_lines(record(settings)))
+
+
+def test_a_cut_in_the_compilation_is_credited_to_the_clip_it_falls_in_and_not_the_gaps(settings):
+    # Kept without review: only the cut the owner made in the compilation makes them changed.
+    add_clip(settings, "Opening", start=0.0, end=60.0, status="kept", looked=False)
+    add_clip(settings, "He walks out", kind="highlight", start=90.0, end=104.0, status="kept", looked=False)
+    # The owner's cut runs from the sponsor read into the gap the app cut between the two, so tidy merged them.
+    add_compilation(settings, 0.0, 104.0, [[50.0, 90.0]], [[60.0, 90.0]])
+
+    lines = changed_lines(record(settings))
+    assert lines == ['- Clip "Opening": in the compilation they cut out 10 s: "a quick word from the sponsor".']
+
+
+def test_a_cut_across_two_clips_is_split_between_them(settings):
+    add_clip(settings, "Opening", start=0.0, end=60.0, status="kept", looked=False)
+    add_clip(settings, "He walks out", kind="highlight", start=90.0, end=104.0, status="kept", looked=False)
+    add_clip(settings, "Untouched", start=700.0, end=900.0, status="approved")
+    add_compilation(settings, 0.0, 900.0, [[50.0, 95.0]], [[60.0, 90.0], [104.0, 700.0]])
+
+    text = record(settings)
+    assert sorted(changed_lines(text)) == [
+        '- Clip "Opening": in the compilation they cut out 10 s: "a quick word from the sponsor".',
+        '- Highlight "He walks out": in the compilation they cut out 5.0 s: "I asked him about it".',
+    ]
+    assert "Of the last 3 of your picks they approved, they cut parts out of 2." in text
+
+
+def test_an_overlap_goes_to_the_shorter_clip(settings):
+    add_clip(settings, "The whole topic", start=0.0, end=600.0, status="kept", looked=False)
+    add_clip(settings, "He walks out", kind="highlight", start=90.0, end=110.0, status="kept", looked=False)
+    add_compilation(settings, 0.0, 600.0, [[100.0, 104.0]], [])
+
+    assert changed_lines(record(settings)) == [
+        '- Highlight "He walks out": in the compilation they cut out 4.0 s: "and then he just walks out of the room".',
+    ]
+
+
+def test_a_compilation_without_picked_start_is_skipped(settings):
+    add_clip(settings, "Opening", start=0.0, end=60.0, status="kept", looked=False)
+    add_clip(settings, "He walks out", kind="highlight", start=90.0, end=104.0, status="kept", looked=False)
+    add_compilation(settings, 0.0, 104.0, [[50.0, 90.0]], [], picked_start=None, picked_end=None)
+
+    assert "in the compilation" not in record(settings)
+
+
+def test_a_sliver_of_a_clip_taken_with_a_gap_is_not_a_compilation_cut(settings):
+    add_clip(settings, "Opening", start=0.0, end=60.0, status="kept", looked=False)
+    add_clip(settings, "He walks out", kind="highlight", start=90.0, end=104.0, status="kept", looked=False)
+    # The gap's start dragged a hair earlier in the editor: a slip, not a cut out of the clip.
+    add_compilation(settings, 0.0, 104.0, [[59.996, 90.0]], [[60.0, 90.0]])
+
+    assert "in the compilation" not in record(settings)
+
+
+def test_kept_highlights_are_not_counted_as_shorts(settings):
+    add_clip(settings, "Tall one", kind="highlight", start=200.0, end=230.0, status="approved", make_short=True)
+    add_clip(settings, "Kept tall one", kind="highlight", start=300.0, end=330.0, status="kept", make_short=True)
+
+    text = record(settings)
+    assert ("Of the highlights they approved, they made Shorts of 1 you'd said don't work vertically (for example "
+            '"Tall one").') in text
+    assert "Kept tall one" not in text

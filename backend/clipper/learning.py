@@ -16,7 +16,7 @@ from statistics import median
 
 from sqlmodel import Session, col, select
 
-from . import cuts, titles
+from . import compilation, cuts, titles
 from .config import Settings
 from .db import PICKED_KINDS, ClipRecord, Show, UploadJob, Vod
 from .models import Transcript, Word
@@ -221,18 +221,22 @@ def _stayed(kinds: dict[str, list[tuple[UploadJob, ClipRecord]]], show: Show) ->
 
 def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
     """How the owner moved the starts and ends of the AI's picks they approved, with the words that took in or left
-    out where the transcript has them, what they cut out, how they retitled them, which extras they approved anyway,
-    where they disagreed about a highlight working as a Short, and which picks they turned down."""
+    out where the transcript has them, what they cut out (in the clip, or later in the stream's compilation), how they
+    retitled them, which extras they approved anyway, where they disagreed about a highlight working as a Short, and
+    which picks they turned down. A pick kept for the compilation without review counts once they cut part of it out
+    of the compilation."""
     picks = s.exec(
         select(ClipRecord, Vod).join(Vod)
         .where(Vod.show_id == show.id, col(ClipRecord.kind).in_(PICKED_KINDS), col(ClipRecord.manual).is_not(True),
                col(ClipRecord.reviewed_at).is_not(None))
         .order_by(col(ClipRecord.reviewed_at).desc()).limit(LATEST)
     ).all()
-    approved = [(c, v) for c, v in picks if c.status in APPROVED and _looked_at(c)]
+    in_compilation = _compilation_cuts(s, show)
+    approved = [(c, v) for c, v in picks if c.status in APPROVED and (_looked_at(c) or c.id in in_compilation)]
     rejected = [c for c, _ in picks if c.status == "rejected"]
     known = [(c, v) for c, v in approved if c.picked_start is not None and c.picked_end is not None]
-    changed = [(c, v) for c, v in known if _moved(c.start, c.picked_start) or _moved(c.end, c.picked_end) or c.cuts]
+    changed = [(c, v) for c, v in known
+               if _moved(c.start, c.picked_start) or _moved(c.end, c.picked_end) or c.cuts or c.id in in_compilation]
     retitled = [
         (c.picked_title, own) for c, _ in approved
         if c.picked_title and _plain(own := titles.own_part(show.title_template, c.title)) != _plain(c.picked_title)
@@ -241,10 +245,11 @@ def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
 
     lines: list[str] = []
     if len(known) >= 3:
-        lines += ["", f"Of the last {len(known)} of your picks they approved, {_moves(known)}."]
+        lines += ["", f"Of the last {len(known)} of your picks they approved, {_moves(known, in_compilation)}."]
     if changed:
         lines += ["", "Picks they changed, newest first:"]
-        lines += [_changed_line(clip, transcripts.words(vod), show) for clip, vod in changed[:EXAMPLES]]
+        lines += [_changed_line(clip, transcripts.words(vod), show, in_compilation.get(clip.id, []))
+                  for clip, vod in changed[:EXAMPLES]]
     if retitled:
         lines += ["", "Titles they rewrote, yours and then theirs:",
                   *(f"- \"{yours}\" → \"{theirs}\"" for yours, theirs in retitled[:5])]
@@ -264,11 +269,39 @@ def _looked_at(clip: ClipRecord) -> bool:
     return clip.reviewed_at is not None and clip.reviewed_at - clip.created_at > timedelta(minutes=1)
 
 
+def _compilation_cuts(s: Session, show: Show) -> dict[int, list[cuts.Cut]]:
+    """What the owner cut out of the show's compilations since the app made them, by the clip each part was in: a part
+    is split across the kept parts of the stream's clips in the compilation, and where two overlap (a highlight inside
+    a chapter) goes to the shorter. Parts in the gaps between clips were already out. Compilations made before they
+    recorded their plan (picked_*) are skipped, as are slips under MOVED_S (a gap dragged a hair into a clip)."""
+    found: dict[int, list[cuts.Cut]] = {}
+    made = s.exec(
+        select(ClipRecord).join(Vod)
+        .where(Vod.show_id == show.id, ClipRecord.kind == "compilation", col(ClipRecord.picked_start).is_not(None))
+    ).all()
+    for comp in made:
+        left = cuts.removed(comp.start, comp.end, cuts.parse(comp.cuts),
+                            comp.picked_start, comp.picked_end or comp.end, cuts.parse(comp.picked_cuts))
+        if not left:
+            continue
+        clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == comp.vod_id)).all()
+        for clip in sorted(compilation.included(clips), key=_length):
+            for ka, kb in cuts.kept(clip.start, clip.end, cuts.parse(clip.cuts)):
+                rest = []
+                for a, b in left:
+                    if max(a, ka) < min(b, kb):
+                        found.setdefault(clip.id, []).append((max(a, ka), min(b, kb)))
+                    rest += [p for p in ((a, min(b, ka)), (max(a, kb), b)) if p[1] > p[0]]
+                left = rest
+    found = {i: sorted(p for p in parts if p[1] - p[0] >= MOVED_S) for i, parts in found.items()}
+    return {i: parts for i, parts in found.items() if parts}
+
+
 def _moved(now: float, picked: float | None) -> bool:
     return picked is not None and abs(now - picked) >= MOVED_S
 
 
-def _moves(known: list[tuple[ClipRecord, Vod]]) -> str:
+def _moves(known: list[tuple[ClipRecord, Vod]], in_compilation: dict[int, list[cuts.Cut]]) -> str:
     """e.g. "they moved the start of 4 (later in 3, by a median of 2.1 s; ...) and the end of 6 (...), and cut parts
     out of 1", or that they kept them all as they were."""
     moved = []
@@ -279,14 +312,14 @@ def _moves(known: list[tuple[ClipRecord, Vod]]) -> str:
                     for way, found in (("later", [d for d in shifts if d > 0]), ("earlier", [d for d in shifts if d < 0]))
                     if found]
             moved.append(f"the {which} of {len(shifts)} ({'; '.join(ways)})")
-    with_cuts = sum(1 for c, _ in known if c.cuts)
+    with_cuts = sum(1 for c, _ in known if c.cuts or c.id in in_compilation)
     said = [f"they moved {' and '.join(moved)}"] if moved else []
     if with_cuts:
         said.append(f"{'' if said else 'they '}cut parts out of {with_cuts}")
     return ", and ".join(said) or "they kept every start and end where you put them"
 
 
-def _changed_line(clip: ClipRecord, words: list[Word], show: Show) -> str:
+def _changed_line(clip: ClipRecord, words: list[Word], show: Show, in_compilation: list[cuts.Cut]) -> str:
     parts = []
     shift = clip.start - clip.picked_start
     if abs(shift) >= MOVED_S:
@@ -305,6 +338,8 @@ def _changed_line(clip: ClipRecord, words: list[Word], show: Show) -> str:
             parts.append(f"the end moved {_duration(-shift)} earlier, leaving out {_said(words, clip.end, clip.picked_end)}")
     for a, b in cuts.parse(clip.cuts):
         parts.append(f"they cut out {_duration(b - a)}: {_said(words, a, b)}")
+    for a, b in in_compilation:
+        parts.append(f"in the compilation they cut out {_duration(b - a)}: {_said(words, a, b)}")
     kind = "Clip" if clip.kind == "chapter" else "Highlight"
     return f"- {kind} \"{titles.own_part(show.title_template, clip.title)}\": " + "; ".join(parts) + "."
 
@@ -317,8 +352,9 @@ def _pick_line(clip: ClipRecord, show: Show) -> str:
 
 
 def _shorts(approved: list[tuple[ClipRecord, Vod]], show: Show) -> list[str]:
-    """Highlights the owner made a Short of against the AI's call that it doesn't work vertically, or the other way."""
-    highlights = [c for c, _ in approved if c.kind == "highlight"]
+    """Highlights the owner made a Short of against the AI's call that it doesn't work vertically, or the other way.
+    Highlights only kept for the compilation are left out: whether they'd make a Short was never the question."""
+    highlights = [c for c, _ in approved if c.kind == "highlight" and c.status != "kept"]
     made = [c for c in highlights if c.make_short and not c.vertical_ok]
     dropped = [c for c in highlights if not c.make_short and c.vertical_ok]
     said = []
