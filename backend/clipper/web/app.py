@@ -79,6 +79,7 @@ class CompilationOut(BaseModel):
     """Where a stream that makes a compilation (Vod.makes_compilation) stands with it."""
     vod_id: int
     vod_title: str
+    vod_duration: float  # the stream's length, which the strip is drawn against
     # The parts it's made of, in stream order: before it's made, the kept parts of every clip in it, joined; once
     # made, the compilation's own, so they show the owner's edits.
     kept: list[tuple[float, float]]
@@ -843,7 +844,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             kept = compilation.kept_parts(picks)
             status = "waiting" if to_review else "none" if not picks else "one" if len(picks) == 1 else "making"
         return CompilationOut(
-            vod_id=vod.id, vod_title=vod.title or vod.url, kept=kept, to_review=to_review, clips=len(picks),
+            vod_id=vod.id, vod_title=vod.title or vod.url, vod_duration=vod.duration, kept=kept, to_review=to_review, clips=len(picks),
             length=sum(b - a for a, b in kept), clip_id=made.id if made else None, status=status,
             changed=bool(made) and out_of_date(made, clips),
         )

@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { api, errorText, type Clip, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type Clip, type ClipStatus, type Mode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { ChevronIcon, LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
 import { ago, applyTitlePattern, cn, go, length, pastDay, platformName, titleDate, upcoming, useDesktop, usePoll } from "../lib";
@@ -368,7 +368,7 @@ export function VideoDetail({ id }: { id: number }) {
   const deleteFiles = async () => {
     // Kept clips stay kept once the compilation they're in is uploaded; otherwise they're rejected too.
     const compiled = data?.clips.some((c) => c.kind === "compilation" && c.status === "uploaded");
-    const stays: string[] = compiled ? ["uploaded", "rejected", "kept"] : ["uploaded", "rejected"];
+    const stays: ClipStatus[] = compiled ? ["uploaded", "rejected", "kept"] : ["uploaded", "rejected"];
     const dropped = data?.clips.filter((c) => !stays.includes(c.status)).length ?? 0;
     const warning = dropped ? ` ${dropped} clip${dropped === 1 ? " that isn't" : "s that aren't"} uploaded can't be cut any more and will be rejected.` : "";
     if (!confirm(`Delete this stream's video files now to free space?${warning}`)) return;

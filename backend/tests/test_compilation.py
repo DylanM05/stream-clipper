@@ -365,9 +365,12 @@ def test_rebuild_refusals(settings, client):
 def test_compilation_out_lists_kept_and_to_review_ranges_and_its_standing(
         settings, client, statuses, standing, kept, to_review, count):
     vod_id = stream(settings, statuses)
+    with Session(get_engine(settings)) as s:
+        s.get(Vod, vod_id).duration = 3600.0
+        s.commit()
     detail = client.get(f"/api/vods/{vod_id}").json()
     assert detail["vod"]["compilation"] == {
-        "vod_id": vod_id, "vod_title": "Late night stream", "kept": kept, "to_review": to_review, "clips": count,
+        "vod_id": vod_id, "vod_title": "Late night stream", "vod_duration": 3600.0, "kept": kept, "to_review": to_review, "clips": count,
         "length": 30.0 * len(kept), "clip_id": None, "status": standing, "changed": False,
     }
     assert {c["in_compilation"] for c in detail["clips"]} == {True}

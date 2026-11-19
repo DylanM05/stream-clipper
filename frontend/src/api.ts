@@ -13,8 +13,20 @@ export type VodStatus =
   | "ready"
   | "failed";
 
-/** "extra": picked by the AI but beyond the show's best few per stream, so not in the inbox. */
-export type ClipStatus = "proposed" | "extra" | "approved" | "rejected" | "rendering" | "rendered" | "uploaded" | "failed";
+/**
+ * "extra": picked by the AI but beyond the show's best few per stream, so not in the inbox. "kept": kept for its
+ * stream's compilation only, so it isn't rendered or posted by itself.
+ */
+export type ClipStatus =
+  | "proposed"
+  | "extra"
+  | "kept"
+  | "approved"
+  | "rejected"
+  | "rendering"
+  | "rendered"
+  | "uploaded"
+  | "failed";
 
 /** "segment": clips (kind "chapter") and highlights; "whole": the full episode; "both": full episode plus those. */
 export type Mode = "segment" | "whole" | "both";
@@ -46,6 +58,23 @@ export interface Vod {
   cleaned: boolean;
   created_at: string;
   counts: Partial<Record<ClipStatus, number>>;
+  compilation: Compilation | null; // null unless it makes one
+}
+
+/** Where a stream that makes a compilation stands with it. Ranges are in the stream's seconds, in stream order. */
+export interface Compilation {
+  vod_id: number;
+  vod_title: string;
+  vod_duration: number; // the stream's length, which the strip is drawn against
+  kept: [number, number][]; // the parts it's made of: before it's made, its clips' kept parts; once made, its own
+  to_review: [number, number][]; // its picks still in the inbox
+  clips: number; // how many clips it joins now
+  length: number; // seconds it runs, from `kept`
+  clip_id: number | null; // the compilation, once made
+  // "waiting" while picks are left to review, "making" once none is, "one" with a single clip kept, "none" with none;
+  // once made, the compilation's own status.
+  status: "waiting" | "making" | "one" | "none" | ClipStatus;
+  changed: boolean; // made and not uploaded, and the kept clips now make a different one
 }
 
 export interface Clip {
@@ -92,6 +121,9 @@ export interface Clip {
   upload_state: UploadState;
   next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself (in its turn)
   upload_error: string; // why a failed or retrying upload failed
+  in_compilation: boolean; // a chapter or highlight of a stream that makes a compilation: approving it keeps it
+  compilation_clips: number; // for a compilation, how many clips it joins now (0 otherwise)
+  compilation_changed: boolean; // for a compilation not yet uploaded, whether it's out of date
   updated_at: string;
 }
 
@@ -121,6 +153,7 @@ export interface NewClip {
   destination_id: number | null;
   playlist_id: string;
   approve: boolean; // straight to rendering, rather than into the inbox
+  keep?: boolean; // kept for the stream's compilation (one that makes one), rather than into the inbox
 }
 
 /** What a clip made in the app starts with. */
@@ -501,6 +534,9 @@ export const api = {
   approve: (id: number) => changed(post<Clip>(`/api/clips/${id}/approve`)),
   reject: (id: number) => changed(post<Clip>(`/api/clips/${id}/reject`)),
   restore: (id: number) => changed(post<Clip>(`/api/clips/${id}/restore`)),
+  keep: (id: number) => changed(post<Clip>(`/api/clips/${id}/keep`)),
+  rebuild: (id: number) => changed(post<Clip>(`/api/clips/${id}/rebuild`)),
+  compilations: () => request<Compilation[]>("/api/compilations"),
   pauseClip: (id: number) => post<Clip>(`/api/clips/${id}/pause`),
   resumeClip: (id: number) => post<Clip>(`/api/clips/${id}/resume`),
   markUploaded: (id: number, youtube_url: string) => changed(post<Clip>(`/api/clips/${id}/uploaded`, { youtube_url })),
