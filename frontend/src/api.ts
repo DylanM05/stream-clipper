@@ -38,6 +38,14 @@ export type Auto = "review" | "render" | "upload";
 /** Parts of the work that can be paused as a whole. */
 export type Pauses = { downloads: boolean; processing: boolean; renders: boolean; uploads: boolean };
 
+/** Where notifications go, and which kinds of them are switched on. */
+export type NotificationSetup = {
+  ntfy: boolean;
+  discord: boolean;
+  links: boolean;
+  kinds: { id: string; name: string; on: boolean }[];
+};
+
 export interface Vod {
   id: number;
   url: string;
@@ -516,7 +524,8 @@ export const api = {
   storage: () => request<Storage>("/api/storage"),
   pauses: () => request<Pauses>("/api/pauses"),
   setPauses: (body: Partial<Pauses>) => patch<Pauses>("/api/pauses", body),
-  notifications: () => request<{ ntfy: boolean; discord: boolean; links: boolean }>("/api/notifications"),
+  notifications: () => request<NotificationSetup>("/api/notifications"),
+  setNotifications: (body: Record<string, boolean>) => patch<NotificationSetup>("/api/notifications", body),
   ai: () => request<AiSetup>("/api/ai"),
   setAi: (body: { task?: string; provider?: AiProviderId | ""; model?: string }) => patch<AiSetup>("/api/ai", body),
   testNotification: () => post<{ sent: boolean }>("/api/notifications/test"),

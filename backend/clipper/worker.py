@@ -211,7 +211,8 @@ class Worker:
                      "download). It starts once cleanup or you free up space.")
             self._update_vod(vod_id, status="waiting", retry_at=utcnow() + LOW_SPACE_RETRY, error=error)
             if not was_waiting:
-                self._notify(Note(f"Waiting for disk space: {name}", error, link=f"videos/{vod_id}", tone="bad"))
+                self._notify(Note(f"Waiting for disk space: {name}", error,
+                                  link=f"videos/{vod_id}", tone="bad", kind="failure"))
             return
         log.info("Processing video %d (%s): %s", vod_id, vod.mode, vod.url)
         try:
@@ -304,7 +305,7 @@ class Worker:
             if summary := _added_summary(added):
                 if preview.is_alive():
                     summary += "\nThe preview to watch them in the app is still being made."
-                self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}"))
+                self._notify(Note(f"Ready: {name}", summary, link=f"videos/{vod_id}", kind="review"))
             self._wait_for_preview(vod_id, preview)
             # Its compilation is made once its clips are reviewed (compile_next).
             due = compiling and any(c.kind in PICKED_KINDS for c in clips)
@@ -324,12 +325,12 @@ class Worker:
             self._update_vod(vod_id, status="waiting", retry_at=retry_at, error=e.note)
             if not was_waiting:
                 self._notify(Note(f"Waiting for the AI: {name}", f"{e.note} It carries on by itself after that.",
-                                  link=f"videos/{vod_id}", tone="quiet"))
+                                  link=f"videos/{vod_id}", tone="quiet", kind="heads_up"))
         except Exception as e:
             log.exception("Video %d failed", vod_id)
             error = f"{type(e).__name__}: {e}"[:2000]
             self._update_vod(vod_id, status="failed", error=error)
-            self._notify(Note(f"Failed: {name}", error[:500], link=f"videos/{vod_id}", tone="bad"))
+            self._notify(Note(f"Failed: {name}", error[:500], link=f"videos/{vod_id}", tone="bad", kind="failure"))
 
     def _drop_members_only(self, vod_id: int, error: str) -> None:
         """A video for its channel's paying members, which the account downloading can't get. One a watched channel
@@ -592,7 +593,8 @@ class Worker:
             log.exception("Rendering clip %d failed", clip_id)
             error = f"{type(e).__name__}: {e}"[:2000]
             if self._finish_render(clip_id, status="failed", error=error):
-                self._notify(Note(f"Render failed: {clip.title}", error[:500], link=f"clip/{clip_id}", tone="bad"))
+                self._notify(Note(f"Render failed: {clip.title}", error[:500],
+                                  link=f"clip/{clip_id}", tone="bad", kind="failure"))
             return
         if rendered:
             self._auto_thumbnail(clip_id)
@@ -656,7 +658,7 @@ class Worker:
         log.warning("No intro on clip %d's %s: %s", clip.id, which.removeprefix("its "), error)
         reason = str(error).splitlines()[0] if isinstance(error, intro.IntroError) else "ffmpeg couldn't join them."
         self._notify(Note(f"No intro on: {clip.title}", f"It goes up without the intro on {which}. {reason}",
-                          link=f"clip/{clip.id}", tone="bad"))
+                          link=f"clip/{clip.id}", tone="bad", kind="heads_up"))
 
     def _finish_render(self, clip_id: int, **fields) -> bool:
         """Record how a render ended. False if the clip changed in the meantime, which leaves it alone."""
@@ -718,7 +720,7 @@ class Worker:
         self._notify(Note(
             f"Not uploaded: {title}",
             f"{show_name} uploads these without review, but there's no YouTube channel set for them. Pick one on the clip.",
-            link=f"upload/{clip_id}", tone="bad",
+            link=f"upload/{clip_id}", tone="bad", kind="failure",
         ))
 
     # --- Compilations ----------------------------------------------------------------
@@ -781,13 +783,13 @@ class Worker:
             vod_id, name = lone
             self._notify(Note(f"Only one clip kept: {name}",
                               f"Only one clip was kept from {name}. Keep another, or post this one by itself.",
-                              link=f"videos/{vod_id}"))
+                              link=f"videos/{vod_id}", kind="heads_up"))
         if not plan:
             return True
         log.info("Added the compilation of video %d (%d clips)", vod_id, count)
         if status == "proposed":
             self._notify(Note(f"Compilation to review: {name}", f"Its {count} approved clips, joined into one video.",
-                              link="inbox"))
+                              link="inbox", kind="review"))
         return True
 
     @staticmethod
@@ -927,7 +929,8 @@ class Worker:
             s.commit()
         what = "Short" if job.which == "short" else "Full episode" if clip.kind == "whole" else "Video"
         where = " on Rumble" if on_rumble else f" on {dest.name}" if dest else ""
-        self._notify(Note(f"Uploaded: {clip.title}", f"{what}, {job.visibility}{where}. {note}".strip(), link=url, tone="good"))
+        self._notify(Note(f"Uploaded: {clip.title}", f"{what}, {job.visibility}{where}. {note}".strip(),
+                          link=url, tone="good", kind="uploaded"))
 
     def _upload_failed(self, job: UploadJob, clip: ClipRecord, error: str, retry: str = "", **fields) -> None:
         """Record a failed upload. One that could work later (`retry`, see youtube.RETRY_LATER) is tried again by
@@ -938,7 +941,7 @@ class Worker:
         if retry_at:
             local = retry_at.astimezone(ZoneInfo(self.settings.timezone))
             error += f" It tries again by itself at {local.strftime('%I:%M %p').lstrip('0')} {local.tzname()}."
-        self._notify(Note(f"Upload failed: {clip.title}", error, link=f"upload/{clip.id}", tone="bad"))
+        self._notify(Note(f"Upload failed: {clip.title}", error, link=f"upload/{clip.id}", tone="bad", kind="failure"))
 
     def _delete_render(self, clip: ClipRecord, vod: Vod, which: str) -> None:
         """Delete a file once it's uploaded, if it's a render. A full episode's file is the stream itself, which
@@ -1216,7 +1219,8 @@ class Worker:
     def send_digest(self, local: datetime | None = None) -> None:
         """On Monday mornings, a notification with the past week's uploads and how they're doing."""
         local = local or datetime.now(ZoneInfo(self.settings.timezone))
-        if local.weekday() != 0 or local.hour < DIGEST_HOUR or not notify.configured(self.settings):
+        if (local.weekday() != 0 or local.hour < DIGEST_HOUR or not notify.configured(self.settings)
+                or not notify.enabled(self.settings, "digest")):
             return
         week = local.strftime("%G-W%V")
         with Session(self.engine) as s:
@@ -1229,7 +1233,7 @@ class Worker:
                 col(UploadJob.finished_at) >= utcnow() - timedelta(days=7),
             )).all()
         if rows:
-            self._notify(Note("Last week on YouTube", stats.digest(rows), link="stats"))
+            self._notify(Note("Last week on YouTube", stats.digest(rows), link="stats", kind="digest"))
 
     # --- Disk cleanup --------------------------------------------------------------
 

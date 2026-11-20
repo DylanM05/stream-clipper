@@ -10,7 +10,7 @@ from sqlmodel import Session
 from clipper import stats
 from clipper import worker as worker_module
 from clipper.config import Settings
-from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_engine, utcnow
+from clipper.db import ClipRecord, Destination, Show, UploadJob, Vod, get_app_setting, get_engine, set_app_setting, utcnow
 from clipper.web import app as web_app
 from clipper.youtube import Stats
 
@@ -118,6 +118,24 @@ def test_the_monday_summary_goes_once_a_week(settings, show, monkeypatch):
     assert note.title == "Last week on YouTube" and note.link == "stats"
     assert note.message == "2 uploads · 13.1K views so far\n\nMost viewed:\n1. Huck Blend Is Back: 12.3K\n2. Jer Wins: 800"
 
+
+def test_the_monday_summary_switched_off_is_skipped_and_still_due(settings, show, monkeypatch):
+    sent = []
+    monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
+    add_upload(settings, title="Huck Blend Is Back", views=12_300)
+    w = worker_module.Worker(settings)
+    monday = datetime(2026, 10, 26, 9, 30, tzinfo=ZoneInfo(settings.timezone))
+    with Session(get_engine(settings)) as s:
+        set_app_setting(s, "notify_digest", "0")
+        s.commit()
+    w.send_digest(monday)
+    with Session(get_engine(settings)) as s:
+        assert get_app_setting(s, "stats_digest_week") is None
+        set_app_setting(s, "notify_digest", "1")
+        s.commit()
+    assert sent == []
+    w.send_digest(monday)  # switched back on the same morning: it still goes
+    assert [n.kind for n in sent] == ["digest"]
 
 def test_views_by_score_band_and_the_stats_page(settings, show, monkeypatch):
     add_upload(settings, score=0.95, views=10_000, views_day1=4_000)

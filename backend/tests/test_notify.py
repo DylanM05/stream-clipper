@@ -3,9 +3,11 @@
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlmodel import Session
 
 from clipper import notify
 from clipper.config import Settings
+from clipper.db import get_engine, set_app_setting
 from clipper.notify import Note
 from clipper.web import app as web_app
 
@@ -67,9 +69,63 @@ def test_nothing_is_sent_when_neither_is_set_up(posts):
 
 def test_the_apps_test_button(tmp_path, posts):
     client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
-    assert client.get("/api/notifications").json() == {"ntfy": False, "discord": False, "links": False}
+    setup = client.get("/api/notifications").json()
+    assert {k: setup[k] for k in ("ntfy", "discord", "links")} == {"ntfy": False, "discord": False, "links": False}
     assert client.post("/api/notifications/test").status_code == 409
 
     settings = Settings(data_dir=tmp_path, web_dir=tmp_path / "web", ntfy_url="https://broken.example.com/topic")
     response = TestClient(web_app.create_app(settings)).post("/api/notifications/test")
     assert response.status_code == 502 and "connection refused" in response.json()["detail"]
+
+
+def test_every_notification_has_its_kind():
+    """Each Note( in the app names one of KINDS, so a new one can't go out without a switch."""
+    import ast
+    import pathlib
+
+    found = []
+    for path in sorted(pathlib.Path(notify.__file__).parent.rglob("*.py")):
+        for node in ast.walk(ast.parse(path.read_text())):
+            if isinstance(node, ast.Call) and "Note" in (getattr(node.func, "id", None), getattr(node.func, "attr", None)):
+                title = node.args[0]
+                start = (title.values[0].value if isinstance(title, ast.JoinedStr) else title.value).split(":")[0].strip()
+                if start != "Test from Stream Clipper":  # the test button, which always sends
+                    found.append((start, next((k.value.value for k in node.keywords if k.arg == "kind"), None)))
+    assert all(kind in notify.KINDS for _, kind in found), found
+    assert sorted(found) == sorted([
+        ("Waiting for disk space", "failure"), ("Ready", "review"), ("Waiting for the AI", "heads_up"),
+        ("Failed", "failure"), ("Render failed", "failure"), ("No intro on", "heads_up"), ("Not uploaded", "failure"),
+        ("Only one clip kept", "heads_up"), ("Compilation to review", "review"), ("Uploaded", "uploaded"),
+        ("Upload failed", "failure"), ("Last week on YouTube", "digest"), ("Can't check", "failure"), ("New for", "new"),
+    ])
+
+
+def test_a_kind_switched_off_isnt_sent(tmp_path, posts, monkeypatch):
+    class Now:  # runs the background send straight away
+        def __init__(self, target, args, **_):
+            self.run = lambda: target(*args)
+
+        def start(self):
+            self.run()
+
+    monkeypatch.setattr(notify.threading, "Thread", Now)
+    settings = Settings(data_dir=tmp_path, discord_webhook_url="https://discord.com/api/webhooks/1/abc")
+    with Session(get_engine(settings)) as s:
+        set_app_setting(s, "notify_new", "0")
+        s.commit()
+    notify.send(settings, Note("New for Kino", kind="new"))
+    notify.send(settings, Note("Ready: Kino", kind="review"))
+    assert [p["json"]["embeds"][0]["title"] for p in posts] == ["Ready: Kino"]
+    assert notify.enabled(settings, "review") and not notify.enabled(settings, "new")
+
+
+def test_the_switches_save_and_load(tmp_path):
+    client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
+    kinds = client.get("/api/notifications").json()["kinds"]
+    assert [k["id"] for k in kinds] == list(notify.KINDS) and all(k["on"] for k in kinds)
+    assert kinds[0] == {"id": "review", "name": "Ready to review", "on": True}
+    after = client.patch("/api/notifications", json={"new": False, "digest": False}).json()["kinds"]
+    assert {k["id"] for k in after if not k["on"]} == {"new", "digest"}
+    assert client.patch("/api/notifications", json={"new": True}).json()["kinds"][1]["on"] is True
+    assert client.patch("/api/notifications", json={"spam": False}).status_code == 422
+    assert set(web_app.NotificationsPatch.model_fields) == set(notify.KINDS)

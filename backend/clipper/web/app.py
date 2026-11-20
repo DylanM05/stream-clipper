@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, text
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
@@ -497,6 +497,18 @@ class PausesPatch(BaseModel):
     processing: bool | None = None
     renders: bool | None = None
     uploads: bool | None = None
+
+
+class NotificationsPatch(BaseModel):
+    """Switches a kind of notification (notify.KINDS) on or off."""
+
+    model_config = ConfigDict(extra="forbid")
+    review: bool | None = None
+    new: bool | None = None
+    uploaded: bool | None = None
+    failure: bool | None = None
+    heads_up: bool | None = None
+    digest: bool | None = None
 
 
 class ChannelIn(BaseModel):
@@ -1242,9 +1254,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         s.commit()
         return current_pauses(s)
 
+    def current_notifications(s: Session) -> dict:
+        kinds = [{"id": kind, "name": name, "on": get_app_setting(s, notify.switch_key(kind)) != "0"}
+                 for kind, name in notify.KINDS.items()]
+        return {"ntfy": bool(settings.ntfy_url), "discord": bool(settings.discord_webhook_url),
+                "links": bool(settings.app_url), "kinds": kinds}
+
     @app.get("/api/notifications")
-    def notification_setup() -> dict:
-        return {"ntfy": bool(settings.ntfy_url), "discord": bool(settings.discord_webhook_url), "links": bool(settings.app_url)}
+    def notification_setup(s: Session = Depends(db)) -> dict:
+        return current_notifications(s)
+
+    @app.patch("/api/notifications")
+    def set_notifications(body: NotificationsPatch, s: Session = Depends(db)) -> dict:
+        """From the next notification on; the test button always sends."""
+        for kind, on in body.model_dump(exclude_none=True).items():
+            set_app_setting(s, notify.switch_key(kind), "1" if on else "0")
+        s.commit()
+        return current_notifications(s)
 
     @app.post("/api/notifications/test")
     def test_notification() -> dict:

@@ -1,5 +1,6 @@
 """Notifications: to an ntfy topic (the ntfy phone app, or anything else that follows the topic) and to a
 Discord channel through its webhook. Each is optional; see CLIPPER_NTFY_URL and CLIPPER_DISCORD_WEBHOOK_URL.
+Each kind of notification (KINDS) can be switched off in the app.
 
 ntfy can't post to Discord itself, so Discord gets its own copy straight from here.
 """
@@ -10,8 +11,10 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 import httpx
+from sqlmodel import Session
 
 from .config import Settings
+from .db import get_app_setting, get_engine
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +28,16 @@ TONES = {
     "bad": (4, ["warning"], 0xEF4444),  # something needs you: a failure, a sign-in to redo
 }
 
+# The kinds of notification, each with its own switch in Settings; all are on until switched off.
+KINDS = {
+    "review": "Ready to review",
+    "new": "New on a watched channel",
+    "uploaded": "Uploaded",
+    "failure": "Failures",
+    "heads_up": "Heads-ups",
+    "digest": "Weekly YouTube summary",
+}
+
 
 @dataclass
 class Note:
@@ -34,15 +47,27 @@ class Note:
     # app such as "videos/3", which needs CLIPPER_APP_URL.
     link: str = ""
     tone: str = "info"  # see TONES
+    kind: str = ""  # see KINDS; only the test button sends one without
 
 
 def configured(settings: Settings) -> bool:
     return bool(settings.ntfy_url or settings.discord_webhook_url)
 
 
+def switch_key(kind: str) -> str:
+    return f"notify_{kind}"
+
+
+def enabled(settings: Settings, kind: str) -> bool:
+    """Whether a kind of notification is switched on (KINDS)."""
+    with Session(get_engine(settings)) as s:
+        return get_app_setting(s, switch_key(kind)) != "0"
+
+
 def send(settings: Settings, note: Note) -> None:
-    """Send in the background, so a slow or unreachable service never holds up the work."""
-    if configured(settings):
+    """Send in the background, so a slow or unreachable service never holds up the work. Skipped when its kind is
+    switched off."""
+    if configured(settings) and (not note.kind or enabled(settings, note.kind)):
         threading.Thread(target=deliver, args=(settings, note), name="notify", daemon=True).start()
 
 
