@@ -1,8 +1,13 @@
 import pytest
 from conftest import line, transcript
 
-from clipper.models import LLMChapter, LLMHighlight, Segmentation
-from clipper.pipeline.refine import LEAD_IN_S, MAX_HIGHLIGHT_S, MIN_TAIL_S, TAIL_S, Snapper, refine
+from clipper import cuts
+from clipper.models import (
+    CompilationSegmentation, LLMChapter, LLMCompilationPiece, LLMHighlight, LLMPieceCut, Segmentation,
+)
+from clipper.pipeline.refine import (
+    LEAD_IN_S, MAX_COMPILATION_PIECE_S, MAX_HIGHLIGHT_S, MIN_TAIL_S, TAIL_S, Snapper, refine,
+)
 
 
 def chapter(start, end, title="Chapter", category="content", confidence=0.8):
@@ -11,6 +16,11 @@ def chapter(start, end, title="Chapter", category="content", confidence=0.8):
 
 def highlight(start, end, title="Moment", score=0.7, vertical_ok=True):
     return LLMHighlight(start=start, end=end, title=title, description="d", why="w", score=score, vertical_ok=vertical_ok)
+
+
+def piece(start, end, *gaps, title="Moment"):
+    return LLMCompilationPiece(start=start, end=end, title=title, description="d", why="w", score=0.7,
+                               vertical_ok=False, cuts=[LLMPieceCut(after=a, before=b) for a, b in gaps])
 
 
 # Whisper split one sentence across two lines; the second line starts mid-sentence.
@@ -199,3 +209,42 @@ def test_duplicate_compilation_proposals_for_the_same_line_are_deduplicated():
         highlight("00:00:05", "00:00:05", title="Duplicate", score=0.6),
     ])
     assert [clip.title for clip in refine(seg, t, compilation_mode=True)] == ["Best title"]
+
+
+def test_a_compilation_piece_can_run_past_the_shorts_limit_and_cut_its_filler():
+    t = transcript(
+        line(10, "Here's how the heist started."),
+        line(200, "Okay, quick break, back in a bit."),
+        line(500, "We're back, where were we."),
+        line(520, "So the guard walks in."),
+        line(900, "And that's how we got away."),
+        duration=1000,
+    )
+    seg = CompilationSegmentation(chapters=[], highlights=[piece("00:00:10", "00:15:00", ("00:03:20", "00:08:40"))])
+    [clip] = refine(seg, t, compilation_mode=True)
+    assert clip.start < 10 and clip.end > 900
+    [(a, b)] = clip.cuts
+    # The line before the gap and the line after it both stay.
+    assert 200 < a < 500 and b < 520 and b >= 500 - LEAD_IN_S - 0.01
+    assert clip.duration > MAX_HIGHLIGHT_S
+
+
+def test_a_compilation_cut_with_bad_or_unknown_timecodes_is_skipped():
+    t = transcript(line(10, "Setup."), line(30, "Middle."), line(60, "Payoff."), duration=80)
+    seg = CompilationSegmentation(chapters=[], highlights=[
+        piece("00:00:10", "00:01:00", ("soon", "00:00:30"), ("00:00:30", "00:00:10"), ("00:00:15", "00:00:30")),
+    ])
+    [clip] = refine(seg, t, compilation_mode=True)
+    assert clip.cuts == []
+
+
+def test_a_compilation_piece_is_capped_at_20_minutes_of_kept_footage():
+    lines = [line(60.0 * m, f"Minute {m} of the story.") for m in range(0, 41)]
+    t = transcript(*lines, duration=2500)
+    # 40 minutes long with a 15 minute break cut out: 25 minutes kept, so it ends 20 minutes of footage in.
+    seg = CompilationSegmentation(chapters=[], highlights=[piece("00:00:00", "00:40:00", ("00:05:00", "00:20:00"))])
+    [clip] = refine(seg, t, compilation_mode=True)
+    assert len(clip.cuts) == 1
+    assert MAX_COMPILATION_PIECE_S - 60 <= clip.duration <= MAX_COMPILATION_PIECE_S
+    assert clip.end > 20 * 60
+    assert cuts.kept_length(clip.start, clip.end, clip.cuts) == pytest.approx(clip.duration)

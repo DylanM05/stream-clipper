@@ -88,7 +88,8 @@ def test_compilation_uses_its_own_prompt_and_cache(tmp_path, monkeypatch):
         assert result.episode_title == "Compilation"
     assert len(asked) == 1
     assert "no quota or per-hour cap" in asked[0]["system_prompt"]
-    assert "several minutes when the moment itself needs that" in asked[0]["system_prompt"]
+    assert "up to 20 minutes of footage" in asked[0]["system_prompt"]
+    assert asked[0]["schema"] is segment.CompilationSegmentation
     assert "pick up to" not in asked[0]["task"]
     assert "Past reviews" in asked[0]["stdin_text"]
     assert segment.run(ws, settings, t, Signals()).episode_title == "Standard"

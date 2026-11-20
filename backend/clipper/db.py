@@ -373,9 +373,8 @@ class ClipRecord(SQLModel, table=True):
     picked_start: float | None = None
     picked_end: float | None = None
     picked_title: str = ""
-    # For a compilation: the gaps the app cut between its clips when it made it, as JSON like `cuts`. With picked_start
-    # and picked_end it's the compilation as first made, which the owner's edits are compared against (learning.py), and
-    # which says whether the kept clips changed since.
+    # The original cuts, as JSON like `cuts`: filler omitted from a pick or gaps in a compilation as first made.
+    # Together with picked_start and picked_end, they help track the owner's edits and when a compilation is out of date.
     picked_cuts: str = ""
     # Offered as an extra (beyond the show's best few, by score) rather than in the inbox: approving it anyway says the
     # AI scored it too low (learning.py). Unset for clips made in the app, full episodes, and older clips until it's

@@ -235,8 +235,13 @@ def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
     approved = [(c, v) for c, v in picks if c.status in APPROVED and (_looked_at(c) or c.id in in_compilation)]
     rejected = [c for c, _ in picks if c.status == "rejected"]
     known = [(c, v) for c, v in approved if c.picked_start is not None and c.picked_end is not None]
+    new_cuts = {
+        c.id: cuts.removed(c.start, c.end, cuts.parse(c.cuts), c.start, c.end, cuts.parse(c.picked_cuts))
+        for c, _ in known if c.cuts != c.picked_cuts
+    }
     changed = [(c, v) for c, v in known
-               if _moved(c.start, c.picked_start) or _moved(c.end, c.picked_end) or c.cuts or c.id in in_compilation]
+               if _moved(c.start, c.picked_start) or _moved(c.end, c.picked_end)
+               or new_cuts.get(c.id) or c.id in in_compilation]
     retitled = [
         (c.picked_title, own) for c, _ in approved
         if c.picked_title and _plain(own := titles.own_part(show.title_template, c.title)) != _plain(c.picked_title)
@@ -245,10 +250,10 @@ def _changes(s: Session, show: Show, transcripts: "_Transcripts") -> list[str]:
 
     lines: list[str] = []
     if len(known) >= 3:
-        lines += ["", f"Of the last {len(known)} of your picks they approved, {_moves(known, in_compilation)}."]
+        lines += ["", f"Of the last {len(known)} of your picks they approved, {_moves(known, new_cuts, in_compilation)}."]
     if changed:
         lines += ["", "Picks they changed, newest first:"]
-        lines += [_changed_line(clip, transcripts.words(vod), show, in_compilation.get(clip.id, []))
+        lines += [_changed_line(clip, transcripts.words(vod), show, new_cuts.get(clip.id, []), in_compilation.get(clip.id, []))
                   for clip, vod in changed[:EXAMPLES]]
     if retitled:
         lines += ["", "Titles they rewrote, yours and then theirs:",
@@ -301,7 +306,8 @@ def _moved(now: float, picked: float | None) -> bool:
     return picked is not None and abs(now - picked) >= MOVED_S
 
 
-def _moves(known: list[tuple[ClipRecord, Vod]], in_compilation: dict[int, list[cuts.Cut]]) -> str:
+def _moves(known: list[tuple[ClipRecord, Vod]], new_cuts: dict[int, list[cuts.Cut]],
+           in_compilation: dict[int, list[cuts.Cut]]) -> str:
     """e.g. "they moved the start of 4 (later in 3, by a median of 2.1 s; ...) and the end of 6 (...), and cut parts
     out of 1", or that they kept them all as they were."""
     moved = []
@@ -312,14 +318,15 @@ def _moves(known: list[tuple[ClipRecord, Vod]], in_compilation: dict[int, list[c
                     for way, found in (("later", [d for d in shifts if d > 0]), ("earlier", [d for d in shifts if d < 0]))
                     if found]
             moved.append(f"the {which} of {len(shifts)} ({'; '.join(ways)})")
-    with_cuts = sum(1 for c, _ in known if c.cuts or c.id in in_compilation)
+    with_cuts = sum(1 for c, _ in known if new_cuts.get(c.id) or c.id in in_compilation)
     said = [f"they moved {' and '.join(moved)}"] if moved else []
     if with_cuts:
         said.append(f"{'' if said else 'they '}cut parts out of {with_cuts}")
     return ", and ".join(said) or "they kept every start and end where you put them"
 
 
-def _changed_line(clip: ClipRecord, words: list[Word], show: Show, in_compilation: list[cuts.Cut]) -> str:
+def _changed_line(clip: ClipRecord, words: list[Word], show: Show,
+                  new_cuts: list[cuts.Cut], in_compilation: list[cuts.Cut]) -> str:
     parts = []
     shift = clip.start - clip.picked_start
     if abs(shift) >= MOVED_S:
@@ -336,7 +343,7 @@ def _changed_line(clip: ClipRecord, words: list[Word], show: Show, in_compilatio
                          f"{_said(words, clip.picked_end, clip.end)}")
         else:
             parts.append(f"the end moved {_duration(-shift)} earlier, leaving out {_said(words, clip.end, clip.picked_end)}")
-    for a, b in cuts.parse(clip.cuts):
+    for a, b in new_cuts:
         parts.append(f"they cut out {_duration(b - a)}: {_said(words, a, b)}")
     for a, b in in_compilation:
         parts.append(f"in the compilation they cut out {_duration(b - a)}: {_said(words, a, b)}")
