@@ -69,7 +69,8 @@ def test_nothing_is_sent_when_neither_is_set_up(posts):
 
 def test_the_apps_test_button(tmp_path, posts):
     client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
-    assert client.get("/api/notifications").json() == {"ntfy": False, "discord": False, "links": False}
+    setup = client.get("/api/notifications").json()
+    assert {k: setup[k] for k in ("ntfy", "discord", "links")} == {"ntfy": False, "discord": False, "links": False}
     assert client.post("/api/notifications/test").status_code == 409
 
     settings = Settings(data_dir=tmp_path, web_dir=tmp_path / "web", ntfy_url="https://broken.example.com/topic")
@@ -115,3 +116,14 @@ def test_a_kind_switched_off_isnt_sent(tmp_path, posts, monkeypatch):
     notify.send(settings, Note("Ready: Kino", kind="review"))
     assert [p["json"]["embeds"][0]["title"] for p in posts] == ["Ready: Kino"]
     assert notify.enabled(settings, "review") and not notify.enabled(settings, "new")
+
+
+def test_the_switches_save_and_load(tmp_path):
+    client = TestClient(web_app.create_app(Settings(data_dir=tmp_path, web_dir=tmp_path / "web")))
+    kinds = client.get("/api/notifications").json()["kinds"]
+    assert [k["id"] for k in kinds] == list(notify.KINDS) and all(k["on"] for k in kinds)
+    assert kinds[0] == {"id": "review", "name": "Ready to review", "on": True}
+    after = client.patch("/api/notifications", json={"new": False, "digest": False}).json()["kinds"]
+    assert {k["id"] for k in after if not k["on"]} == {"new", "digest"}
+    assert client.patch("/api/notifications", json={"new": True}).json()["kinds"][1]["on"] is True
+    assert client.patch("/api/notifications", json={"spam": False}).status_code == 422
