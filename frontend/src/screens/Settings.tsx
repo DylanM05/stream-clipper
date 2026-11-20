@@ -342,13 +342,20 @@ function AiEditor(props: {
 
 function Notifications() {
   const toast = useToast();
-  const { data } = usePoll(api.notifications, 0);
+  const { data, setData } = usePoll(api.notifications, 0);
   if (!data) return null;
   const where = [data.ntfy && "ntfy", data.discord && "Discord"].filter(Boolean).join(" and ");
   const test = async () => {
     try {
       await api.testNotification();
       toast({ text: `Sent a test to ${where}.` });
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
+  };
+  const turn = async (kind: string, on: boolean) => {
+    try {
+      setData(await api.setNotifications({ [kind]: on }));
     } catch (e) {
       toast({ text: errorText(e) });
     }
@@ -366,6 +373,16 @@ function Notifications() {
       ) : (
         <Row name="Sent to" value="Nowhere: they're off." hint="Set them up for ntfy or Discord in the server's .env (README)." />
       )}
+      {where &&
+        data.kinds.map((k) => (
+          <Row
+            key={k.id}
+            name={k.name}
+            value={k.on ? "On" : "Off"}
+            action={k.on ? "Turn off" : "Turn on"}
+            onAction={() => turn(k.id, !k.on)}
+          />
+        ))}
     </Section>
   );
 }
