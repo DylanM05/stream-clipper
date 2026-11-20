@@ -379,7 +379,7 @@ class Monitor:
             error = str(e) if isinstance(e, (xposts.XError, RumbleError)) else f"{type(e).__name__}: {e}"
             self._finish(channel_id, last_error=error[:500])
             if not was_failing:  # once, not on every check until it's fixed
-                notify.send(self.settings, Note(f"Can't check {url}", error[:500], link="shows", tone="bad"))
+                notify.send(self.settings, Note(f"Can't check {url}", error[:500], link="shows", tone="bad", kind="failure"))
             return
 
         with Session(self.engine) as s:
@@ -434,7 +434,8 @@ class Monitor:
         if queued:
             log.info("Queued %d new video(s) from %s", queued, url)
         for vod_id, title in new_titles:
-            notify.send(self.settings, Note(f"New for {show_name}", title[:300], link=f"videos/{vod_id}", tone="quiet"))
+            notify.send(self.settings, Note(f"New for {show_name}", title[:300],
+                                            link=f"videos/{vod_id}", tone="quiet", kind="new"))
         self._finish(channel_id, last_error="", baseline_done=True)
 
     @staticmethod
