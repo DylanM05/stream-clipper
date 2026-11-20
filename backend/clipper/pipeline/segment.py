@@ -10,7 +10,10 @@ from pathlib import Path
 
 from ..config import Settings
 from .. import ai
-from ..models import Breakdown, LLMBreakdownPart, Segmentation, SegmentationWithBreakdown, Signals, Transcript
+from ..models import (
+    Breakdown, CompilationSegmentation, CompilationSegmentationWithBreakdown, LLMBreakdownPart, Segmentation,
+    SegmentationWithBreakdown, Signals, Transcript,
+)
 from ..timecode import to_timecode
 from ..workspace import Workspace, write_text
 
@@ -49,8 +52,11 @@ def run(
     `offered_shorts` with some to spare.
     """
     cache = ws.compilation_segmentation_json if compilation_mode else ws.segmentation_json
+    schema = CompilationSegmentation if compilation_mode else Segmentation
+    if breakdown:
+        schema = CompilationSegmentationWithBreakdown if compilation_mode else SegmentationWithBreakdown
     if cache.exists():
-        return Segmentation.model_validate_json(cache.read_text(encoding="utf-8"))
+        return schema.model_validate_json(cache.read_text(encoding="utf-8"))
 
     noun = NOUNS[video_type]
     if compilation_mode:
@@ -70,11 +76,9 @@ def run(
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
     system_prompt = (PROMPTS_DIR / prompt).read_text(encoding="utf-8")
-    schema = Segmentation
     if breakdown:
         system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
         task += ", and break down what its time goes on"
-        schema = SegmentationWithBreakdown
     llm = ai.model(settings, effort=settings.llm_effort, timeout_s=settings.llm_timeout_s, task="clips")
     result = llm.structured(
         system_prompt=system_prompt,

@@ -104,6 +104,19 @@ class Segmentation(BaseModel):
     episode_summary: str = Field(default="", description="2-4 sentences describing the whole episode, for its description")
 
 
+class LLMPieceCut(BaseModel):
+    after: str = Field(description="Timestamp of the last transcript line to keep before the cut")
+    before: str = Field(description="Timestamp of the first transcript line to keep after the cut")
+
+
+class LLMCompilationPiece(LLMHighlight):
+    cuts: list[LLMPieceCut] = Field(default=[], description="Internal filler to remove, in order. Empty if none")
+
+
+class CompilationSegmentation(Segmentation):
+    highlights: list[LLMCompilationPiece]
+
+
 class LLMBreakdownPart(BaseModel):
     start: str = Field(description=_TIMECODE)
     end: str = Field(description=_TIMECODE)
@@ -120,6 +133,10 @@ class SegmentationWithBreakdown(Segmentation):
     # The defaults keep answers without them readable; the AI is always asked for them when this is the schema.
     breakdown: list[LLMBreakdownPart] = Field(default=[], description="The whole video, in order, each part by category")
     other_summary: str = Field(default="", description=_OTHER_SUMMARY)
+
+
+class CompilationSegmentationWithBreakdown(CompilationSegmentation, SegmentationWithBreakdown):
+    pass
 
 
 class Breakdown(BaseModel):

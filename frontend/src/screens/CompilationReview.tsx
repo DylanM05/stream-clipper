@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errorText, media, type Clip } from "../api";
-import { kept, keptLength } from "../editor/edit";
-import { cn, go, goBack, length, useDesktop, usePoll } from "../lib";
+import { createClock, useClock, type Clock } from "../editor/clock";
+import { clamp, clipTime, kept, keptLength, streamTime, timecode } from "../editor/edit";
+import { cn, go, goBack, loadSetting, saveSetting, useDesktop, usePoll } from "../lib";
 import { Button, ErrorNote, Screen, useToast } from "../ui";
 
 const UNDO_MS = 10_000;
+const RATES = [0.5, 1, 1.5, 2];
 type ReviewUndo = { id: number; version: string; expires: number };
 type EditorReturn = { wasProposed: boolean; undo?: ReviewUndo };
 
@@ -27,6 +29,7 @@ export function CompilationReview({ id, returnPiece, returnTime }: { id: number;
         <Button onClick={() => go("inbox")}>Review in the inbox</Button>
       ) : data?.vod.mode === "compilation" && !data.vod.cleaned ? (
         <Player
+          key={id}
           id={id}
           pieces={pieces}
           onChange={(clip) => setDecisions((current) => ({ ...current, [clip.id]: clip }))}
@@ -59,6 +62,8 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
     return pieces.slice(returningAt + 1).find((clip) => clip.status === "proposed")?.id ?? null;
   });
   const [playing, setPlaying] = useState(false);
+  const [rate, setRate] = useState(1);
+  const [muted, setMuted] = useState(() => loadSetting("clipper.previewMuted", false));
   const [busy, setBusy] = useState(false);
   const inFlight = useRef(false);
   const [mediaError, setMediaError] = useState(false);
@@ -66,7 +71,8 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
   const [undo, setUndo] = useState<ReviewUndo | undefined>(() => (
     resume?.undo && resume.undo.expires > Date.now() ? resume.undo : undefined
   ));
-  const wanted = useRef(decidedInEditor ? 0 : returnTime || 0);
+  const [clock] = useState(() => createClock(decidedInEditor ? 0 : returnTime || 0));
+  const pendingSeek = useRef<number | null>(null);
   const strip = useRef<HTMLDivElement>(null);
 
   const playable = pieces.filter((c) => c.status === "proposed" || c.status === "kept");
@@ -76,6 +82,8 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
   const position = current ? pieces.findIndex((c) => c.id === current.id) : -1;
   const sequencePosition = current ? playable.findIndex((c) => c.id === current.id) : -1;
   const canDecide = !busy && current?.status === "proposed";
+  const duration = current ? keptLength(current) : 0;
+  const controlsDisabled = busy || mediaError || !duration;
 
   useEffect(() => {
     if (!undo) return;
@@ -88,8 +96,24 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
   }, [current?.id]);
 
   const seek = (time: number) => {
-    wanted.current = time;
-    if (video.current && video.current.readyState > 0) video.current.currentTime = time;
+    clock.set(time);
+    const v = video.current;
+    if (!v || !v.readyState) return;
+    if (v.seeking) pendingSeek.current = time;
+    else if (v.currentTime !== time) v.currentTime = time;
+  };
+
+  const seekPiece = (time: number) => {
+    if (!current) return;
+    const t = streamTime(current, clamp(time, 0, duration));
+    const part = parts.find(([, end]) => end > t);
+    // At a cut, show the first retained frame after the join. Scrubbing to the end holds there.
+    if (!part) video.current?.pause();
+    seek(part ? Math.max(t, part[0]) : current.end);
+  };
+
+  const skip = (seconds: number) => {
+    if (current) seekPiece(clipTime(current, clock.get()) + seconds);
   };
 
   const move = (clip: Clip) => {
@@ -104,12 +128,13 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
 
   const toggle = () => {
     const v = video.current;
-    if (!v || !current) return;
+    if (!v || !parts.length || controlsDisabled) return;
     if (!v.paused) {
       v.pause();
       return;
     }
-    if (!parts.some(([a, b]) => a <= v.currentTime && v.currentTime < b)) seek(parts[0][0]);
+    const at = clock.get();
+    if (!parts.some(([a, b]) => a <= at && at < b)) seek(parts[0][0]);
     void v.play().catch(() => {});
   };
 
@@ -120,10 +145,14 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
     const nextPart = parts.find(([, end]) => end > v.currentTime);
     if (nextPart) {
       if (v.currentTime < nextPart[0]) seek(nextPart[0]);
+      else clock.set(v.currentTime);
     } else {
       const next = playable[sequencePosition + 1];
       if (next) move(next);
-      else v.pause();
+      else {
+        v.pause();
+        seek(current.end);
+      }
     }
   };
   useEffect(() => {
@@ -203,7 +232,7 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
 
   const edit = () => {
     if (!current) return;
-    const time = video.current?.currentTime ?? wanted.current;
+    const time = clock.get();
     history.replaceState(
       { ...history.state, compilationReview: { wasProposed: current.status === "proposed", undo } },
       "",
@@ -217,34 +246,82 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
   return (
     <div className="mx-auto max-w-4xl space-y-3">
       {current ? (
-        <div className="relative aspect-video overflow-hidden rounded-xl bg-black">
+        <div className="overflow-hidden rounded-xl bg-panel">
+          <div aria-live="polite" className="flex flex-wrap items-baseline gap-x-3 gap-y-1 px-4 py-3">
+            <span className="text-xs text-graphite">Piece {position + 1} of {pieces.length}</span>
+            <span className="text-sm font-semibold">{current.title}</span>
+          </div>
+          <div className="relative aspect-video bg-black">
           <video
             key={attempt}
             ref={video}
             src={media.proxy(id)}
-            className="size-full"
+            className="size-full cursor-pointer"
             preload="metadata"
             playsInline
             aria-label="Stream preview"
-            onLoadedMetadata={() => {
-              const resume = parts.find(([, b]) => wanted.current < b) ?? parts[0];
-              seek(Math.max(resume[0], wanted.current < resume[1] ? wanted.current : resume[0]));
+            onClick={toggle}
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              v.volume = loadSetting("clipper.previewVolume", 1);
+              v.playbackRate = rate;
+              const at = clock.get();
+              const resume = parts.find(([, b]) => at < b) ?? parts[0];
+              if (resume) seek(Math.max(resume[0], at <= current.end ? at : resume[0]));
+            }}
+            muted={muted}
+            onSeeked={(e) => {
+              const v = e.currentTarget;
+              const next = pendingSeek.current;
+              pendingSeek.current = null;
+              if (next !== null && Math.abs(next - v.currentTime) > 0.001) seek(next);
+              else clock.set(v.currentTime);
             }}
             onPlay={() => setPlaying(true)}
-            onPause={() => setPlaying(false)}
+            onPause={(e) => {
+              setPlaying(false);
+              if (!e.currentTarget.seeking) clock.set(e.currentTarget.currentTime);
+            }}
             onEnded={() => setPlaying(false)}
-            onError={() => { setMediaError(true); setPlaying(false); }}
+            onError={() => {
+              pendingSeek.current = null;
+              setMediaError(true);
+              setPlaying(false);
+            }}
           />
-          <div aria-live="polite" className="absolute inset-x-0 bottom-0 bg-black/80 px-4 py-3 text-sm">
-            <span className="font-semibold">Piece {position + 1} of {pieces.length}</span>
-            {" · "}{current.title}{" · "}{length(keptLength(current))}
-          </div>
           {mediaError && (
             <div className="absolute inset-0 grid place-content-center gap-2 bg-black/80 p-4 text-center">
               <p>The preview is unavailable. It may still be processing.</p>
               <Button onClick={() => { setMediaError(false); setAttempt((n) => n + 1); }}>Retry preview</Button>
             </div>
           )}
+          </div>
+          <div className="space-y-2 px-4 py-3">
+            <PieceProgress clip={current} clock={clock} duration={duration} disabled={controlsDisabled} onSeek={seekPiece} />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button disabled={controlsDisabled} onClick={toggle}>{playing ? "Pause" : "Play"}</Button>
+              <Button disabled={controlsDisabled} aria-label="Back 10 seconds" onClick={() => skip(-10)}>−10s</Button>
+              <Button disabled={controlsDisabled} aria-label="Forward 10 seconds" onClick={() => skip(10)}>+10s</Button>
+              <div className="flex-1" />
+              <select
+                aria-label="Playback speed"
+                className="rounded-md bg-panel-2 px-2 py-1.5 text-sm focus-visible:outline-mark disabled:opacity-60"
+                disabled={controlsDisabled}
+                value={rate}
+                onChange={(e) => {
+                  const speed = Number(e.target.value);
+                  setRate(speed);
+                  if (video.current) video.current.playbackRate = speed;
+                }}
+              >
+                {RATES.map((speed) => <option key={speed} value={speed}>{speed}×</option>)}
+              </select>
+              <Button disabled={controlsDisabled} onClick={() => {
+                setMuted(!muted);
+                saveSetting("clipper.previewMuted", !muted);
+              }}>{muted ? "Unmute" : "Mute"}</Button>
+            </div>
+          </div>
         </div>
       ) : (
         <div className="rounded-xl bg-panel p-5">
@@ -277,7 +354,6 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <Button disabled={busy || sequencePosition <= 0} onClick={() => moveBy(-1)}>Previous</Button>
-        <Button disabled={busy || !current || mediaError} onClick={toggle}>{playing ? "Pause" : "Play"}</Button>
         <Button disabled={busy || !playable[sequencePosition + 1]} onClick={() => moveBy(1)}>Next</Button>
         <div className="flex-1" />
         <Button disabled={busy || !current} onClick={edit}>Edit piece</Button>
@@ -286,6 +362,35 @@ function Player({ id, pieces, onChange, onError, returnPiece, returnTime, compil
         <Button tone="approve" disabled={!canDecide} onClick={() => decide("keep")}>Keep</Button>
       </div>
       <p className="text-xs text-graphite">← / → Previous / next · Space Play / pause · A Keep · R Reject · Z Undo</p>
+    </div>
+  );
+}
+
+function PieceProgress({ clip, clock, duration, disabled, onSeek }: {
+  clip: Clip;
+  clock: Clock;
+  duration: number;
+  disabled: boolean;
+  onSeek: (time: number) => void;
+}) {
+  const elapsed = useClock(clock, (t) => clipTime(clip, t));
+  const position = timecode(elapsed, 0);
+  const total = timecode(duration, 0);
+  return (
+    <div className="flex items-center gap-3">
+      <input
+        type="range"
+        aria-label="Piece playback position"
+        aria-valuetext={`${position} of ${total}`}
+        min={0}
+        max={duration}
+        step="any"
+        value={elapsed}
+        disabled={disabled}
+        onChange={(e) => onSeek(e.target.valueAsNumber)}
+        className="min-w-0 flex-1 cursor-pointer accent-mark focus-visible:outline-mark disabled:cursor-default"
+      />
+      <span className="shrink-0 font-mono text-xs tabular-nums">{position} / {total}</span>
     </div>
   );
 }

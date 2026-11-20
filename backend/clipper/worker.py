@@ -466,12 +466,14 @@ class Worker:
                     status = "proposed"
                 # The AI's pick as offered, to learn from what the owner changes (learning.py).
                 picked = c.kind != "whole"
+                gaps = cuts.dump(c.cuts)
                 s.add(ClipRecord(
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
-                    description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
+                    description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok, cuts=gaps,
                     make_short=not compilation_mode and c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
                     status=status, reviewed_at=utcnow() if status in ("approved", "kept") else None,
                     picked_start=c.start if picked else None, picked_end=c.end if picked else None,
+                    picked_cuts=gaps if picked else "",
                     picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
                     was_extra=status == "extra" if picked else None,
                 ))

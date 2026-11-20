@@ -243,6 +243,16 @@ def test_a_kept_picks_cut_appears_in_the_changed_picks(settings):
             in changed_lines(record(settings)))
 
 
+def test_the_ais_own_cuts_in_a_pick_are_not_counted_as_the_owners(settings):
+    add_clip(settings, "Kept as cut", start=0.0, end=600.0, status="kept",
+             cuts=json.dumps([[50.0, 60.0]]), picked_cuts=json.dumps([[50.0, 60.0]]))
+    add_clip(settings, "One more cut", start=0.0, end=600.0, status="kept",
+             cuts=json.dumps([[50.0, 60.0], [100.0, 110.0]]), picked_cuts=json.dumps([[50.0, 60.0]]))
+
+    lines = changed_lines(record(settings))
+    assert len(lines) == 1 and lines[0].startswith('- Clip "One more cut": they cut out 10 s')
+
+
 def test_a_cut_in_the_compilation_is_credited_to_the_clip_it_falls_in_and_not_the_gaps(settings):
     # Kept without review: only the cut the owner made in the compilation makes them changed.
     add_clip(settings, "Opening", start=0.0, end=60.0, status="kept", looked=False)

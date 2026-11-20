@@ -4,7 +4,8 @@ mid-sentence, within length limits, and with no overlapping highlights."""
 import logging
 from bisect import bisect_left, bisect_right
 
-from ..models import Clip, Segmentation, Transcript
+from .. import cuts
+from ..models import Clip, LLMCompilationPiece, LLMHighlight, Segmentation, Transcript
 from ..timecode import to_seconds
 from ..workspace import Workspace, write_json
 
@@ -19,6 +20,7 @@ MIN_TAIL_S = 0.35  # kept even when the next word follows immediately
 MIN_CHAPTER_S = 60.0
 MIN_HIGHLIGHT_S = 10.0
 MAX_HIGHLIGHT_S = 180.0  # YouTube's Shorts limit
+MAX_COMPILATION_PIECE_S = 20 * 60
 MAX_OVERLAP = 0.25  # of the shorter highlight; more than this and the lower-scored one is dropped
 MAX_TITLE = 100
 
@@ -191,15 +193,46 @@ def _highlights(seg: Segmentation, snap: Snapper, duration: float, *,
                 kept[i - 1] = (a, seam, previous, prev_start, prev_end)
                 kept[i] = (seam, d, current, cur_start, cur_end)
 
-    return [
-        Clip(
-            id=f"hl{n:02d}", kind="highlight", start=round(s, 2), end=round(e, 2),
+    clips = []
+    for n, (s, e, hl, _, _) in enumerate(kept, 1):
+        s, e = round(s, 2), round(e, 2)
+        gaps = []
+        if compilation_mode:
+            gaps = _piece_cuts(hl, snap, s, e)
+            if cuts.kept_length(s, e, gaps) > MAX_COMPILATION_PIECE_S:
+                # Count only kept footage toward the cap, even if the raw span is much longer.
+                limit = cuts.stream_time(cuts.kept(s, e, gaps), MAX_COMPILATION_PIECE_S)
+                clean_end = snap.end(limit - TAIL_S)
+                if limit - SEARCH_S <= clean_end <= limit:
+                    limit = clean_end
+                s, e, gaps = cuts.tidy(s, round(limit, 2), gaps)
+            if round(cuts.kept_length(s, e, gaps), 2) < minimum:
+                continue
+        clips.append(Clip(
+            id=f"hl{n:02d}", kind="highlight", start=s, end=e, cuts=gaps,
             title=clean_title(hl.title), description=hl.description.strip(), score=_unit(hl.score),
             why=hl.why.strip(), vertical_ok=hl.vertical_ok and not compilation_mode, llm_start=hl.start, llm_end=hl.end,
-        )
-        for n, (s, e, hl, _, _) in enumerate(kept, 1)
-        if not compilation_mode or round(e - s, 2) >= minimum
-    ]
+        ))
+    return clips
+
+
+def _piece_cuts(piece: LLMHighlight, snap: Snapper, start: float, end: float) -> list[cuts.Cut]:
+    """Snap filler cuts outward from the lines that stay on either side of the join."""
+    if not isinstance(piece, LLMCompilationPiece):
+        return []
+    gaps = []
+    for gap in piece.cuts:
+        try:
+            after, before = to_seconds(gap.after), to_seconds(gap.before)
+        except ValueError:
+            log.warning("Skipping cut in %r: bad timecodes %r-%r", piece.title, gap.after, gap.before)
+            continue
+        if after >= before or snap._named_start(after) is None or snap._named_start(before) is None:
+            continue
+        a, b = round(snap.end(after), 2), round(snap.start(before), 2)
+        if start + cuts.EDGE_S < a < b < end - cuts.EDGE_S:
+            gaps.append((a, b))
+    return cuts.tidy(start, end, gaps)[2]
 
 
 def _overlap(a0: float, a1: float, b0: float, b1: float) -> float:

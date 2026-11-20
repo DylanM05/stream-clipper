@@ -52,6 +52,10 @@ export function kept({ start, end, cuts }: Geometry): Range[] {
 /** How long the clip comes out, with the cuts taken out. */
 export const keptLength = (g: Geometry) => kept(g).reduce((sum, [a, b]) => sum + b - a, 0);
 
+/** How far into the finished clip a stream time falls. Time spent in cuts doesn't count. */
+export const clipTime = (g: Geometry, t: number) =>
+  kept(g).reduce((sum, [a, b]) => sum + clamp(t - a, 0, b - a), 0);
+
 /** Where in the stream the clip, as it comes out, is `t` seconds in. */
 export function streamTime(g: Geometry, t: number): number {
   let left = Math.max(0, t);
