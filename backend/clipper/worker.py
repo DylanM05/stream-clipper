@@ -23,6 +23,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from sqlalchemy import text
 from sqlmodel import Session, col, or_, and_, select
 
 from . import compilation, cuts, ffmpeg, learning, notify, rumble_upload, stats, thumbnails, titles, transcripts
@@ -55,7 +56,7 @@ STATS_EVERY_S = 1800
 DIGEST_HOUR = 9  # Monday, in CLIPPER_TIMEZONE: the week's uploads and their views
 MAX_AUTO_RETRIES = 3  # nights a failed upload is tried again by itself
 QUOTA_TIMEZONE = "America/Los_Angeles"  # the YouTube API quota resets at midnight here
-COMPILE_DELAY_S = 10  # a stream's compilation waits this long after its last review decision, for the inbox's Undo
+COMPILE_DELAY_S = compilation.COMPILE_DELAY_S
 
 
 class Paused(Exception):
@@ -220,7 +221,10 @@ class Worker:
             meta = ws.meta()
             duration = meta.get("duration") or probe_duration(ws.source)
             show = self._show_for(vod, meta)
-            mode = show.mode if show and vod.mode_auto else vod.mode
+            mode = show.mode if show and vod.mode_auto and not vod.makes_compilation else vod.mode
+            if mode == "compilation" and not show:
+                raise ValueError("Compilation mode requires a show")
+            compilation_mode = mode == "compilation"
             self._update_vod(
                 vod_id,
                 workspace=ws.root.name,
@@ -245,7 +249,7 @@ class Worker:
             preview = self._preview(vod_id, ws) if early else None
             clips: list[Clip] = []
             episode_title = episode_summary = chapters = ""
-            if mode in ("segment", "both"):
+            if mode in ("segment", "both", "compilation"):
                 self._start(vod_id, "transcribing", "processing")
                 audio.extract(ws)
                 transcript = transcribe.run(ws, settings, on_progress=self._progress(vod_id, "processing"))
@@ -267,10 +271,11 @@ class Worker:
                     breakdown=show.breakdown_categories() if show else None,
                     video_type=video_type,
                     offered_shorts=show.max_shorts if show else 5,
+                    compilation_mode=compilation_mode,
                 )
                 if show and show.save_transcripts:
                     self._save_transcript(show, vod, ws, transcript)
-                clips = refine.run(ws, segmentation, transcript)
+                clips = refine.run(ws, segmentation, transcript, compilation_mode=compilation_mode)
                 for c in clips:
                     c.title = titles.build(clip_template, c.title, day)
                 episode_title, episode_summary = segmentation.episode_title, segmentation.episode_summary
@@ -292,11 +297,10 @@ class Worker:
 
             # Whether approving a pick here keeps it for the compilation, fixed for the stream's life from its show
             # now. Set before the clips are added, so Keep works on them as soon as the inbox lists them.
-            compiling = bool(show and show.compilation)
-            self._update_vod(vod_id, makes_compilation=compiling)
+            compiling = compilation_mode or bool(show and show.compilation)
             # The clips don't need the preview: ones going ahead without review start rendering now, and the
             # inbox lists the rest. Only playing them in the app waits for it.
-            added = self._add_clips(vod_id, clips, show, compiling)
+            added = self._add_clips(vod_id, clips, show, compiling, compilation_mode=compilation_mode)
             if summary := _added_summary(added):
                 if preview.is_alive():
                     summary += "\nThe preview to watch them in the app is still being made."
@@ -433,7 +437,8 @@ class Worker:
             log.warning("No title preview from the AI (%s); using the post's first line", e)
             return ""
 
-    def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None, compiling: bool = False) -> dict[str, int]:
+    def _add_clips(self, vod_id: int, clips: list[Clip], show: Show | None, compiling: bool = False, *,
+                   compilation_mode: bool = False) -> dict[str, int]:
         """Add clips the database doesn't have yet, so re-running a video never duplicates them.
 
         The full episode and the show's best chapters and highlights go to the inbox, or straight to
@@ -442,9 +447,11 @@ class Worker:
         review is kept for it instead, and never posted by itself. Returns how many were added with each
         status, counting that stream's chapters and highlights left to review as "to_keep".
         """
-        offered = best_picks(clips, show)
+        offered = {c.id for c in clips} if compilation_mode else best_picks(clips, show)
         added: dict[str, int] = {}
         with Session(self.engine) as s:
+            vod = s.get(Vod, vod_id)
+            vod.makes_compilation = compiling
             existing = set(s.exec(select(ClipRecord.key).where(ClipRecord.vod_id == vod_id)))
             for c in clips:
                 if c.id in existing:
@@ -453,7 +460,7 @@ class Worker:
                 playlist = (show.episode_playlist_id if c.kind == "whole" else show.clip_playlist_id) if show else ""
                 if c.id not in offered:
                     status = "extra"
-                elif show and show.auto_for_clip(c.kind, c.score) != "review":
+                elif show and not compilation_mode and show.auto_for_clip(c.kind, c.score) != "review":
                     status = "kept" if compiling and c.kind in PICKED_KINDS else "approved"
                 else:
                     status = "proposed"
@@ -462,7 +469,7 @@ class Worker:
                 s.add(ClipRecord(
                     vod_id=vod_id, key=c.id, kind=c.kind, start=c.start, end=c.end, title=c.title,
                     description=c.description, why=c.why, score=c.score, vertical_ok=c.vertical_ok,
-                    make_short=c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
+                    make_short=not compilation_mode and c.kind == "highlight" and c.vertical_ok, destination_id=destination, playlist_id=playlist,
                     status=status, reviewed_at=utcnow() if status in ("approved", "kept") else None,
                     picked_start=c.start if picked else None, picked_end=c.end if picked else None,
                     picked_title=titles.own_part(show.title_template if show else "{title}", c.title) if picked else "",
@@ -722,16 +729,19 @@ class Worker:
         its one clip is only kept, the owner is told. True if one was dealt with."""
         lone = None
         with Session(self.engine) as s:
-            for vod in s.exec(select(Vod).where(col(Vod.compilation_due).is_(True), Vod.status == "ready")):
+            due = select(Vod).where(col(Vod.compilation_due).is_(True), Vod.status == "ready")
+            if not s.exec(due.limit(1)).first():
+                return False
+            s.rollback()
+            # Serialize the review snapshot and write with status changes, especially Undo of the last decision.
+            s.execute(text("BEGIN IMMEDIATE"))
+            for vod in s.exec(due):
                 clips = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
-                if any(c.kind in PICKED_KINDS and c.status == "proposed" for c in clips):
-                    continue
-                decided = [_aware(c.reviewed_at) for c in clips if c.kind in PICKED_KINDS and c.reviewed_at]
-                if decided and utcnow() - max(decided) < timedelta(seconds=COMPILE_DELAY_S):
+                if compilation.review_pending(clips, utcnow()):
                     continue
                 show = s.get(Show, vod.show_id) if vod.show_id else None
                 made = any(c.kind == "compilation" for c in clips)
-                plan = None if made or not show or vod.cleaned_at else compilation.plan(clips, show.title_template)
+                plan = None if made or not show or vod.cleaned_at else compilation.for_vod(vod, clips, show.title_template)
                 vod.compilation_due = False
                 s.add(vod)
                 if not plan:
@@ -782,7 +792,8 @@ class Worker:
     def _episode_name(ws: Workspace, vod: Vod) -> str:
         """The AI's title for the whole stream, or the stream's own."""
         try:
-            found = Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
+            cache = ws.compilation_segmentation_json if vod.mode == "compilation" else ws.segmentation_json
+            found = Segmentation.model_validate_json(cache.read_text(encoding="utf-8"))
             return found.episode_title or vod.title
         except (OSError, ValueError):
             return vod.title
@@ -1305,11 +1316,6 @@ def best_picks(clips: list[Clip], show: Show | None) -> set[str]:
         ranked = sorted((c for c in clips if c.kind == kind), key=lambda c: c.score, reverse=True)
         picks |= {c.id for c in ranked[:limit]}
     return picks
-
-
-def _aware(when: datetime) -> datetime:
-    """A time from the database, which SQLite gives back without its UTC zone."""
-    return when if when.tzinfo else when.replace(tzinfo=timezone.utc)
 
 
 def _added_summary(added: dict[str, int]) -> str:

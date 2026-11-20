@@ -370,7 +370,7 @@ def test_compilation_out_lists_kept_and_to_review_ranges_and_its_standing(
         s.commit()
     detail = client.get(f"/api/vods/{vod_id}").json()
     assert detail["vod"]["compilation"] == {
-        "vod_id": vod_id, "vod_title": "Late night stream", "vod_duration": 3600.0, "kept": kept, "to_review": to_review, "clips": count,
+        "compilation_mode": False, "vod_id": vod_id, "vod_title": "Late night stream", "vod_duration": 3600.0, "kept": kept, "to_review": to_review, "clips": count,
         "length": 30.0 * len(kept), "clip_id": None, "status": standing, "changed": False,
     }
     assert {c["in_compilation"] for c in detail["clips"]} == {True}
@@ -438,3 +438,83 @@ def test_the_compilations_endpoint_doesnt_work_out_streams_past_the_inbox(settin
     monkeypatch.setattr(compilation, "plan", planned)
     monkeypatch.setattr(compilation, "kept_parts", planned)
     assert client.get("/api/compilations").json() == []
+
+
+def test_compilation_mode_reviews_every_piece_and_rebuilds_with_the_same_gap(settings, client):
+    vod_id = stream(settings, ["proposed", "proposed", "proposed"])
+    with Session(get_engine(settings)) as s:
+        s.get(Vod, vod_id).mode = "compilation"
+        s.commit()
+    set_clip(settings, "hl01", start=31, end=61, cuts="[[45,46]]")
+    first, second, third = clips(settings, vod_id)
+    worker = worker_module.Worker(settings)
+
+    assert client.post(f"/api/clips/{first.id}/approve").status_code == 422
+    first_url = f"/api/clips/{first.id}"
+    version = client.get(first_url).json()["updated_at"]
+    assert client.post(f"{first_url}/keep", params={"version": version}).json()["status"] == "kept"
+    assert client.post(f"{first_url}/reject", params={"version": version}).status_code == 409
+    assert client.post(f"/api/clips/{second.id}/keep").json()["status"] == "kept"
+    assert worker.compile_next() is False
+    decision = client.post(f"/api/clips/{third.id}/reject").json()
+    assert decision["status"] == "rejected"
+    assert worker.compile_next() is False
+    undo = f"/api/clips/{third.id}/restore"
+    assert client.post(undo, params={"review_undo": decision["updated_at"]}).json()["status"] == "proposed"
+    set_clip(settings, "hl02", reviewed_at=long_ago())
+    assert worker.compile_next() is False  # Undo restored the last pending piece.
+    newer = client.post(f"/api/clips/{third.id}/reject").json()
+    assert client.post(undo, params={"review_undo": decision["updated_at"]}).status_code == 409
+    for c in (first, second, third):
+        set_clip(settings, c.key, reviewed_at=long_ago())
+    assert worker.compile_next() is True
+    assert client.post(undo, params={"review_undo": newer["updated_at"]}).status_code == 409
+
+    made = clips(settings, vod_id)[-1]
+    out = client.get(f"/api/clips/{made.id}").json()
+    assert out["end"] == 61
+    assert out["cuts"] == [[45, 46]]  # Joined the one-second gap but respected the editor cut.
+    assert not out["compilation_changed"]
+    assert client.patch(f"/api/clips/{made.id}", json={"cuts": [[45, 46], [48, 52]]}).status_code == 200
+    assert client.post(f"/api/clips/{third.id}/restore").status_code == 200
+    rebuild = f"/api/clips/{made.id}/rebuild"
+    assert client.post(rebuild).status_code == 409
+    assert client.post(f"/api/clips/{third.id}/reject").status_code == 200
+    assert client.post(rebuild).status_code == 409
+    set_clip(settings, "hl02", reviewed_at=long_ago())
+    set_clip(settings, "hl01", end=62)
+    assert client.get(f"/api/clips/{made.id}").json()["compilation_changed"]
+    rebuilt = client.post(f"/api/clips/{made.id}/rebuild").json()
+    assert rebuilt["cuts"] == [[45, 46], [48, 52]]
+    assert rebuilt["end"] == 62
+    assert not rebuilt["compilation_changed"]
+
+
+def test_compilation_mode_does_not_fill_a_small_gap_over_a_trimmed_piece_end():
+    first = clip("hl01", 0, 30, status="kept")
+    first.picked_end, first.picked_start = 31, 0
+    second = clip("hl02", 31, 50, status="kept")
+    plan = compilation.plan([first, second], "", gap=1.5)
+    assert plan.cuts == [(30, 31)]
+
+
+def test_compilation_mode_can_publish_a_single_kept_piece_after_undo_closes(settings, client):
+    vod_id = stream(settings, ["proposed", "rejected"])
+    with Session(get_engine(settings)) as s:
+        s.get(Vod, vod_id).mode = "compilation"
+        s.commit()
+    first = clips(settings, vod_id)[0]
+    assert client.post(f"/api/clips/{first.id}/keep").status_code == 200
+    assert client.get(f"/api/vods/{vod_id}").json()["vod"]["compilation"]["status"] == "making"
+    worker = worker_module.Worker(settings)
+    assert not worker.compile_next()
+    set_clip(settings, first.key, reviewed_at=long_ago())
+    assert worker.compile_next()
+    made = clips(settings, vod_id)[-1]
+    assert (made.kind, made.status, made.start, made.end) == ("compilation", "proposed", 0, 30)
+    assert not client.get(f"/api/clips/{made.id}").json()["compilation_changed"]
+    assert client.patch(f"/api/clips/{first.id}", json={"start": 15.06, "end": 16.06}).status_code == 200
+    set_clip(settings, first.key, reviewed_at=long_ago())
+    rebuilt = client.post(f"/api/clips/{made.id}/rebuild")
+    assert rebuilt.status_code == 200
+    assert (rebuilt.json()["start"], rebuilt.json()["end"]) == (15.06, 16.06)

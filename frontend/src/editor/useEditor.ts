@@ -135,6 +135,7 @@ export function useEditor(source: Source, desktop: boolean) {
   const editable = draft.kind !== "whole";
   // A chapter or highlight of a stream that makes a compilation: Approve is Keep there.
   const compiling = source.mode === "edit" ? source.clip.in_compilation : source.vod.compilation !== null;
+  const compilationPiece = source.mode === "edit" ? source.clip.compilation_piece : source.vod.mode === "compilation";
   const fullTitle =
     source.mode === "new"
       ? source.info.title_pattern.replaceAll("{title}", draft.title).split(/\s+/).filter(Boolean).join(" ")
@@ -458,9 +459,9 @@ export function useEditor(source: Source, desktop: boolean) {
       if (source.mode !== "edit") return;
       const c = source.clip;
       // Extras are opened from their video, so that's where to go back to.
-      const next = c.status === "proposed" ? await nextClipAfter(c.id) : null;
+      const next = c.status === "proposed" && !c.compilation_piece ? await nextClipAfter(c.id) : null;
       if (dirty) await api.updateClip(c.id, changes);
-      await (decision === "keep" ? api.keep(c.id) : decision === "approve" ? api.approve(c.id) : api.reject(c.id));
+      const decidedClip = await (decision === "keep" ? api.keep(c.id) : decision === "approve" ? api.approve(c.id) : api.reject(c.id));
       // Undo opens the clip again, in place of the next one if that's still showing.
       const reopen = () => (location.hash.startsWith("#/clip/") ? goInstead : go)(`clip/${c.id}`);
       const text = {
@@ -468,7 +469,7 @@ export function useEditor(source: Source, desktop: boolean) {
         approve: c.in_compilation ? "Kept. It will also render to post by itself." : "Approved: it will render shortly",
         reject: "Rejected",
       }[decision];
-      toast({ text, action: { label: "Undo", run: () => void api.restore(c.id).then(reopen) } });
+      toast({ text, action: { label: "Undo", run: () => void api.restore(c.id, c.compilation_piece ? decidedClip.updated_at : undefined).then(reopen, (e) => toast({ text: errorText(e) })) } });
       // The next clip takes this one's place, so Back goes straight to where you started; after the last, that's
       // where this goes.
       if (next) goInstead(next);
@@ -558,7 +559,7 @@ export function useEditor(source: Source, desktop: boolean) {
 
   return {
     source, clip, vodId, length, draft, setDraft, busy, dirty, needsRender, changes, duration, editable, fullTitle,
-    compiling, compilation, compilationFrom, why, active: !!clip && ACTIVE.includes(clip.status),
+    compiling, compilationPiece, compilation, compilationFrom, why, active: !!clip && ACTIVE.includes(clip.status),
     // history
     commit, live, undo, redo, canUndo: past.current.length > 0, canRedo: future.current.length > 0,
     // playback

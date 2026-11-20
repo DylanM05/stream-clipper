@@ -24,7 +24,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import func
+from sqlalchemy import func, text
 from sqlmodel import Session, col, select
 from starlette.concurrency import run_in_threadpool
 
@@ -59,7 +59,8 @@ REPO_WEB_DIR = Path(__file__).resolve().parents[3] / "frontend" / "dist"
 # home-screen app and has no login cookie. The signed `state` it carries stands in for the login there.
 PUBLIC_PATHS = {"/api/session", "/api/login", CALLBACK_PATH}
 SIGN_IN_MAX_AGE_S = 3600
-Mode = Literal["segment", "whole", "both"]
+StandaloneMode = Literal["segment", "whole", "both"]
+Mode = Literal["segment", "whole", "both", "compilation"]
 VideoType = Literal["streams", "episodes", "other"]  # db.VIDEO_TYPES
 BacklogOrder = Literal["first", "latest", "random"]  # db.BACKLOG_ORDERS
 YoutubeWatch = Literal["both", "streams", "videos"]  # db.YOUTUBE_WATCH
@@ -77,6 +78,8 @@ ACTIVE_CLIP = ("approved", "rendering", "rendered", "failed")
 
 class CompilationOut(BaseModel):
     """Where a stream that makes a compilation (Vod.makes_compilation) stands with it."""
+
+    compilation_mode: bool
     vod_id: int
     vod_title: str
     vod_duration: float  # the stream's length, which the strip is drawn against
@@ -164,6 +167,7 @@ class ClipOut(BaseModel):
     upload_state: str
     next_upload: str | None
     upload_error: str
+    compilation_piece: bool  # this piece can only be kept for the compilation
     in_compilation: bool  # a chapter or highlight of a stream that makes a compilation: approving it keeps it
     compilation_clips: int  # for a compilation, how many clips the stream's kept and approved ones make it now
     compilation_changed: bool  # for a compilation not yet uploaded, whether it's out of date (compilation.is_changed)
@@ -211,7 +215,7 @@ class NewClipInfo(BaseModel):
 
 class NewVod(BaseModel):
     url: str = Field(min_length=4, max_length=2000)
-    mode: Mode | None = None  # picked from the show or the link when missing
+    mode: StandaloneMode | None = None  # Compilation is selected through the show
     notes: str = Field(default="", max_length=5000)
 
 
@@ -841,17 +845,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if made:
             kept, status = cuts.kept(made.start, made.end, cuts.parse(made.cuts)), made.status
         else:
-            kept = compilation.kept_parts(picks)
-            status = "waiting" if to_review else "none" if not picks else "one" if len(picks) == 1 else "making"
+            kept = compilation.kept_parts(picks, gap=compilation.merge_gap(vod), clips=clips)
+            status = "waiting" if to_review else "none" if not picks else "one" if len(picks) == 1 and vod.mode != "compilation" else "making"
         return CompilationOut(
+            compilation_mode=vod.mode == "compilation",
             vod_id=vod.id, vod_title=vod.title or vod.url, vod_duration=vod.duration, kept=kept, to_review=to_review, clips=len(picks),
             length=sum(b - a for a, b in kept), clip_id=made.id if made else None, status=status,
-            changed=bool(made) and out_of_date(made, clips),
+            changed=bool(made) and out_of_date(made, clips, vod),
         )
 
-    def out_of_date(clip: ClipRecord, clips: list[ClipRecord]) -> bool:
+    def out_of_date(clip: ClipRecord, clips: list[ClipRecord], vod: Vod) -> bool:
         """For a compilation, whether the stream's `clips` now make a different one; never once it's uploaded."""
-        return clip.status != "uploaded" and compilation.is_changed(clip, compilation.plan(clips, ""))
+        return clip.status != "uploaded" and compilation.is_changed(
+            clip, compilation.for_vod(vod, clips, ""),
+        )
 
     def channel_out(s: Session, ch: Channel) -> ChannelOut:
         waiting = s.exec(
@@ -937,9 +944,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             upload_state=upload_state,
             next_upload=iso(next_upload),
             upload_error=upload_error,
+            compilation_piece=vod.mode == "compilation" and clip.kind in PICKED_KINDS,
             in_compilation=clip.kind in PICKED_KINDS and vod.makes_compilation,
             compilation_clips=len(compilation.included(stream)),
-            compilation_changed=clip.kind == "compilation" and out_of_date(clip, stream),
+            compilation_changed=clip.kind == "compilation" and out_of_date(clip, stream, vod),
             updated_at=iso(clip.updated_at),
         )
 
@@ -1033,7 +1041,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if cut_list and kind == "whole":
             raise HTTPException(422, "A full episode goes up as the stream is, so parts can't be cut out of it")
         length = cuts.kept_length(start, end, cut_list)
-        if start < 0 or end - start < 1 or length < 1 or (vod.duration and end > vod.duration + 0.5):
+        if start < 0 or length < 1 - 1e-9 or (vod.duration and end > vod.duration + 0.5):
             raise HTTPException(422, "The clip must be at least 1 second long and inside the video")
         if make_short and kind not in ("chapter", "highlight"):
             raise HTTPException(422, "Only a clip or a highlight can also be a Short")
@@ -1436,7 +1444,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return [round(v, 4) for v in box]
 
     def check_split(show: Show) -> None:
-        if show.short_layout == "split" and not show.short_webcams:
+        if show.mode != "compilation" and show.short_layout == "split" and not show.short_webcams:
             raise HTTPException(422, "Mark where the webcam is first")
 
     @app.delete("/api/shows/{show_id}", status_code=204)
@@ -2037,6 +2045,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     def update_clip(clip_id: int, patch: ClipPatch, s: Session = Depends(db)) -> ClipOut:
         clip, vod = get_clip(s, clip_id)
         changes = patch.model_dump(exclude_unset=True)
+        if vod.mode == "compilation" and clip.kind in PICKED_KINDS and changes.get("make_short"):
+            raise HTTPException(422, "Compilation pieces cannot be made into Shorts")
         if "title" in changes:
             changes["title"] = " ".join((changes["title"] or "").split())
             if not changes["title"]:
@@ -2071,17 +2081,27 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @app.post("/api/clips/{clip_id}/approve")
     def approve(clip_id: int, s: Session = Depends(db)) -> ClipOut:
         clip, vod = get_clip(s, clip_id)
+        if vod.mode == "compilation" and clip.kind in PICKED_KINDS:
+            raise HTTPException(422, "Compilation pieces can only be kept for their compilation")
         if clip.status in ("approved", "rendering", "rendered", "uploaded"):
             return clip_out(clip, vod)
         if vod.cleaned_at:
             raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
         return set_status(s, clip, vod, "approved")
 
+    def review_piece(s: Session, clip_id: int, version: str | None) -> tuple[ClipRecord, Vod]:
+        if version is not None:
+            s.execute(text("BEGIN IMMEDIATE"))
+        clip, vod = get_clip(s, clip_id)
+        if version is not None and (clip.status != "proposed" or version != iso(clip.updated_at)):
+            raise HTTPException(409, "This piece changed. Review the latest version before deciding.")
+        return clip, vod
+
     @app.post("/api/clips/{clip_id}/keep")
-    def keep(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+    def keep(clip_id: int, version: str | None = None, s: Session = Depends(db)) -> ClipOut:
         """Keep a chapter or highlight for its stream's compilation only. One that was to be posted by itself too
         ("Compilation only") has its render and queued uploads discarded, as restore does."""
-        clip, vod = get_clip(s, clip_id)
+        clip, vod = review_piece(s, clip_id, version)
         if clip.kind not in PICKED_KINDS or not vod.makes_compilation:
             raise HTTPException(422, "Only a clip or a highlight of a stream that makes a compilation can be kept for it")
         if clip.status == "kept":
@@ -2099,6 +2119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         """Make a compilation again from the clips its stream keeps now, with the parts the owner cut out of it kept
         out wherever they're still in it. Its title, channel and playlist stay; its description is written again.
         Its render is discarded, and it goes to the inbox or to render as the show's compilations do."""
+        s.execute(text("BEGIN IMMEDIATE"))
         clip, vod = get_clip(s, clip_id)
         if clip.kind != "compilation":
             raise HTTPException(422, "Only a compilation can be rebuilt")
@@ -2107,16 +2128,20 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if vod.cleaned_at:
             raise HTTPException(409, "This stream's video files were deleted to free space, so it can't be cut any more")
         show = s.get(Show, vod.show_id) if vod.show_id else None
-        plan = compilation.plan(s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all(),
-                                show.title_template if show else "")
+        stream = s.exec(select(ClipRecord).where(ClipRecord.vod_id == vod.id)).all()
+        if vod.mode == "compilation" and compilation.review_pending(stream, utcnow()):
+            raise HTTPException(409, "Review every piece and wait 10 seconds after the last decision before rebuilding")
+        plan = compilation.for_vod(vod, stream, show.title_template if show else "")
         if not plan:
-            raise HTTPException(409, "Only one clip is kept now. Post it by itself, or reject the compilation.")
+            message = ("Keep at least one piece to rebuild the compilation." if vod.mode == "compilation"
+                       else "Only one clip is kept now. Post it by itself, or reject the compilation.")
+            raise HTTPException(409, message)
         gone = [] if clip.picked_start is None else cuts.removed(
             clip.start, clip.end, cuts.parse(clip.cuts),
             clip.picked_start, clip.picked_end or clip.end, cuts.parse(clip.picked_cuts),
         )
         start, end, cut_list = cuts.tidy(plan.start, plan.end, plan.cuts + gone)
-        if cuts.kept_length(start, end, cut_list) < 1:
+        if cuts.kept_length(start, end, cut_list) < 1 - 1e-9:
             raise HTTPException(409, "Nothing you didn't cut out of it is kept now. Reject the compilation instead.")
         if clip.status in ACTIVE_CLIP:
             discard_render(s, clip, vod)
@@ -2322,9 +2347,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return clip_out(clip, vod)
 
     @app.post("/api/clips/{clip_id}/reject")
-    def reject(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+    def reject(clip_id: int, version: str | None = None, s: Session = Depends(db)) -> ClipOut:
         """Also deletes a render, so a clip that's ready to upload can be thrown away."""
-        clip, vod = get_clip(s, clip_id)
+        clip, vod = review_piece(s, clip_id, version)
         if clip.status == "uploaded":
             raise HTTPException(409, "It's on YouTube already")
         if clip.status in ACTIVE_CLIP:
@@ -2332,9 +2357,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return set_status(s, clip, vod, "rejected")
 
     @app.post("/api/clips/{clip_id}/restore")
-    def restore(clip_id: int, s: Session = Depends(db)) -> ClipOut:
+    def restore(clip_id: int, review_undo: str | None = None, s: Session = Depends(db)) -> ClipOut:
         """Back to the inbox: undo for approve and reject, or taking back an approved clip (its render is deleted)."""
+        if review_undo is not None:
+            s.execute(text("BEGIN IMMEDIATE"))
         clip, vod = get_clip(s, clip_id)
+        if review_undo is not None:
+            last_decision = clip.reviewed_at
+            if vod.mode != "compilation" or clip.kind not in PICKED_KINDS or clip.status not in ("kept", "rejected"):
+                raise HTTPException(409, "This piece no longer has a review decision to undo")
+            if review_undo != iso(clip.updated_at):
+                raise HTTPException(409, "This piece changed after your decision")
+            if vod.cleaned_at or not compilation.undo_open(last_decision, utcnow()):
+                raise HTTPException(409, "The undo window for this piece has closed")
         if clip.status == "uploaded":
             raise HTTPException(409, "It's on YouTube already")
         if clip.status in ACTIVE_CLIP:
@@ -2418,7 +2453,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         title = " ".join(body.title.split())
         if not title:
             raise HTTPException(422, "The title can't be empty")
-        make_short = body.make_short and body.kind == "highlight"
+        if vod.mode == "compilation" and body.approve:
+            raise HTTPException(422, "Compilation pieces can only be kept for their compilation")
+        make_short = vod.mode != "compilation" and body.make_short and body.kind == "highlight"
         start, end, cut_list = checked_cuts(body.kind, vod, body.start, body.end, body.cuts, make_short)
         check_destinations(s, body.destination_id)
         if body.keep and not vod.makes_compilation:
@@ -2431,6 +2468,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             title=title, description=body.description.strip(), vertical_ok=body.kind == "highlight", make_short=make_short,
             destination_id=body.destination_id, playlist_id=body.playlist_id if body.destination_id else "",
             manual=True, status=status, reviewed_at=utcnow() if status != "proposed" else None,
+            picked_start=start if vod.mode == "compilation" else None,
+            picked_end=end if vod.mode == "compilation" else None,
             approved_in_review=status != "proposed",
         )
         s.add(clip)

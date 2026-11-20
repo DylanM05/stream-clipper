@@ -53,7 +53,7 @@ const CLIP_STATUS: Record<ClipStatus, [string, string]> = {
   failed: ["Render failed", "bg-red-500/15 text-red-300"],
 };
 
-export const MODE_LABEL: Record<Mode, string> = { segment: "Clips", whole: "Full episode", both: "Full episode + clips" };
+export const MODE_LABEL: Record<Mode, string> = { segment: "Clips", whole: "Full episode", both: "Full episode + clips", compilation: "Compilation" };
 export const VIDEO_TYPE_LABEL: Record<VideoType, string> = { streams: "Streams", episodes: "TV episodes", other: "Other videos" };
 
 const VOD_STATUS: Record<VodStatus, [string, string]> = {

@@ -3,6 +3,7 @@ import { api } from "./api";
 import { FilmIcon, InboxIcon, MoreIcon, TvIcon, UploadIcon } from "./icons";
 import { cn, useDesktop, usePoll, useRoute } from "./lib";
 import { Approved } from "./screens/Approved";
+import { CompilationReview } from "./screens/CompilationReview";
 import { ClipEditor, NewClip } from "./screens/ClipEditor";
 import { Inbox } from "./screens/Inbox";
 import { AddToLibrary, BacklogPage, Library } from "./screens/Library";
@@ -67,7 +68,10 @@ function Shell() {
   }
 
   let page;
-  if (screen === "videos") page = param ? <VideoDetail key={param} id={Number(param)} /> : <Videos />;
+  if (screen === "review" && param) {
+    const [piece, time] = route.slice(2, 4).map(Number);
+    page = <CompilationReview key={param} id={Number(param)} returnPiece={piece} returnTime={time} />;
+  } else if (screen === "videos") page = param ? <VideoDetail key={param} id={Number(param)} /> : <Videos />;
   else if (screen === "library")
     page = param === "new" ? <AddToLibrary /> : param ? <BacklogPage key={param} id={Number(param)} /> : <Library />;
   else if (screen === "approved") page = <Approved />;

@@ -1011,3 +1011,29 @@ def test_recover_requeues_interrupted_work(settings, fake_pipeline):
         s.commit()
     worker_module.Worker(settings).recover()
     assert get(settings, Vod, vod_id).status == "queued"
+
+
+def test_compilation_mode_offers_short_and_multiminute_pieces_despite_show_limits(settings, fake_pipeline, monkeypatch):
+    add_show(settings, name="Night Owls", mode="compilation", match="twitch.tv/videos",
+             max_chapters=0, max_shorts=0, auto_chapters="upload", auto_shorts="upload", auto_upload_score=0.5)
+    found = SEGMENTATION.model_copy(deep=True)
+    found.highlights.append(found.highlights[0].model_copy(update={
+        "start": "00:07:00", "end": "00:11:00", "title": "Four-minute sequence",
+    }))
+
+    def segment_run(*args, **kwargs):
+        assert kwargs["compilation_mode"]
+        return found
+
+    monkeypatch.setattr(worker_module.segment, "run", segment_run)
+    vod_id = add_vod(settings)
+    worker_module.Worker(settings).process_vod(vod_id)
+
+    vod = get(settings, Vod, vod_id)
+    assert (vod.mode, vod.status) == ("compilation", "ready")
+    assert vod.makes_compilation and vod.compilation_due
+    pieces = clips(settings)
+    assert [(c.kind, c.status, c.make_short) for c in pieces] == [("highlight", "proposed", False)] * 3
+    assert pieces[-1].title == "Four-minute sequence"
+    assert pieces[-1].start <= 420
+    assert pieces[-1].end >= 660

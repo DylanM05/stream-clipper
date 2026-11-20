@@ -23,15 +23,17 @@ MAX_OVERLAP = 0.25  # of the shorter highlight; more than this and the lower-sco
 MAX_TITLE = 100
 
 
-def run(ws: Workspace, segmentation: Segmentation, transcript: Transcript) -> list[Clip]:
-    clips = refine(segmentation, transcript)
+def run(ws: Workspace, segmentation: Segmentation, transcript: Transcript, *,
+        compilation_mode: bool = False) -> list[Clip]:
+    clips = refine(segmentation, transcript, compilation_mode=compilation_mode)
     write_json(ws.segments_json, [c.model_dump() for c in clips])
     return clips
 
 
-def refine(seg: Segmentation, transcript: Transcript) -> list[Clip]:
+def refine(seg: Segmentation, transcript: Transcript, *, compilation_mode: bool = False) -> list[Clip]:
     snap = Snapper(transcript)
-    return _chapters(seg, snap, transcript.duration) + _highlights(seg, snap, transcript.duration)
+    highlights = _highlights(seg, snap, transcript.duration, compilation_mode=compilation_mode)
+    return highlights if compilation_mode else _chapters(seg, snap, transcript.duration) + highlights
 
 
 class Snapper:
@@ -50,11 +52,13 @@ class Snapper:
         self.word_starts = [w.start for w in self.words]
         self.word_ends = [w.end for w in self.words]
 
-    def start(self, t: float) -> float:
+    def _named_start(self, t: float) -> float | None:
         i = bisect_left(self.line_starts, t)
-        if i < len(self.lines) and self.lines[i].start < t + 1:
-            return self._sentence_start(self.lines[i].start, named_line=True)
-        return self._sentence_start(t, named_line=False)
+        return self.lines[i].start if i < len(self.lines) and self.lines[i].start < t + 1 else None
+
+    def start(self, t: float) -> float:
+        start = self._named_start(t)
+        return self._sentence_start(t if start is None else start, named_line=start is not None)
 
     def end(self, t: float) -> float:
         i = bisect_left(self.line_starts, t + 1) - 1
@@ -142,38 +146,59 @@ def _chapters(seg: Segmentation, snap: Snapper, duration: float) -> list[Clip]:
     return clips
 
 
-def _highlights(seg: Segmentation, snap: Snapper, duration: float) -> list[Clip]:
+def _highlights(seg: Segmentation, snap: Snapper, duration: float, *,
+                compilation_mode: bool = False) -> list[Clip]:
     candidates = []
+    minimum = 1.0 if compilation_mode else MIN_HIGHLIGHT_S
     for hl in seg.highlights:
         try:
-            s, e = snap.start(to_seconds(hl.start)), snap.end(to_seconds(hl.end))
+            raw_start, raw_end = to_seconds(hl.start), to_seconds(hl.end)
+            s, e = snap.start(raw_start), snap.end(raw_end)
         except ValueError:
             log.warning("Skipping highlight %r: bad timecodes %r-%r", hl.title, hl.start, hl.end)
             continue
         s, e = max(0.0, s), min(duration, e)
-        if e - s > MAX_HIGHLIGHT_S:
+        if not compilation_mode and e - s > MAX_HIGHLIGHT_S:
             # Leave room for the snap to move forward to a sentence end, then enforce the hard limit.
             e = min(snap.end(s + MAX_HIGHLIGHT_S - SEARCH_S - TAIL_S), s + MAX_HIGHLIGHT_S)
-        if e - s < MIN_HIGHLIGHT_S:
+        if e - s < minimum:
             log.info("Skipping highlight %r: only %.0f s long", hl.title, e - s)
             continue
-        candidates.append((s, e, hl))
+        candidates.append((s, e, hl, raw_start, raw_end))
 
     kept = []
-    for s, e, hl in sorted(candidates, key=lambda c: c[2].score, reverse=True):
-        if all(_overlap(s, e, ks, ke) <= MAX_OVERLAP * min(e - s, ke - ks) for ks, ke, _ in kept):
-            kept.append((s, e, hl))
+    for s, e, hl, raw_start, raw_end in sorted(candidates, key=lambda c: c[2].score, reverse=True):
+        if all(
+            _overlap(s, e, ks, ke) <= MAX_OVERLAP * min(e - s, ke - ks)
+            or (compilation_mode and (raw_end < k_raw_start or k_raw_end < raw_start))
+            for ks, ke, _, k_raw_start, k_raw_end in kept
+        ):
+            kept.append((s, e, hl, raw_start, raw_end))
         else:
             log.info("Dropping highlight %r: it overlaps a higher-scored one", hl.title)
-    kept.sort(key=lambda c: c[0])
+    kept.sort(key=lambda c: (c[3], c[0]) if compilation_mode else (c[0],))
+    if compilation_mode:
+        for i in range(1, len(kept)):
+            a, b, previous, prev_start, prev_end = kept[i - 1]
+            c, d, current, cur_start, cur_end = kept[i]
+            if c < b:
+                # Remove shared padding without cutting into the next named line where possible.
+                lo, hi = max(c, a + minimum), min(b, d - minimum)
+                named_start = snap._named_start(cur_start)
+                if named_start is None:
+                    named_start = (c + b) / 2
+                seam = max(lo, min(hi, named_start)) if lo <= hi else (c + b) / 2
+                kept[i - 1] = (a, seam, previous, prev_start, prev_end)
+                kept[i] = (seam, d, current, cur_start, cur_end)
 
     return [
         Clip(
             id=f"hl{n:02d}", kind="highlight", start=round(s, 2), end=round(e, 2),
             title=clean_title(hl.title), description=hl.description.strip(), score=_unit(hl.score),
-            why=hl.why.strip(), vertical_ok=hl.vertical_ok, llm_start=hl.start, llm_end=hl.end,
+            why=hl.why.strip(), vertical_ok=hl.vertical_ok and not compilation_mode, llm_start=hl.start, llm_end=hl.end,
         )
-        for n, (s, e, hl) in enumerate(kept, 1)
+        for n, (s, e, hl, _, _) in enumerate(kept, 1)
+        if not compilation_mode or round(e - s, 2) >= minimum
     ]
 
 

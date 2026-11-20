@@ -36,6 +36,7 @@ def run(
     breakdown: dict[str, str] | None = None,
     video_type: str = "streams",
     offered_shorts: int = 5,
+    compilation_mode: bool = False,
 ) -> Segmentation:
     """Ask the AI for chapters, highlights and an episode title.
 
@@ -47,21 +48,28 @@ def run(
     has its own instructions, and a TV episode or other video gets enough highlights asked for to fill the
     `offered_shorts` with some to spare.
     """
-    if ws.segmentation_json.exists():
-        return Segmentation.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
+    cache = ws.compilation_segmentation_json if compilation_mode else ws.segmentation_json
+    if cache.exists():
+        return Segmentation.model_validate_json(cache.read_text(encoding="utf-8"))
 
-    max_highlights = max(3, round(transcript.duration / 3600 * settings.highlights_per_hour))
-    if video_type != "streams":  # a 22-minute episode would only get the 3
-        max_highlights = max(max_highlights, offered_shorts + 3)
-    title_rule = (
-        f"Keep chapter and highlight titles within {title_room} characters and the episode title within "
-        f"{episode_room or title_room}"
-    )
+    noun = NOUNS[video_type]
+    if compilation_mode:
+        prompt = "segment_compilation.md"
+        task = f"Find every distinct moment worth including in a compilation of this {to_timecode(transcript.duration)} {noun}"
+        title_rule = f"Keep piece titles within {title_room} characters and the compilation title within {episode_room or title_room}"
+    else:
+        prompt = PROMPTS[video_type]
+        max_highlights = max(3, round(transcript.duration / 3600 * settings.highlights_per_hour))
+        if video_type != "streams":  # a 22-minute episode would only get the 3
+            max_highlights = max(max_highlights, offered_shorts + 3)
+        task = f"Split this {to_timecode(transcript.duration)} {noun} into chapters and pick up to {max_highlights} highlights"
+        title_rule = (
+            f"Keep chapter and highlight titles within {title_room} characters and the episode title within "
+            f"{episode_room or title_room}"
+        )
     if title_prefixed:
         title_rule += ", and leave out the show name and date: they're added in front automatically"
-    system_prompt = (PROMPTS_DIR / PROMPTS[video_type]).read_text(encoding="utf-8")
-    noun = NOUNS[video_type]
-    task = f"Split this {to_timecode(transcript.duration)} {noun} into chapters and pick up to {max_highlights} highlights"
+    system_prompt = (PROMPTS_DIR / prompt).read_text(encoding="utf-8")
     schema = Segmentation
     if breakdown:
         system_prompt += (PROMPTS_DIR / "breakdown.md").read_text(encoding="utf-8")
@@ -73,9 +81,9 @@ def run(
         task=f"{task}. {title_rule}. The {noun} details, hints and transcript follow.",
         stdin_text=build_input(ws.meta(), transcript, signals, context, guidance, track_record, breakdown, noun),
         schema=schema,
-        raw_log=ws.llm_dir / "segmentation.response.json",
+        raw_log=cache.with_suffix(".response.json"),
     )
-    write_text(ws.segmentation_json, result.model_dump_json(indent=2))
+    write_text(cache, result.model_dump_json(indent=2))
     log.info("%s proposed %d chapters and %d highlights", llm.name, len(result.chapters), len(result.highlights))
     return result
 

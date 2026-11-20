@@ -57,9 +57,10 @@ def answer(ws: Workspace) -> Breakdown:
     with its clips. Empty if there's neither."""
     if ws.breakdown_json.exists():
         return Breakdown.model_validate_json(ws.breakdown_json.read_text(encoding="utf-8"))
-    if ws.segmentation_json.exists():
-        found = SegmentationWithBreakdown.model_validate_json(ws.segmentation_json.read_text(encoding="utf-8"))
-        return Breakdown(breakdown=found.breakdown, other_summary=found.other_summary)
+    for cached in (ws.compilation_segmentation_json, ws.segmentation_json):
+        if cached.exists():
+            found = SegmentationWithBreakdown.model_validate_json(cached.read_text(encoding="utf-8"))
+            return Breakdown(breakdown=found.breakdown, other_summary=found.other_summary)
     return Breakdown(breakdown=[])
 
 

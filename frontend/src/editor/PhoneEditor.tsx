@@ -271,7 +271,7 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
           )}
         </Field>
 
-        {draft.kind === "highlight" && (
+        {draft.kind === "highlight" && !ed.compilationPiece && (
           <label className="flex items-center gap-3 rounded-2xl bg-zinc-900 p-4 ring-1 ring-white/5">
             <PhoneIcon className="size-5 text-zinc-400" />
             <span className="flex-1">
@@ -333,10 +333,12 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
           </Button>
           {ed.compiling ? (
             <>
-              <Button disabled={!ready} onClick={() => ed.create("approve")} className="px-3.5">
-                <UploadIcon className="size-4" />
-                <span className="sr-only">Keep and post</span>
-              </Button>
+              {!ed.compilationPiece && (
+                <Button disabled={!ready} onClick={() => ed.create("approve")} className="px-3.5">
+                  <UploadIcon className="size-4" />
+                  <span className="sr-only">Keep and post</span>
+                </Button>
+              )}
               <Button tone="approve" disabled={!ready} onClick={() => ed.create("keep")} className="flex-1">
                 Keep
               </Button>
@@ -364,10 +366,12 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
             )}
             {ed.compiling ? (
               <>
-                <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="px-3.5">
-                  <UploadIcon className="size-4" />
-                  <span className="sr-only">Keep and post</span>
-                </Button>
+                {!ed.compilationPiece && (
+                  <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="px-3.5">
+                    <UploadIcon className="size-4" />
+                    <span className="sr-only">Keep and post</span>
+                  </Button>
+                )}
                 <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("keep")} className="flex-1">
                   Keep
                 </Button>
@@ -390,9 +394,11 @@ export function PhoneEditor({ ed }: { ed: Editor }) {
                 Save
               </Button>
             )}
-            <Button disabled={busy} onClick={ed.postToo} className="flex-1">
-              <UploadIcon className="size-4" /> Post it by itself too
-            </Button>
+            {!ed.compilationPiece && (
+              <Button disabled={busy} onClick={ed.postToo} className="flex-1">
+                <UploadIcon className="size-4" /> Post it by itself too
+              </Button>
+            )}
           </>
         )}
         {c.status === "rejected" && (

@@ -162,3 +162,40 @@ def test_titles_are_cleaned_and_capped_at_100_characters():
 def test_bad_timecodes_are_skipped():
     seg = Segmentation(chapters=[], highlights=[highlight("soon", "later")])
     assert refine(seg, STORY) == []
+
+
+def test_adjacent_compilation_pieces_survive_overlapping_sentence_padding():
+    t = transcript(
+        line(5, "Here is the setup."),
+        line(20, "What a comeback."),
+        line(21.1, "Here's the next setup."),
+        line(38, "That was unexpected."),
+        duration=50,
+    )
+    seg = Segmentation(chapters=[], highlights=[
+        highlight("00:00:05", "00:00:20", title="Comeback", score=0.9),
+        highlight("00:00:21", "00:00:38", title="Surprise", score=0.6),
+    ])
+    snap = Snapper(t)
+    assert snap.end(20) > snap.start(21)
+    first, second = refine(seg, t, compilation_mode=True)
+    assert (first.title, second.title) == ("Comeback", "Surprise")
+    assert first.end == second.start == 21.1
+    assert first.start < first.end < second.end
+
+
+def test_compilation_keeps_a_quick_moment_below_the_legacy_highlight_minimum():
+    t = transcript(line(3, "Here comes the setup."), line(8, "Payoff."), duration=20)
+    seg = Segmentation(chapters=[], highlights=[highlight("00:00:03", "00:00:08")])
+    assert refine(seg, t) == []
+    [piece] = refine(seg, t, compilation_mode=True)
+    assert 1 <= piece.duration < 10
+
+
+def test_duplicate_compilation_proposals_for_the_same_line_are_deduplicated():
+    t = transcript(line(5, "This one line has the entire joke."), duration=15)
+    seg = Segmentation(chapters=[], highlights=[
+        highlight("00:00:05", "00:00:05", title="Best title", score=0.9),
+        highlight("00:00:05", "00:00:05", title="Duplicate", score=0.6),
+    ])
+    assert [clip.title for clip in refine(seg, t, compilation_mode=True)] == ["Best title"]

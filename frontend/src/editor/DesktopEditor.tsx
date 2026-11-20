@@ -343,9 +343,11 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
           </Button>
           {ed.compiling ? (
             <>
-              <Button disabled={!ready} onClick={() => ed.create("approve")} className="py-2">
-                <UploadIcon className="size-4" /> Keep and post
-              </Button>
+              {!ed.compilationPiece && (
+                <Button disabled={!ready} onClick={() => ed.create("approve")} className="py-2">
+                  <UploadIcon className="size-4" /> Keep and post
+                </Button>
+              )}
               <Button tone="approve" disabled={!ready} onClick={() => ed.create("keep")} className="py-2">
                 Keep
               </Button>
@@ -373,9 +375,11 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
             )}
             {ed.compiling ? (
               <>
-                <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="py-2">
-                  <UploadIcon className="size-4" /> Keep and post
-                </Button>
+                {!ed.compilationPiece && (
+                  <Button disabled={busy || !draft.title.trim()} onClick={() => ed.decide("approve")} className="py-2">
+                    <UploadIcon className="size-4" /> Keep and post
+                  </Button>
+                )}
                 <Button tone="approve" disabled={busy || !draft.title.trim()} onClick={() => ed.decide("keep")} className="py-2">
                   Keep
                 </Button>
@@ -398,9 +402,11 @@ export function DesktopEditor({ ed }: { ed: Editor }) {
                 Save
               </Button>
             )}
-            <Button disabled={busy} onClick={ed.postToo} className="py-2">
-              <UploadIcon className="size-4" /> Post it by itself too
-            </Button>
+            {!ed.compilationPiece && (
+              <Button disabled={busy} onClick={ed.postToo} className="py-2">
+                <UploadIcon className="size-4" /> Post it by itself too
+              </Button>
+            )}
           </>
         )}
         {c.status === "rejected" && (
@@ -678,7 +684,7 @@ function Inspector({ ed, selectedCut, onSelectCut }: { ed: Editor; selectedCut: 
         )}
       </Field>
 
-      {draft.kind === "highlight" && (
+      {draft.kind === "highlight" && !ed.compilationPiece && (
         <label className="flex items-center gap-3 rounded-xl bg-zinc-900 p-3 ring-1 ring-white/10">
           <PhoneIcon className="size-5 text-zinc-400" />
           <span className="flex-1">

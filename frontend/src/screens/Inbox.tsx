@@ -38,7 +38,7 @@ function decided(compilation: Compilation, clip: Clip, decision: Decision): Comp
   if (decision === "reject") return { ...compilation, to_review };
   const kept = [...compilation.kept, range].sort(([a], [b]) => a - b);
   const clips = compilation.clips + 1;
-  const status = to_review.length ? "waiting" : clips > 1 ? "making" : "one";
+  const status = to_review.length ? "waiting" : clips > 1 || compilation.compilation_mode ? "making" : "one";
   return { ...compilation, kept, to_review, clips, length: compilation.length + clip.end - clip.start, status };
 }
 
@@ -63,21 +63,24 @@ export function Inbox() {
     saveSetting(OPEN_KEY, next);
   };
 
-  const restore = async (id: number) => {
-    await api.restore(id);
-    void refresh();
+  const restore = async (clip: Clip) => {
+    try {
+      await api.restore(clip.id, clip.compilation_piece ? clip.updated_at : undefined);
+      void refresh();
+    } catch (e) {
+      toast({ text: errorText(e) });
+    }
   };
 
   const decide = async (clip: Clip, decision: Decision) => {
     const compilation = groups.find((g) => g.vodId === clip.vod_id)?.compilation;
     const after = compilation && clip.in_compilation ? decided(compilation, clip, decision) : undefined;
     setData((d) => d && [d[0].filter((c) => c.id !== clip.id), d[1].map((c) => (after && c.vod_id === after.vod_id ? after : c))]);
-    const undo = () => restore(clip.id);
-    lastDecided.current = { id: clip.id, undo };
     try {
-      if (decision === "keep") await api.keep(clip.id);
-      else if (decision === "reject") await api.reject(clip.id);
-      else await api.approve(clip.id); // in a compiling stream that keeps it and posts it by itself too
+      const action = decision === "keep" ? api.keep : decision === "reject" ? api.reject : api.approve;
+      const decidedClip = await action(clip.id);
+      const undo = () => restore(decidedClip);
+      lastDecided.current = { id: clip.id, undo };
       const text =
         decision === "keep" && after?.status === "making"
           ? `That was the last one. The compilation of ${after.clips} clips is being made.`
@@ -153,7 +156,7 @@ export function Inbox() {
       const key = e.key.toLowerCase();
       if (key === "j" || key === "arrowdown") move(at + 1);
       else if (key === "k" || key === "arrowup") move(at < 0 ? 0 : at - 1);
-      else if (current && (key === "a" || key === "r" || (key === "p" && current.in_compilation))) {
+      else if (current && (key === "a" || key === "r" || (key === "p" && current.in_compilation && !current.compilation_piece))) {
         // The keyboard stays where it was, on the clip that takes this one's place.
         setSelected((visible[at + 1] ?? visible[at - 1])?.id ?? null);
         const keep = current.in_compilation ? "keep" : "approve";
@@ -234,6 +237,11 @@ export function Inbox() {
                 />
               </div>
             )}
+            {g.clips.some((c) => c.compilation_piece) && (
+              <Button className="mb-3 hidden lg:inline-flex" tone="primary" onClick={() => go(`review/${g.vodId}`)}>
+                Review pieces
+              </Button>
+            )}
             <ShowMore items={g.clips} step={SHOWN}>
               {(shown) => (
                 <div className="divide-y divide-line lg:space-y-1 lg:divide-y-0">
@@ -247,7 +255,7 @@ export function Inbox() {
                       clip={c}
                       selected={c.id === selected}
                       onApprove={() => decide(c, c.in_compilation ? "keep" : "approve")}
-                      onKeepAndPost={c.in_compilation ? () => decide(c, "keep and post") : undefined}
+                      onKeepAndPost={c.in_compilation && !c.compilation_piece ? () => decide(c, "keep and post") : undefined}
                       onReject={() => decide(c, "reject")}
                       onHover={(on) => setHovered((id) => (on ? c.id : id === c.id ? null : id))}
                       strip={c.kind === "compilation" && g.compilation ? <CompilationStrip compilation={g.compilation} /> : undefined}
