@@ -174,6 +174,8 @@ Set these in `.env`, then run `docker compose up -d`:
 - **Links back to the app:** `CLIPPER_APP_URL=https://<server-name>.<your-tailnet>.ts.net` makes a notification link to the right page.
 - **ntfy (optional):** `CLIPPER_NTFY_URL=https://ntfy.sh/<topic>`. Pick a long random topic name: anyone who knows a topic on ntfy.sh can read it. For your own ntfy server, use its address and, if the topic is protected, an access token in `CLIPPER_NTFY_TOKEN`. Subscribe to the topic in the ntfy phone app.
 
+To quiet them, switch off the kinds you don't need in **Settings → Notifications**: ready to review, new on a watched channel, uploaded, failures, heads-ups and the weekly YouTube summary. The switches apply wherever notifications go; "Send a test" always sends.
+
 **Settings** says where notifications go and has a **Send a test** link.
 
 ## Automatic uploads
