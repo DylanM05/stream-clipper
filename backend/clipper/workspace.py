@@ -64,6 +64,10 @@ class Workspace:
         return self.llm_dir / "segmentation.json"
 
     @property
+    def compilation_segmentation_json(self) -> Path:
+        return self.llm_dir / "compilation-segmentation.json"
+
+    @property
     def breakdown_json(self) -> Path:
         """A breakdown asked for on its own after the clips were picked (segment.break_down); it replaces the one in
         segmentation.json."""

@@ -65,3 +65,30 @@ def test_each_kind_of_video_gets_its_own_instructions(tmp_path, monkeypatch, vid
     assert asked["stdin_text"].startswith(f"# {noun.capitalize()}\nTitle: S01E01\n")
     if video_type != "streams":
         assert "given permission" not in asked["system_prompt"]
+
+
+def test_compilation_uses_its_own_prompt_and_cache(tmp_path, monkeypatch):
+    settings = Settings(data_dir=tmp_path)
+    ws = Workspace.open(settings.vods_dir, "local-abc")
+    write_json(ws.meta_json, {"title": "Long stream"})
+    write_json(ws.segmentation_json, Segmentation(chapters=[], highlights=[], episode_title="Standard").model_dump())
+    asked = []
+
+    class FakeAI:
+        name = "Fake"
+
+        def structured(self, **kwargs):
+            asked.append(kwargs)
+            return Segmentation(chapters=[], highlights=[], episode_title="Compilation")
+
+    monkeypatch.setattr(segment.ai, "model", lambda *a, **k: FakeAI())
+    t = transcript(line(5, "Hello there."), duration=7200)
+    for _ in range(2):
+        result = segment.run(ws, settings, t, Signals(), compilation_mode=True, track_record="Past reviews")
+        assert result.episode_title == "Compilation"
+    assert len(asked) == 1
+    assert "no quota or per-hour cap" in asked[0]["system_prompt"]
+    assert "several minutes when the moment itself needs that" in asked[0]["system_prompt"]
+    assert "pick up to" not in asked[0]["task"]
+    assert "Past reviews" in asked[0]["stdin_text"]
+    assert segment.run(ws, settings, t, Signals()).episode_title == "Standard"

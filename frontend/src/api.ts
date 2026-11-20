@@ -29,7 +29,8 @@ export type ClipStatus =
   | "failed";
 
 /** "segment": clips (kind "chapter") and highlights; "whole": the full episode; "both": full episode plus those. */
-export type Mode = "segment" | "whole" | "both";
+export type StandaloneMode = "segment" | "whole" | "both";
+export type Mode = StandaloneMode | "compilation";
 
 /** What happens to a show's new videos of one kind: wait for review, render without review, or render and upload. */
 export type Auto = "review" | "render" | "upload";
@@ -63,6 +64,7 @@ export interface Vod {
 
 /** Where a stream that makes a compilation stands with it. Ranges are in the stream's seconds, in stream order. */
 export interface Compilation {
+  compilation_mode: boolean;
   vod_id: number;
   vod_title: string;
   vod_duration: number; // the stream's length, which the strip is drawn against
@@ -121,6 +123,7 @@ export interface Clip {
   upload_state: UploadState;
   next_upload: string | null; // when a scheduled upload goes, or a failed one tries again by itself (in its turn)
   upload_error: string; // why a failed or retrying upload failed
+  compilation_piece: boolean;
   in_compilation: boolean; // a chapter or highlight of a stream that makes a compilation: approving it keeps it
   compilation_clips: number; // for a compilation, how many clips it joins now (0 otherwise)
   compilation_changed: boolean; // for a compilation not yet uploaded, whether it's out of date
@@ -520,7 +523,7 @@ export const api = {
 
   vods: () => request<Vod[]>("/api/vods"),
   vod: (id: number) => request<{ vod: Vod; clips: Clip[] }>(`/api/vods/${id}`),
-  addVod: (body: { url: string; mode?: Mode; notes?: string }) => post<Vod>("/api/vods", body),
+  addVod: (body: { url: string; mode?: StandaloneMode; notes?: string }) => post<Vod>("/api/vods", body),
   retryVod: (id: number) => post<Vod>(`/api/vods/${id}/retry`),
   pauseVod: (id: number) => post<Vod>(`/api/vods/${id}/pause`),
   resumeVod: (id: number) => post<Vod>(`/api/vods/${id}/resume`),
@@ -532,9 +535,9 @@ export const api = {
   clip: (id: number) => request<Clip>(`/api/clips/${id}`),
   updateClip: (id: number, fields: ClipPatch) => patch<Clip>(`/api/clips/${id}`, fields),
   approve: (id: number) => changed(post<Clip>(`/api/clips/${id}/approve`)),
-  reject: (id: number) => changed(post<Clip>(`/api/clips/${id}/reject`)),
-  restore: (id: number) => changed(post<Clip>(`/api/clips/${id}/restore`)),
-  keep: (id: number) => changed(post<Clip>(`/api/clips/${id}/keep`)),
+  reject: (id: number, version?: string) => changed(post<Clip>(`/api/clips/${id}/reject${version ? `?version=${encodeURIComponent(version)}` : ""}`)),
+  restore: (id: number, reviewUndo?: string) => changed(post<Clip>(`/api/clips/${id}/restore${reviewUndo ? `?review_undo=${encodeURIComponent(reviewUndo)}` : ""}`)),
+  keep: (id: number, version?: string) => changed(post<Clip>(`/api/clips/${id}/keep${version ? `?version=${encodeURIComponent(version)}` : ""}`)),
   rebuild: (id: number) => changed(post<Clip>(`/api/clips/${id}/rebuild`)),
   compilations: () => request<Compilation[]>("/api/compilations"),
   pauseClip: (id: number) => post<Clip>(`/api/clips/${id}/pause`),

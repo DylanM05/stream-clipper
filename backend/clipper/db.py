@@ -39,7 +39,7 @@ PICKED_KINDS = ("chapter", "highlight")
 
 # What a video becomes: "segment" is chapters and highlights, "whole" is the full episode as one
 # video, "both" is the full episode plus the chapters and highlights.
-MODES = ("segment", "whole", "both")
+MODES = ("segment", "whole", "both", "compilation")
 
 # What happens to a show's new full episodes, chapters or highlights: wait in the inbox for review,
 # render without review, or render and upload without review.

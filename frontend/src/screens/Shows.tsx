@@ -598,7 +598,8 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
   const episodePattern = fields.episode_template || clipPattern;
   const patternsOk =
     (!hasClips(fields.mode) || clipPattern.includes("{title}")) && (!hasEpisode(fields.mode) || episodePattern.includes("{title}"));
-  const shortsOk = fields.short_layout !== "split" || fields.short_webcams.length > 0;
+  const compilationMode = fields.mode === "compilation";
+  const shortsOk = compilationMode || fields.short_layout !== "split" || fields.short_webcams.length > 0;
   // By value: the webcam boxes are arrays, and each refresh of the show brings new ones.
   const dirty = !show || (Object.keys(fields) as (keyof ShowFields)[]).some((k) => JSON.stringify(fields[k]) !== JSON.stringify(show[k]));
 
@@ -650,8 +651,8 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
         </Field>
 
         <Field label="What to make from each video">
-          <div className="grid grid-cols-3 gap-1 rounded-xl bg-zinc-800 p-1">
-            {(["segment", "whole", "both"] as const).map((mode) => (
+          <div className="grid grid-cols-2 gap-1 rounded-xl bg-zinc-800 p-1 sm:grid-cols-4">
+            {(["segment", "whole", "both", "compilation"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"
@@ -667,6 +668,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
               {
                 segment: "The AI splits each stream into clips and highlights.",
                 whole: "Each video is posted in full, like a pre-show from X.",
+                compilation: "The AI finds moments worth keeping and trims each to the time it needs. Review them, then the kept pieces are joined.",
                 both: "The full episode, with YouTube chapters in its description, plus the AI's clips and highlights.",
               }[fields.mode]
             }
@@ -781,7 +783,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           + Add or edit YouTube channels
         </button>
 
-        {hasClips(fields.mode) && (
+        {hasClips(fields.mode) && !compilationMode && (
           <Group label={`Offered per ${VIDEO_NOUN[fields.video_type]}`} hint="best first, by the AI's score">
             <div className="grid grid-cols-2 gap-2">
               <CountBox label="Clips" value={fields.max_chapters} onChange={(max_chapters) => set({ max_chapters })} />
@@ -795,7 +797,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
           </Group>
         )}
 
-        {hasClips(fields.mode) && (
+        {hasClips(fields.mode) && !compilationMode && (
           <Group label="Compilation" hint={`one per ${VIDEO_NOUN[fields.video_type]}`}>
             <Tick
               label={`Make a compilation of each ${VIDEO_NOUN[fields.video_type]}`}
@@ -816,7 +818,7 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
             {hasEpisode(fields.mode) && (
               <AutoChoice label="Full episode" value={fields.auto_episode} onChange={(auto_episode) => set({ auto_episode })} />
             )}
-            {hasClips(fields.mode) && (
+            {hasClips(fields.mode) && !compilationMode && (
               <>
                 <AutoChoice label="Clips" value={fields.auto_chapters} onChange={(auto_chapters) => set({ auto_chapters })} />
                 <AutoChoice label="Shorts" value={fields.auto_shorts} onChange={(auto_shorts) => set({ auto_shorts })} />
@@ -825,21 +827,21 @@ function ShowForm(props: { show: Show | null; destinations: Destination[] | unde
                     With compilations on, clips taken without review are kept for the compilation, not posted by themselves.
                   </p>
                 )}
-                {fields.compilation && (
-                  <AutoChoice
-                    label="Compilation"
-                    value={fields.auto_compilation}
-                    onChange={(auto_compilation) => set({ auto_compilation })}
-                  />
-                )}
               </>
+            )}
+            {(compilationMode || (hasClips(fields.mode) && fields.compilation)) && (
+              <AutoChoice
+                label="Compilation"
+                value={fields.auto_compilation}
+                onChange={(auto_compilation) => set({ auto_compilation })}
+              />
             )}
           </div>
           <p className="mt-1.5 text-xs text-zinc-500">
             Review: waits in your inbox. Render: skips the inbox and waits in Ready to upload. Upload: goes straight to its
             YouTube channel (a highlight as its Short, if it has one).
           </p>
-          {hasClips(fields.mode) && (
+          {hasClips(fields.mode) && !compilationMode && (
             <>
               <div className="mt-3 flex items-center gap-3">
                 <span className="w-24 shrink-0 text-sm text-zinc-300">Standouts</span>

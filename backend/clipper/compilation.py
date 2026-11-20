@@ -6,11 +6,13 @@ clip. It's rendered a part at a time (render.render_compilation), so the hours b
 """
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 
 from . import cuts, titles
 from .db import PICKED_KINDS, ClipRecord, Vod
 
 KEY = "comp"
+COMPILE_DELAY_S = 10
 MIN_CLIPS = 2  # one clip on its own is already a video
 # Kept for it, or approved (in review or without it), whether rendered yet or not.
 INCLUDED = ("kept", "approved", "rendering", "rendered", "uploaded", "failed")
@@ -25,15 +27,37 @@ class Plan:
     description: str
 
 
-def plan(clips: list[ClipRecord], template: str) -> Plan | None:
+def undo_open(reviewed_at: datetime | None, now: datetime) -> bool:
+    # SQLite gives us UTC timestamps without their zone.
+    return reviewed_at is not None and (
+        now.replace(tzinfo=None) - reviewed_at.replace(tzinfo=None) < timedelta(seconds=COMPILE_DELAY_S)
+    )
+
+
+def review_pending(clips: list[ClipRecord], now: datetime) -> bool:
+    return any(
+        c.kind in PICKED_KINDS and (c.status == "proposed" or undo_open(c.reviewed_at, now)) for c in clips
+    )
+
+
+def merge_gap(vod: Vod) -> float:
+    return 1.5 if vod.mode == "compilation" else cuts.EDGE_S
+
+
+def for_vod(vod: Vod, clips: list[ClipRecord], template: str) -> Plan | None:
+    return plan(clips, template, gap=merge_gap(vod), minimum=1 if vod.mode == "compilation" else MIN_CLIPS)
+
+
+def plan(clips: list[ClipRecord], template: str, *, gap: float = cuts.EDGE_S,
+         minimum: int = MIN_CLIPS) -> Plan | None:
     """The compilation of a stream's approved chapters and highlights, in the order they happened, or None with fewer
-    than MIN_CLIPS. Parts of them that overlap (a highlight inside a chapter) go in once, and parts cut out of them in
+    than the minimum number of pieces. Parts of them that overlap (a highlight inside a chapter) go in once, and parts cut out of them in
     the app stay out. Its description lists them with where each starts, as chapters on YouTube, titled without the
     show's `template`."""
     picks = included(clips)
-    if len(picks) < MIN_CLIPS:
+    if len(picks) < minimum:
         return None
-    merged = kept_parts(picks)
+    merged = kept_parts(picks, gap=gap, clips=clips)
     start, end, gaps = cuts.tidy(merged[0][0], merged[-1][1], [(x[1], y[0]) for x, y in zip(merged, merged[1:])])
     return Plan(start, end, gaps, picks, describe(picks, template, cuts.kept(start, end, gaps)))
 
@@ -54,11 +78,25 @@ def included(clips: list[ClipRecord]) -> list[ClipRecord]:
     )
 
 
-def kept_parts(picks: list[ClipRecord]) -> list[cuts.Cut]:
+def kept_parts(picks: list[ClipRecord], *, gap: float = cuts.EDGE_S,
+               clips: list[ClipRecord] = ()) -> list[cuts.Cut]:
     """The parts of the `picks` that stay, in stream order, with overlapping and touching ones joined."""
+    protected = []
+    if gap > cuts.EDGE_S:
+        for c in clips:
+            if c.kind in PICKED_KINDS and c.status not in INCLUDED:
+                protected.append((c.start, c.end))
+        for c in picks:
+            protected.extend(cuts.parse(c.cuts))
+            if c.picked_start is not None and c.picked_end is not None:
+                protected.extend(((c.picked_start, c.start), (c.end, c.picked_end)))
+        protected = [(a, b) for a, b in protected if b > a]
     merged: list[list[float]] = []
     for a, b in sorted(part for c in picks for part in cuts.kept(c.start, c.end, cuts.parse(c.cuts))):
-        if merged and a <= merged[-1][1] + cuts.EDGE_S:
+        if merged and (
+            a <= merged[-1][1] + cuts.EDGE_S
+            or (a <= merged[-1][1] + gap and not any(x < a and y > merged[-1][1] for x, y in protected))
+        ):
             merged[-1][1] = max(merged[-1][1], b)
         else:
             merged.append([a, b])

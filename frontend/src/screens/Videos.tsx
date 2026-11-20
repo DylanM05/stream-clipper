@@ -1,5 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
-import { api, errorText, type Clip, type ClipStatus, type Compilation, type Mode, type Pauses, type Show, type Vod } from "../api";
+import { api, errorText, type Clip, type ClipStatus, type Compilation, type Mode, type StandaloneMode, type Pauses, type Show, type Vod } from "../api";
 import { ClipCard } from "../ClipCard";
 import { ChangedNotice, CompilationStrip } from "../CompilationStrip";
 import { ChevronIcon, LinkIcon, PauseIcon, PlayIcon, ScissorsIcon, TrashIcon } from "../icons";
@@ -97,7 +97,7 @@ function showForLink(shows: Show[] | undefined, url: string): Show | undefined {
 function AddVideo({ onAdded }: { onAdded: () => void }) {
   const toast = useToast();
   const [url, setUrl] = useState("");
-  const [mode, setMode] = useState<"auto" | Mode>("auto");
+  const [mode, setMode] = useState<"auto" | StandaloneMode>("auto");
   const [notes, setNotes] = useState("");
   const [showNotes, setShowNotes] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -415,7 +415,7 @@ export function VideoDetail({ id }: { id: number }) {
           {vod.notes && <p className="rounded-xl bg-zinc-900 p-3 ring-1 ring-white/5">Notes for the AI: {vod.notes}</p>}
         </div>
       )}
-      {data?.vod.compilation && <CompilationPanel compilation={data.vod.compilation} clips={data.clips} onChanged={refresh} />}
+      {data?.vod.compilation && <CompilationPanel compilation={data.vod.compilation} clips={data.clips} onChanged={refresh} desktop={desktop} />}
       <div className="space-y-3 xl:grid xl:grid-cols-2 xl:items-start xl:gap-3 xl:space-y-0">
         {offered.map((c) => <ClipCard key={c.id} clip={c} showStatus />)}
         {data && data.clips.length === 0 && <p className="text-sm text-zinc-500">No clips yet.</p>}
@@ -449,7 +449,9 @@ export function VideoDetail({ id }: { id: number }) {
  * Above a compiling stream's clips: its compilation's strip, a line saying where it stands, and the one thing to do
  * next with it. When the clips kept now would make a different one, the notice to rebuild it from them.
  */
-function CompilationPanel({ compilation, clips, onChanged }: { compilation: Compilation; clips: Clip[]; onChanged: () => void }) {
+function CompilationPanel({ compilation, clips, onChanged, desktop }: {
+  compilation: Compilation; clips: Clip[]; onChanged: () => void; desktop: boolean;
+}) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
   const made = clips.find((c) => c.id === compilation.clip_id);
@@ -491,7 +493,7 @@ function CompilationPanel({ compilation, clips, onChanged }: { compilation: Comp
   const [line, action]: [string, Action?] = (() => {
     switch (compilation.status) {
       case "waiting":
-        return [`Made once the last ${left === 1 ? "clip is" : `${left} clips are`} reviewed`, ["Review them", () => go("inbox")]];
+        return [`Made once the last ${left === 1 ? "clip is" : `${left} clips are`} reviewed`, ["Review them", () => go(compilation.compilation_mode && desktop ? `review/${compilation.vod_id}` : "inbox")]];
       case "making":
         return ["Being made"];
       case "proposed":
