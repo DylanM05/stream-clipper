@@ -1266,7 +1266,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     @app.patch("/api/notifications")
     def set_notifications(body: NotificationsPatch, s: Session = Depends(db)) -> dict:
-        """From the next notification on; the test button sends whatever they're set to."""
+        """From the next notification on; the test button always sends."""
         for kind, on in body.model_dump(exclude_none=True).items():
             set_app_setting(s, notify.switch_key(kind), "1" if on else "0")
         s.commit()

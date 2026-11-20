@@ -79,24 +79,25 @@ def test_the_apps_test_button(tmp_path, posts):
 
 
 def test_every_notification_has_its_kind():
-    """Each Note( in the app names its kind, so a new one can't go out without a switch."""
+    """Each Note( in the app names one of KINDS, so a new one can't go out without a switch."""
     import ast
     import pathlib
 
-    found = {}
-    for path in pathlib.Path(notify.__file__).parent.glob("*.py"):
+    found = []
+    for path in sorted(pathlib.Path(notify.__file__).parent.rglob("*.py")):
         for node in ast.walk(ast.parse(path.read_text())):
-            if isinstance(node, ast.Call) and getattr(node.func, "id", None) == "Note":
-                kind = next((k.value.value for k in node.keywords if k.arg == "kind"), None)
+            if isinstance(node, ast.Call) and "Note" in (getattr(node.func, "id", None), getattr(node.func, "attr", None)):
                 title = node.args[0]
-                start = title.values[0].value if isinstance(title, ast.JoinedStr) else title.value
-                found[start.split(":")[0].strip()] = kind
-    assert found == {
-        "Waiting for disk space": "failure", "Ready": "review", "Waiting for the AI": "heads_up",
-        "Failed": "failure", "Render failed": "failure", "No intro on": "heads_up", "Not uploaded": "failure",
-        "Only one clip kept": "heads_up", "Compilation to review": "review", "Uploaded": "uploaded",
-        "Upload failed": "failure", "Last week on YouTube": "digest", "Can't check": "failure", "New for": "new",
-    }
+                start = (title.values[0].value if isinstance(title, ast.JoinedStr) else title.value).split(":")[0].strip()
+                if start != "Test from Stream Clipper":  # the test button, which always sends
+                    found.append((start, next((k.value.value for k in node.keywords if k.arg == "kind"), None)))
+    assert all(kind in notify.KINDS for _, kind in found), found
+    assert sorted(found) == sorted([
+        ("Waiting for disk space", "failure"), ("Ready", "review"), ("Waiting for the AI", "heads_up"),
+        ("Failed", "failure"), ("Render failed", "failure"), ("No intro on", "heads_up"), ("Not uploaded", "failure"),
+        ("Only one clip kept", "heads_up"), ("Compilation to review", "review"), ("Uploaded", "uploaded"),
+        ("Upload failed", "failure"), ("Last week on YouTube", "digest"), ("Can't check", "failure"), ("New for", "new"),
+    ])
 
 
 def test_a_kind_switched_off_isnt_sent(tmp_path, posts, monkeypatch):
@@ -127,3 +128,4 @@ def test_the_switches_save_and_load(tmp_path):
     assert {k["id"] for k in after if not k["on"]} == {"new", "digest"}
     assert client.patch("/api/notifications", json={"new": True}).json()["kinds"][1]["on"] is True
     assert client.patch("/api/notifications", json={"spam": False}).status_code == 422
+    assert set(web_app.NotificationsPatch.model_fields) == set(notify.KINDS)

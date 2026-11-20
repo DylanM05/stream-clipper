@@ -119,7 +119,6 @@ def test_the_monday_summary_goes_once_a_week(settings, show, monkeypatch):
     assert note.message == "2 uploads · 13.1K views so far\n\nMost viewed:\n1. Huck Blend Is Back: 12.3K\n2. Jer Wins: 800"
 
 
-
 def test_the_monday_summary_switched_off_is_skipped_and_still_due(settings, show, monkeypatch):
     sent = []
     monkeypatch.setattr(worker_module.notify, "send", lambda settings_, note: sent.append(note))
